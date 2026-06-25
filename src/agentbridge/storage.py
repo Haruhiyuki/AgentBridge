@@ -712,6 +712,38 @@ class InMemoryRepository:
             self.interactions[interaction.id] = interaction
             return interaction
 
+    def list_interactions(
+        self,
+        *,
+        session_id: str | None = None,
+        status: InteractionStatus | None = None,
+    ) -> list[Interaction]:
+        with self._lock:
+            interactions = list(self.interactions.values())
+            if session_id:
+                interactions = [
+                    interaction
+                    for interaction in interactions
+                    if interaction.session_id == session_id
+                ]
+            if status:
+                interactions = [
+                    interaction for interaction in interactions if interaction.status == status
+                ]
+            return sorted(interactions, key=lambda interaction: interaction.created_at)
+
+    def get_interaction(self, interaction_id: str) -> Interaction:
+        with self._lock:
+            interaction = self.interactions.get(interaction_id)
+            if not interaction:
+                raise AgentBridgeError(
+                    ErrorCode.NOT_FOUND,
+                    f"Interaction 不存在：{interaction_id}",
+                    next_step="请执行 /agent approvals 查看待处理交互。",
+                    status_code=404,
+                )
+            return interaction
+
     def answer_interaction(self, interaction_id: str, answer: str) -> Interaction:
         with self._lock:
             interaction = self._get_pending_interaction(interaction_id)

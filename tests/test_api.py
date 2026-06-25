@@ -167,6 +167,102 @@ def test_group_role_api_grants_command_permissions(tmp_path):
     assert denied_turn.status_code == 403
 
 
+def test_interaction_api_creates_answers_and_votes(tmp_path):
+    client = TestClient(create_app())
+    chat = {
+        "bot_instance_id": "bot-test",
+        "platform": "onebot.v11",
+        "chat_space_id": "group-interactions-api",
+    }
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
+    approver = {"id": "usr_approver", "roles": ["approver"]}
+    context = client.post("/api/v1/chat-contexts", json=chat).json()
+
+    client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+            "actor": maintainer,
+            "chat_context_id": context["id"],
+            "idempotency_key": "interaction-api-project",
+        },
+    )
+    session_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": "/agent session new Interaction API",
+            "actor": maintainer,
+            "chat_context_id": context["id"],
+            "idempotency_key": "interaction-api-session",
+        },
+    )
+    session_id = session_response.json()["data"]["session_id"]
+
+    question_response = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": operator,
+            "type": "question",
+            "prompt": "Which migration strategy?",
+            "chat_context_id": context["id"],
+            "trace_id": "interaction-api-question",
+        },
+    )
+    assert question_response.status_code == 200
+    question_id = question_response.json()["id"]
+
+    answer_response = client.post(
+        f"/api/v1/interactions/{question_id}/answer",
+        json={
+            "actor": operator,
+            "answer": "Use expand-contract.",
+            "chat_context_id": context["id"],
+            "trace_id": "interaction-api-answer",
+        },
+    )
+    assert answer_response.status_code == 200
+    assert answer_response.json()["status"] == "resolved"
+    assert answer_response.json()["answer"] == "Use expand-contract."
+
+    approval_response = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": operator,
+            "type": "approval",
+            "prompt": "Run destructive command?",
+            "required_votes": 1,
+            "chat_context_id": context["id"],
+            "trace_id": "interaction-api-approval",
+        },
+    )
+    approval_id = approval_response.json()["id"]
+    vote_response = client.post(
+        f"/api/v1/interactions/{approval_id}/vote",
+        json={
+            "actor": approver,
+            "approve": False,
+            "reason": "too risky",
+            "chat_context_id": context["id"],
+            "trace_id": "interaction-api-vote",
+        },
+    )
+    list_response = client.get(
+        "/api/v1/interactions",
+        params={"session_id": session_id, "status": "resolved"},
+    )
+
+    assert approval_response.status_code == 200
+    assert vote_response.status_code == 200
+    assert vote_response.json()["status"] == "resolved"
+    assert vote_response.json()["votes"] == {"usr_approver": False}
+    assert list_response.status_code == 200
+    assert {interaction["id"] for interaction in list_response.json()} == {
+        question_id,
+        approval_id,
+    }
+
+
 def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
     client = TestClient(create_app())
     chat = {

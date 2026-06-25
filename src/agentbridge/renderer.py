@@ -69,6 +69,7 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
     payload = event.payload
     title = event_title(event)
     blocks: list[RenderBlock] = []
+    actions: list[RenderAction] = []
     visibility = RenderVisibility.PUBLIC
 
     if event.type == "assistant.delta":
@@ -115,6 +116,72 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 f"Turn：{event.turn_id}\nPrompt 长度：{payload.get('prompt_length')}",
             )
         )
+    elif event.type == "approval.requested":
+        visibility = RenderVisibility.APPROVERS
+        interaction_id = str(event.interaction_id or "")
+        required_votes = payload.get("required_votes")
+        blocks.append(
+            warning_block(
+                "需要审批",
+                (
+                    f"Interaction：{interaction_id}\n"
+                    f"需要票数：{required_votes}\n"
+                    f"{payload.get('prompt') or ''}"
+                ),
+            )
+        )
+        actions.extend(
+            [
+                RenderAction(
+                    id=f"approve-{interaction_id}",
+                    label="批准一次",
+                    command=f"/agent approve {interaction_id} once",
+                    style=RenderActionStyle.PRIMARY,
+                ),
+                RenderAction(
+                    id=f"deny-{interaction_id}",
+                    label="拒绝",
+                    command=f"/agent deny {interaction_id}",
+                    style=RenderActionStyle.DANGER,
+                ),
+            ]
+        )
+    elif event.type == "interaction.requested":
+        interaction_id = str(event.interaction_id or "")
+        blocks.append(
+            text_block(
+                "需要回答",
+                f"Interaction：{interaction_id}\n{payload.get('prompt') or ''}",
+            )
+        )
+        actions.append(
+            RenderAction(
+                id=f"answer-{interaction_id}",
+                label="回答",
+                command=f"/agent answer {interaction_id} <answer>",
+                style=RenderActionStyle.PRIMARY,
+            )
+        )
+    elif event.type == "approval.voted":
+        visibility = RenderVisibility.APPROVERS
+        vote_label = "批准" if payload.get("approve") else "拒绝"
+        blocks.append(
+            text_block(
+                "审批投票",
+                (
+                    f"{payload.get('actor_id')} 已{vote_label}\n"
+                    f"状态：{payload.get('status')}\n"
+                    f"票数：{len(payload.get('votes') or {})}/{payload.get('required_votes')}"
+                ),
+            )
+        )
+    elif event.type == "interaction.answered":
+        blocks.append(
+            text_block(
+                "交互已回答",
+                f"状态：{payload.get('status')}\n回答：{payload.get('answer')}",
+            )
+        )
     elif event.type == "lease.acquired":
         visibility = RenderVisibility.OPERATORS
         blocks.append(
@@ -154,6 +221,7 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
         id=f"rend_{uuid4().hex[:12]}",
         title=title,
         blocks=blocks,
+        actions=actions,
         update_key=f"{event.stream_id}:{event.seq}",
         visibility=visibility,
     )

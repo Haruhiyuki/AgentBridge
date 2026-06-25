@@ -10,6 +10,9 @@ from agentbridge.domain import (
     ChatContext,
     ErrorCode,
     GroupRoleBinding,
+    Interaction,
+    InteractionStatus,
+    InteractionType,
     LeaseOwnerType,
     Project,
     SemanticEvent,
@@ -478,6 +481,195 @@ class ControlPlane:
             payload={"released_epoch": epoch, "next_epoch": next_epoch},
         )
         return next_epoch
+
+    def create_interaction(
+        self,
+        *,
+        actor: Actor,
+        session_id: str,
+        interaction_type: InteractionType,
+        prompt: str,
+        trace_id: str,
+        chat_context_id: str | None = None,
+        turn_id: str | None = None,
+        options: list[str] | None = None,
+        required_votes: int = 1,
+    ) -> Interaction:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.policy.require(effective_actor, Permission.SESSION_SEND)
+        interaction = self.repository.create_interaction(
+            session_id=session_id,
+            interaction_type=interaction_type,
+            prompt=prompt,
+            turn_id=turn_id,
+            options=options,
+            required_votes=required_votes,
+        )
+        session = self.repository.get_session(session_id)
+        event_type = (
+            "approval.requested"
+            if interaction_type == InteractionType.APPROVAL
+            else "interaction.requested"
+        )
+        self.audit(
+            action=event_type,
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            interaction_id=interaction.id,
+            details={
+                "type": interaction.type.value,
+                "required_votes": interaction.required_votes,
+            },
+        )
+        self.emit_event(
+            event_type=event_type,
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            interaction_id=interaction.id,
+            payload={
+                "type": interaction.type.value,
+                "prompt": interaction.prompt,
+                "options": interaction.options,
+                "required_votes": interaction.required_votes,
+                "version": interaction.version,
+            },
+        )
+        return interaction
+
+    def list_interactions(
+        self,
+        *,
+        actor: Actor,
+        chat_context_id: str | None = None,
+        session_id: str | None = None,
+        status: InteractionStatus | None = None,
+    ) -> list[Interaction]:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.policy.require(effective_actor, Permission.SESSION_VIEW)
+        return self.repository.list_interactions(session_id=session_id, status=status)
+
+    def get_interaction(
+        self,
+        *,
+        actor: Actor,
+        interaction_id: str,
+        chat_context_id: str | None = None,
+    ) -> Interaction:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.policy.require(effective_actor, Permission.SESSION_VIEW)
+        return self.repository.get_interaction(interaction_id)
+
+    def answer_interaction(
+        self,
+        *,
+        actor: Actor,
+        interaction_id: str,
+        answer: str,
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> Interaction:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.policy.require(effective_actor, Permission.SESSION_SEND)
+        current = self.repository.get_interaction(interaction_id)
+        if current.type == InteractionType.APPROVAL:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "审批类 Interaction 必须使用 approve 或 deny 处理。",
+                next_step=(
+                    "请执行 /agent approve <interaction-id> "
+                    "或 /agent deny <interaction-id>。"
+                ),
+            )
+        interaction = self.repository.answer_interaction(interaction_id, answer)
+        session = self.repository.get_session(interaction.session_id)
+        self.audit(
+            action="interaction.answered",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            project_id=session.project_id,
+            session_id=session.id,
+            interaction_id=interaction.id,
+        )
+        self.emit_event(
+            event_type="interaction.answered",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session.id,
+            turn_id=interaction.turn_id,
+            interaction_id=interaction.id,
+            payload={
+                "answer": interaction.answer,
+                "status": interaction.status.value,
+                "version": interaction.version,
+            },
+        )
+        return interaction
+
+    def vote_interaction(
+        self,
+        *,
+        actor: Actor,
+        interaction_id: str,
+        approve: bool,
+        trace_id: str,
+        chat_context_id: str | None = None,
+        reason: str | None = None,
+    ) -> Interaction:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.policy.require(effective_actor, Permission.APPROVAL_VOTE)
+        current = self.repository.get_interaction(interaction_id)
+        if current.type != InteractionType.APPROVAL:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "非审批类 Interaction 不能投票。",
+                next_step="请执行 /agent answer <interaction-id> <answer> 处理问题。",
+            )
+        interaction = self.repository.vote_interaction(
+            interaction_id,
+            actor=effective_actor,
+            approve=approve,
+        )
+        session = self.repository.get_session(interaction.session_id)
+        self.audit(
+            action="approval.voted",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            project_id=session.project_id,
+            session_id=session.id,
+            interaction_id=interaction.id,
+            details={"approve": approve, "reason": reason},
+        )
+        self.emit_event(
+            event_type="approval.voted",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session.id,
+            turn_id=interaction.turn_id,
+            interaction_id=interaction.id,
+            payload={
+                "actor_id": effective_actor.id,
+                "approve": approve,
+                "reason": reason,
+                "status": interaction.status.value,
+                "votes": interaction.votes,
+                "required_votes": interaction.required_votes,
+                "version": interaction.version,
+            },
+        )
+        return interaction
 
     def effective_actor(self, actor: Actor, chat_context_id: str | None = None) -> Actor:
         return self.repository.effective_actor(actor, chat_context_id)

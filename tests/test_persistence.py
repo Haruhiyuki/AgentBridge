@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from agentbridge.api import create_app
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, LeaseOwnerType, SemanticEventSource
+from agentbridge.domain import Actor, InteractionType, LeaseOwnerType, SemanticEventSource
 from agentbridge.persistence import SQLAlchemyRepository
 
 
@@ -77,6 +77,22 @@ def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
         roles={"operator"},
         trace_id="persist-role",
     )
+    interaction = first_control.create_interaction(
+        actor=maintainer,
+        session_id=session_id,
+        interaction_type=InteractionType.APPROVAL,
+        prompt="Approve persisted action?",
+        required_votes=1,
+        trace_id="persist-interaction",
+        chat_context_id=context.id,
+    )
+    voted_interaction = first_control.vote_interaction(
+        actor=maintainer,
+        interaction_id=interaction.id,
+        approve=True,
+        trace_id="persist-interaction-vote",
+        chat_context_id=context.id,
+    )
 
     second_repo = SQLAlchemyRepository(database_url)
     second_control = ControlPlane(repository=second_repo)
@@ -95,11 +111,14 @@ def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
     assert second_control.effective_actor(
         Actor(id="usr_member", roles={"member"}), context.id
     ).roles == {"member", "operator"}
+    assert second_repo.get_interaction(interaction.id) == voted_interaction
     assert [event.type for event in restored_events] == [
         "session.created",
         "turn.queued",
         "lease.acquired",
         "assistant.delta",
+        "approval.requested",
+        "approval.voted",
     ]
     assert "group.role_granted" in [event.type for event in second_repo.semantic_events]
     assert len(second_repo.audit_events) >= 5

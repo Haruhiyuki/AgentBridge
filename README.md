@@ -21,6 +21,7 @@ This repository currently contains the first executable backend slice:
 - Bot Gateway delivery service with persistent idempotent delivery records, in-memory text transport, and OneBot V11 HTTP transport.
 - Background Bot delivery retry worker with configurable interval and batch-size guardrails.
 - Platform-scoped Bot delivery rate-limit policies that schedule unsent messages for retry.
+- Interaction and approval flow APIs with `/agent answer`, `/agent approve`, `/agent deny`, and `/agent approvals`.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - REST API routes aligned with the design document's service interface.
 
@@ -146,6 +147,28 @@ curl -X POST http://127.0.0.1:8000/api/v1/onebot/events \
 ```
 
 Only `/agent` and `/ab` text commands are executed. Non-command messages are ignored.
+
+## Interactions And Approvals
+
+Agents can request questions or approvals against a session:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/sessions/<session-id>/interactions \
+  -H 'content-type: application/json' \
+  -d '{"actor":{"id":"agent","roles":["operator"]},"type":"approval","prompt":"Run destructive command?","required_votes":1}'
+```
+
+Users can inspect and resolve them through commands:
+
+```text
+/agent approvals
+/agent approval show <interaction-id>
+/agent answer <interaction-id> Use expand-contract migration
+/agent approve <interaction-id> once
+/agent deny <interaction-id> too risky
+```
+
+REST callers can use `GET /api/v1/interactions`, `POST /api/v1/interactions/{id}/answer`, and `POST /api/v1/interactions/{id}/vote`. Approval request events render with plain-text approve/deny actions for Bot delivery.
 
 ## Group Role Bindings
 

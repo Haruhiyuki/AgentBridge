@@ -14,6 +14,7 @@ from agentbridge.domain import (
     CommandInvocation,
     CommandResult,
     ErrorCode,
+    InteractionStatus,
     LeaseOwnerType,
     Visibility,
     WorkspaceType,
@@ -30,6 +31,10 @@ COMMAND_ALIASES = {
     "关闭": "close",
     "发送": "send",
     "继续": "continue",
+    "回答": "answer",
+    "批准": "approve",
+    "拒绝": "deny",
+    "审批": "approval",
     "控制": "control",
     "状态": "status",
     "接管": "takeover",
@@ -196,6 +201,16 @@ class CommandService:
             return self._parse_control(tokens)
         if root == "role":
             return self._parse_role(tokens)
+        if root == "answer":
+            return self._parse_answer(tokens)
+        if root == "approve":
+            return self._parse_approve(tokens)
+        if root == "deny":
+            return self._parse_deny(tokens)
+        if root == "approval":
+            return self._parse_approval(tokens)
+        if root == "approvals":
+            return self._parse_approvals(tokens)
         raise AgentBridgeError(
             ErrorCode.COMMAND_UNKNOWN,
             f"子命令暂未实现：{root}",
@@ -329,6 +344,59 @@ class CommandService:
             next_step="可用子命令：list、grant、revoke。",
         )
 
+    def _parse_answer(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
+        positional, options = parse_options(tokens)
+        if not positional:
+            raise missing_argument("answer", "<interaction-id>")
+        answer = str(options.get("text") or " ".join(positional[1:])).strip()
+        if not answer:
+            raise missing_argument("answer", "<answer>")
+        return "interaction.answer", {"interaction": positional[0], "answer": answer}
+
+    def _parse_approve(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
+        positional, _ = parse_options(tokens)
+        if not positional:
+            raise missing_argument("approve", "<interaction-id>")
+        scope = positional[1] if len(positional) > 1 else "once"
+        return "approval.vote", {
+            "interaction": positional[0],
+            "approve": True,
+            "scope": scope,
+            "reason": None,
+        }
+
+    def _parse_deny(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
+        positional, _ = parse_options(tokens)
+        if not positional:
+            raise missing_argument("deny", "<interaction-id>")
+        return "approval.vote", {
+            "interaction": positional[0],
+            "approve": False,
+            "scope": "once",
+            "reason": " ".join(positional[1:]).strip() or None,
+        }
+
+    def _parse_approval(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
+        if not tokens:
+            return "interaction.list", {"pending": True}
+        action = self._canonical_token(tokens[0])
+        positional, options = parse_options(tokens[1:])
+        if action == "show":
+            if not positional:
+                raise missing_argument("approval show", "<interaction-id>")
+            return "interaction.show", {"interaction": positional[0]}
+        if action == "list":
+            return "interaction.list", {"pending": bool(options.get("pending"))}
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_UNKNOWN,
+            f"未知 approval 子命令：{action}",
+            next_step="可用子命令：show、list。",
+        )
+
+    def _parse_approvals(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
+        _, options = parse_options(tokens)
+        return "interaction.list", {"pending": bool(options.get("pending", True))}
+
     def _execute_uncached(self, invocation: CommandInvocation) -> CommandResult:
         command = invocation.canonical_command
         args = invocation.args
@@ -336,7 +404,7 @@ class CommandService:
             return self._result(
                 invocation,
                 "AgentBridge commands",
-                "可用命令：project、session、ask/send、control、role、health。",
+                "可用命令：project、session、ask/send、control、role、approvals、health。",
             )
         if command == "health":
             return self._result(invocation, "Health", "Control Plane 正常。", self.control.health())
@@ -580,6 +648,84 @@ class CommandService:
                     "chat_context_id": invocation.chat_context_id,
                     "target_actor_id": str(args["target_actor_id"]),
                     "binding": binding.model_dump(mode="json") if binding else None,
+                },
+            )
+        if command == "interaction.list":
+            interactions = self.control.list_interactions(
+                actor=invocation.actor,
+                chat_context_id=invocation.chat_context_id,
+                status=None,
+            )
+            if args.get("pending"):
+                interactions = [
+                    interaction
+                    for interaction in interactions
+                    if interaction.status
+                    in {InteractionStatus.PENDING, InteractionStatus.PARTIALLY_APPROVED}
+                ]
+            return self._result(
+                invocation,
+                "Interactions",
+                f"共 {len(interactions)} 个交互。",
+                {
+                    "interactions": [
+                        interaction.model_dump(mode="json") for interaction in interactions
+                    ]
+                },
+            )
+        if command == "interaction.show":
+            interaction = self.control.get_interaction(
+                actor=invocation.actor,
+                interaction_id=str(args["interaction"]),
+                chat_context_id=invocation.chat_context_id,
+            )
+            return self._result(
+                invocation,
+                "Interaction",
+                f"{interaction.id} · {interaction.type.value} · {interaction.status.value}",
+                {
+                    "session_id": interaction.session_id,
+                    "interaction_id": interaction.id,
+                    "interaction": interaction.model_dump(mode="json"),
+                },
+            )
+        if command == "interaction.answer":
+            interaction = self.control.answer_interaction(
+                actor=invocation.actor,
+                interaction_id=str(args["interaction"]),
+                answer=str(args["answer"]),
+                trace_id=invocation.trace_id,
+                chat_context_id=invocation.chat_context_id,
+            )
+            return self._result(
+                invocation,
+                "Interaction Answered",
+                f"已回答 {interaction.id}。",
+                {
+                    "session_id": interaction.session_id,
+                    "interaction_id": interaction.id,
+                    "interaction": interaction.model_dump(mode="json"),
+                },
+            )
+        if command == "approval.vote":
+            interaction = self.control.vote_interaction(
+                actor=invocation.actor,
+                interaction_id=str(args["interaction"]),
+                approve=bool(args["approve"]),
+                reason=str(args["reason"]) if args.get("reason") else None,
+                trace_id=invocation.trace_id,
+                chat_context_id=invocation.chat_context_id,
+            )
+            action = "批准" if args["approve"] else "拒绝"
+            return self._result(
+                invocation,
+                "Approval Voted",
+                f"已{action} {interaction.id}，状态：{interaction.status.value}。",
+                {
+                    "session_id": interaction.session_id,
+                    "interaction_id": interaction.id,
+                    "interaction": interaction.model_dump(mode="json"),
+                    "scope": args.get("scope") or "once",
                 },
             )
         raise AgentBridgeError(

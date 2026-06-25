@@ -63,6 +63,11 @@ Implemented in this slice:
 - Platform-scoped Bot delivery rate-limit policies configured through `AGENTBRIDGE_BOT_RATE_LIMITS`.
 - Rate-limited Bot messages are stored as `retrying` records with `next_retry_at` without consuming send attempts.
 - Rate-limit policy API through `GET /api/v1/bot-gateway/rate-limits`.
+- Control Plane interaction APIs for questions and approvals.
+- REST interaction routes: create, list, show, answer, and vote.
+- `/agent approvals`, `/agent approval show`, `/agent answer`, `/agent approve`, and `/agent deny`.
+- Basic approval quorum handling with `pending`, `partially_approved`, and `resolved` states.
+- Approval request and vote semantic events with Bot-rendered plain-text actions.
 - Explicit chat-context role bindings for group users.
 - Effective actor roles now merge request/default roles with persisted group role bindings before permission checks.
 - `/agent role list/grant/revoke` commands for maintainers/admins.
@@ -77,7 +82,7 @@ Not implemented yet:
 - NoneBot/OneBot adapter and renderer.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
-- ABAC policy editor, risk levels, and multi-person approval flows.
+- ABAC policy editor, risk levels, and policy-driven approval rule management.
 - WebSocket transport for Terminal Agent and Bot Gateway event delivery.
 - Rich platform-specific renderer delivery state, message editing, and button/card support.
 - NoneBot plugin wrapper around the OneBot transport and inbound command/action event handling.
@@ -102,6 +107,7 @@ Not implemented yet:
 - Delivery retry state is stored on delivery records, not events, so the immutable semantic event stream remains replayable while platform delivery can fail and recover independently.
 - The retry worker reuses the Bot Gateway retry path instead of writing records directly. This keeps manual retry, background retry, and future scheduler behavior consistent.
 - Platform rate-limit policies intentionally schedule unsent records as `retrying` instead of sleeping inside request handlers. This keeps API calls bounded and leaves actual waiting to the retry worker.
+- Interaction commands now route through the same command parser and audit chain as project/session commands. Approval voting is permission-gated by `approval.vote`; answering questions is gated by `session.send`.
 - OneBot inbound support currently executes text commands only. Callback/button semantics remain platform-specific and should enter through the same command execution path once supported by an adapter.
 - Group role bindings are scoped to a chat context and actor ID. This keeps OneBot user permissions local to the group/private context while still allowing command/API callers to carry bootstrap roles.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
@@ -123,4 +129,4 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 2. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
 3. Add NoneBot plugin wrapper around the OneBot inbound/outbound adapters.
 4. Add adaptive delivery scheduling from live platform rate-limit responses.
-5. Expand policy engine to approval quorum, risk levels, and ABAC policy rules.
+5. Expand policy engine to risk levels, ABAC policy rules, and configurable approval policies.

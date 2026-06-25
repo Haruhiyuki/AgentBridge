@@ -8,6 +8,8 @@ from agentbridge.domain import (
     Actor,
     AgentBridgeError,
     ErrorCode,
+    InteractionStatus,
+    InteractionType,
     LeaseOwnerType,
     SemanticEventSource,
 )
@@ -191,6 +193,79 @@ def test_group_role_binding_grants_context_permissions(tmp_path):
             "role-denied-turn",
         )
     assert denied_after_revoke.value.code == ErrorCode.PERMISSION_DENIED
+
+
+def test_approval_commands_list_show_vote_and_resolve(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    approver = Actor(id="usr_approver", roles={"approver"})
+    second_approver = Actor(id="usr_second", roles={"approver"})
+
+    execute(
+        commands,
+        f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+        maintainer,
+        context.id,
+        "approval-project",
+    )
+    session_result = execute(
+        commands,
+        "/agent session new Approval Session",
+        maintainer,
+        context.id,
+        "approval-session",
+    )
+    interaction = control.create_interaction(
+        actor=maintainer,
+        session_id=session_result.data["session_id"],
+        interaction_type=InteractionType.APPROVAL,
+        prompt="Allow shell command?",
+        required_votes=2,
+        trace_id="approval-request",
+        chat_context_id=context.id,
+    )
+
+    list_result = execute(
+        commands,
+        "/agent approvals",
+        approver,
+        context.id,
+        "approval-list",
+    )
+    assert [item["id"] for item in list_result.data["interactions"]] == [interaction.id]
+
+    show_result = execute(
+        commands,
+        f"/agent approval show {interaction.id}",
+        approver,
+        context.id,
+        "approval-show",
+    )
+    assert show_result.data["interaction"]["prompt"] == "Allow shell command?"
+
+    first_vote = execute(
+        commands,
+        f"/agent approve {interaction.id} once",
+        approver,
+        context.id,
+        "approval-first-vote",
+    )
+    assert first_vote.data["interaction"]["status"] == InteractionStatus.PARTIALLY_APPROVED
+
+    second_vote = execute(
+        commands,
+        f"/agent approve {interaction.id}",
+        second_approver,
+        context.id,
+        "approval-second-vote",
+    )
+    assert second_vote.data["interaction"]["status"] == InteractionStatus.RESOLVED
+    assert second_vote.data["interaction"]["votes"] == {
+        "usr_approver": True,
+        "usr_second": True,
+    }
 
 
 def test_unknown_ascii_command_is_rejected_but_non_command_text_becomes_prompt():

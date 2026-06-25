@@ -42,6 +42,29 @@ def test_terminal_rejection_event_renders_operator_warning():
     ]
 
 
+def test_approval_request_event_renders_approver_actions():
+    event = make_event(
+        "approval.requested",
+        {
+            "prompt": "Allow shell command?",
+            "required_votes": 1,
+            "version": 1,
+        },
+    )
+    event = event.model_copy(update={"interaction_id": "int_1"})
+
+    document = document_from_event(event)
+    messages = OneBotV11TextRenderer().render(document)
+
+    assert document.visibility == "approvers"
+    assert [action.command for action in document.actions] == [
+        "/agent approve int_1 once",
+        "/agent deny int_1",
+    ]
+    assert "需要审批" in messages[0]
+    assert "/agent approve int_1 once" in messages[0]
+
+
 def test_code_blocks_actions_and_message_splitting_are_stable():
     document = RenderDocument(
         id="rend_1",

@@ -23,6 +23,8 @@ from agentbridge.domain import (
     AgentBridgeError,
     AgentType,
     BotDeliveryStatus,
+    InteractionStatus,
+    InteractionType,
     LeaseOwnerType,
     SemanticEventSource,
     Visibility,
@@ -160,6 +162,38 @@ class IngestSessionEventRequest(BaseModel):
     turn_id: str | None = None
     interaction_id: str | None = None
     payload: dict[str, object] = Field(default_factory=dict)
+
+
+class CreateInteractionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    type: InteractionType
+    prompt: str
+    turn_id: str | None = None
+    options: list[str] = Field(default_factory=list)
+    required_votes: int = 1
+    chat_context_id: str | None = None
+    trace_id: str = "api"
+
+
+class AnswerInteractionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    answer: str
+    chat_context_id: str | None = None
+    trace_id: str = "api"
+
+
+class VoteInteractionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    approve: bool
+    reason: str | None = None
+    chat_context_id: str | None = None
+    trace_id: str = "api"
 
 
 class StartTerminalRequest(BaseModel):
@@ -584,6 +618,81 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         return event.model_dump(mode="json")
 
+    @app.post("/api/v1/sessions/{session_id}/interactions")
+    def create_interaction(
+        session_id: str,
+        payload: CreateInteractionRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        interaction = control.create_interaction(
+            actor=payload.actor.to_actor(),
+            session_id=session_id,
+            interaction_type=payload.type,
+            prompt=payload.prompt,
+            turn_id=payload.turn_id,
+            options=payload.options,
+            required_votes=payload.required_votes,
+            trace_id=payload.trace_id,
+            chat_context_id=payload.chat_context_id,
+        )
+        return interaction.model_dump(mode="json")
+
+    @app.get("/api/v1/interactions")
+    def list_interactions(
+        control: ControlPlane = Depends(get_control),
+        session_id: str | None = None,
+        status: InteractionStatus | None = None,
+    ):
+        actor = Actor(id="api", roles={"admin"})
+        return [
+            interaction.model_dump(mode="json")
+            for interaction in control.list_interactions(
+                actor=actor,
+                session_id=session_id,
+                status=status,
+            )
+        ]
+
+    @app.get("/api/v1/interactions/{interaction_id}")
+    def get_interaction(
+        interaction_id: str,
+        control: ControlPlane = Depends(get_control),
+    ):
+        actor = Actor(id="api", roles={"admin"})
+        interaction = control.get_interaction(actor=actor, interaction_id=interaction_id)
+        return interaction.model_dump(mode="json")
+
+    @app.post("/api/v1/interactions/{interaction_id}/answer")
+    def answer_interaction(
+        interaction_id: str,
+        payload: AnswerInteractionRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        interaction = control.answer_interaction(
+            actor=payload.actor.to_actor(),
+            interaction_id=interaction_id,
+            answer=payload.answer,
+            trace_id=payload.trace_id,
+            chat_context_id=payload.chat_context_id,
+        )
+        return interaction.model_dump(mode="json")
+
+    @app.post("/api/v1/interactions/{interaction_id}/vote")
+    def vote_interaction(
+        interaction_id: str,
+        payload: VoteInteractionRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        interaction = control.vote_interaction(
+            actor=payload.actor.to_actor(),
+            interaction_id=interaction_id,
+            approve=payload.approve,
+            reason=payload.reason,
+            trace_id=payload.trace_id,
+            chat_context_id=payload.chat_context_id,
+        )
+        return interaction.model_dump(mode="json")
+
     @app.post("/api/v1/sessions/{session_id}/terminal/start")
     def start_terminal(
         session_id: str,
@@ -677,6 +786,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
                 "ask/send",
                 "control status/takeover/release",
                 "role list/grant/revoke",
+                "approvals/approval show/approve/deny/answer",
             ]
         }
 
