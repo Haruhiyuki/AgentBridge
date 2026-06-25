@@ -90,6 +90,7 @@ class ControlPlane:
         description: str | None = None,
         default_agent: AgentType = AgentType.CLAUDE,
         max_active_sessions: int = 10,
+        max_queued_turns: int = 100,
         trace_id: str,
         chat_context_id: str | None = None,
     ) -> Project:
@@ -104,6 +105,7 @@ class ControlPlane:
                 "slug": slug or "",
                 "default_agent": default_agent.value,
                 "max_active_sessions": max_active_sessions,
+                "max_queued_turns": max_queued_turns,
                 **self._chat_policy_attributes(chat_context_id),
             },
         )
@@ -115,6 +117,7 @@ class ControlPlane:
             description=description,
             default_agent=default_agent,
             max_active_sessions=max_active_sessions,
+            max_queued_turns=max_queued_turns,
         )
         self.audit(
             action="project.created",
@@ -133,6 +136,7 @@ class ControlPlane:
                 "name": project.name,
                 "slug": project.slug,
                 "max_active_sessions": project.max_active_sessions,
+                "max_queued_turns": project.max_queued_turns,
             },
         )
         return project
@@ -1897,6 +1901,7 @@ class ControlPlane:
                     "project_status": project.status.value,
                     "default_agent": project.default_agent.value,
                     "max_active_sessions": project.max_active_sessions,
+                    "max_queued_turns": project.max_queued_turns,
                     "created_by": project.created_by,
                 }
             )

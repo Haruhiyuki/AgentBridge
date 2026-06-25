@@ -40,6 +40,7 @@ from agentbridge.domain import (
     SemanticEventSource,
     SessionStatus,
     Turn,
+    TurnStatus,
     Visibility,
     Workspace,
     WorkspaceType,
@@ -124,6 +125,7 @@ class InMemoryRepository:
         description: str | None = None,
         default_agent: AgentType = AgentType.CLAUDE,
         max_active_sessions: int = 10,
+        max_queued_turns: int = 100,
     ) -> Project:
         with self._lock:
             project_id = new_id("prj")
@@ -143,6 +145,14 @@ class InMemoryRepository:
                     status_code=400,
                     details={"max_active_sessions": max_active_sessions},
                 )
+            if max_queued_turns < 0:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "项目最大排队任务数不能为负。",
+                    next_step="请将 max_queued_turns 设置为 0 或更大的整数。",
+                    status_code=400,
+                    details={"max_queued_turns": max_queued_turns},
+                )
             project = Project(
                 id=project_id,
                 name=name.strip(),
@@ -151,6 +161,7 @@ class InMemoryRepository:
                 description=description,
                 default_agent=default_agent,
                 max_active_sessions=max_active_sessions,
+                max_queued_turns=max_queued_turns,
                 created_by=actor.id,
             )
             self.projects[project.id] = project
@@ -835,6 +846,16 @@ class InMemoryRepository:
             if session.project_id == project_id and session.status not in inactive_statuses
         )
 
+    def _count_project_queued_turns(self, project_id: str) -> int:
+        session_ids = {
+            session.id for session in self.sessions.values() if session.project_id == project_id
+        }
+        return sum(
+            1
+            for turn in self.turns.values()
+            if turn.session_id in session_ids and turn.status == TurnStatus.QUEUED
+        )
+
     def _select_default_workspace(self, project_id: str) -> Workspace:
         candidates = self.list_workspaces(project_id)
         if not candidates:
@@ -935,6 +956,21 @@ class InMemoryRepository:
                     ErrorCode.COMMAND_ARGUMENT_INVALID,
                     "任务文本不能为空。",
                     next_step="请提供要发送给 Agent 的任务内容。",
+                )
+            project = self.get_project(session.project_id)
+            queued_turn_count = self._count_project_queued_turns(project.id)
+            if queued_turn_count >= project.max_queued_turns:
+                raise AgentBridgeError(
+                    ErrorCode.QUOTA_EXCEEDED,
+                    "项目排队任务数已达到配额上限。",
+                    next_step="请等待已有 Turn 完成，或提高项目 max_queued_turns 配额。",
+                    status_code=409,
+                    details={
+                        "project_id": project.id,
+                        "queued_turns": queued_turn_count,
+                        "max_queued_turns": project.max_queued_turns,
+                        "queue_position": queued_turn_count + 1,
+                    },
                 )
             turn = Turn(
                 id=new_id("turn"),

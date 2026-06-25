@@ -166,6 +166,58 @@ def test_project_create_command_sets_active_session_quota(tmp_path):
     }
 
 
+def test_project_create_command_sets_queued_turn_quota(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+
+    project_result = execute(
+        commands,
+        (
+            f"/agent project create --name Backend --path {tmp_path} "
+            f"--root {tmp_path} --max-queued-turns 1"
+        ),
+        maintainer,
+        context.id,
+        "queued-quota-project",
+    )
+    project_id = project_result.data["project_id"]
+    session = execute(
+        commands,
+        "/agent session new Queue Quota",
+        maintainer,
+        context.id,
+        "queued-quota-session",
+    )
+    first_turn = execute(
+        commands,
+        "/agent ask first queued turn",
+        maintainer,
+        context.id,
+        "queued-quota-turn-one",
+    )
+    with pytest.raises(AgentBridgeError) as blocked:
+        execute(
+            commands,
+            "/agent ask second queued turn",
+            maintainer,
+            context.id,
+            "queued-quota-turn-two",
+        )
+
+    assert project_result.data["project"]["max_queued_turns"] == 1
+    assert session.canonical_command == "session.create"
+    assert first_turn.canonical_command == "turn.enqueue"
+    assert blocked.value.code == ErrorCode.QUOTA_EXCEEDED
+    assert blocked.value.details == {
+        "project_id": project_id,
+        "queued_turns": 1,
+        "max_queued_turns": 1,
+        "queue_position": 2,
+    }
+
+
 def test_group_role_binding_grants_context_permissions(tmp_path):
     control = ControlPlane()
     commands = CommandService(control)

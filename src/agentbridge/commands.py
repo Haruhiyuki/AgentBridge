@@ -260,6 +260,11 @@ class CommandService:
                     or options.get("max-active")
                     or options.get("max-sessions")
                 ),
+                "max_queued_turns": parse_optional_int(
+                    options.get("max-queued-turns")
+                    or options.get("max-queued")
+                    or options.get("max-queue")
+                ),
             }
         raise AgentBridgeError(
             ErrorCode.COMMAND_UNKNOWN,
@@ -844,6 +849,9 @@ class CommandService:
             max_active_sessions=int(args["max_active_sessions"])
             if args.get("max_active_sessions") is not None
             else 10,
+            max_queued_turns=int(args["max_queued_turns"])
+            if args.get("max_queued_turns") is not None
+            else 100,
             trace_id=invocation.trace_id,
             chat_context_id=invocation.chat_context_id,
         )
