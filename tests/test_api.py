@@ -263,6 +263,77 @@ def test_interaction_api_creates_answers_and_votes(tmp_path):
     }
 
 
+def test_interaction_api_expires_due_interactions(tmp_path):
+    client = TestClient(create_app())
+    chat = {
+        "bot_instance_id": "bot-test",
+        "platform": "onebot.v11",
+        "chat_space_id": "group-interactions-expire",
+    }
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    approver = {"id": "usr_approver", "roles": ["approver"]}
+    context = client.post("/api/v1/chat-contexts", json=chat).json()
+
+    client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+            "actor": maintainer,
+            "chat_context_id": context["id"],
+            "idempotency_key": "interaction-expire-project",
+        },
+    )
+    session_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": "/agent session new Interaction Expire",
+            "actor": maintainer,
+            "chat_context_id": context["id"],
+            "idempotency_key": "interaction-expire-session",
+        },
+    )
+    session_id = session_response.json()["data"]["session_id"]
+    created = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": maintainer,
+            "type": "approval",
+            "prompt": "Expires immediately",
+            "ttl_seconds": 0,
+            "chat_context_id": context["id"],
+            "trace_id": "interaction-expire-create",
+        },
+    )
+    interaction_id = created.json()["id"]
+
+    pending_response = client.get(
+        "/api/v1/interactions",
+        params={"session_id": session_id, "status": "pending"},
+    )
+    expired_response = client.get(
+        "/api/v1/interactions",
+        params={"session_id": session_id, "status": "expired"},
+    )
+    vote_response = client.post(
+        f"/api/v1/interactions/{interaction_id}/vote",
+        json={
+            "actor": approver,
+            "approve": True,
+            "chat_context_id": context["id"],
+            "trace_id": "interaction-expire-vote",
+        },
+    )
+
+    assert created.status_code == 200
+    assert pending_response.status_code == 200
+    assert pending_response.json() == []
+    assert expired_response.status_code == 200
+    assert expired_response.json()[0]["id"] == interaction_id
+    assert expired_response.json()[0]["status"] == "expired"
+    assert vote_response.status_code == 409
+    assert vote_response.json()["error_code"] == "INTERACTION_EXPIRED"
+
+
 def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
     client = TestClient(create_app())
     chat = {

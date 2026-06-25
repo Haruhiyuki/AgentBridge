@@ -68,6 +68,9 @@ Implemented in this slice:
 - `/agent approvals`, `/agent approval show`, `/agent answer`, `/agent approve`, and `/agent deny`.
 - Basic approval quorum handling with `pending`, `partially_approved`, and `resolved` states.
 - Approval request and vote semantic events with Bot-rendered plain-text actions.
+- Interaction expiration through `expires_at` or API `ttl_seconds`, with `interaction.expired` events.
+- Interaction cancellation through `POST /api/v1/interactions/{id}/cancel` and `/agent approval cancel`.
+- Expired and cancelled interactions are persisted and cannot be answered or approved afterward.
 - Explicit chat-context role bindings for group users.
 - Effective actor roles now merge request/default roles with persisted group role bindings before permission checks.
 - `/agent role list/grant/revoke` commands for maintainers/admins.
@@ -108,6 +111,7 @@ Not implemented yet:
 - The retry worker reuses the Bot Gateway retry path instead of writing records directly. This keeps manual retry, background retry, and future scheduler behavior consistent.
 - Platform rate-limit policies intentionally schedule unsent records as `retrying` instead of sleeping inside request handlers. This keeps API calls bounded and leaves actual waiting to the retry worker.
 - Interaction commands now route through the same command parser and audit chain as project/session commands. Approval voting is permission-gated by `approval.vote`; answering questions is gated by `session.send`.
+- Interaction expiry is a terminal state and never auto-approves. Reads and interaction actions opportunistically advance due interactions to `expired` so pending lists do not show stale approval requests.
 - OneBot inbound support currently executes text commands only. Callback/button semantics remain platform-specific and should enter through the same command execution path once supported by an adapter.
 - Group role bindings are scoped to a chat context and actor ID. This keeps OneBot user permissions local to the group/private context while still allowing command/API callers to carry bootstrap roles.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.

@@ -182,6 +182,25 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 f"状态：{payload.get('status')}\n回答：{payload.get('answer')}",
             )
         )
+    elif event.type == "interaction.cancelled":
+        visibility = RenderVisibility.OPERATORS
+        blocks.append(
+            warning_block(
+                "交互已取消",
+                f"状态：{payload.get('status')}\n原因：{payload.get('reason') or '未提供'}",
+            )
+        )
+    elif event.type == "interaction.expired":
+        visibility = RenderVisibility.OPERATORS
+        blocks.append(
+            warning_block(
+                "交互已过期",
+                (
+                    f"Interaction：{event.interaction_id}\n"
+                    f"过期时间：{payload.get('expires_at')}"
+                ),
+            )
+        )
     elif event.type == "lease.acquired":
         visibility = RenderVisibility.OPERATORS
         blocks.append(

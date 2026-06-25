@@ -22,6 +22,7 @@ This repository currently contains the first executable backend slice:
 - Background Bot delivery retry worker with configurable interval and batch-size guardrails.
 - Platform-scoped Bot delivery rate-limit policies that schedule unsent messages for retry.
 - Interaction and approval flow APIs with `/agent answer`, `/agent approve`, `/agent deny`, and `/agent approvals`.
+- Interaction expiration and cancellation lifecycle with audit and semantic events.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - REST API routes aligned with the design document's service interface.
 
@@ -155,7 +156,7 @@ Agents can request questions or approvals against a session:
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/sessions/<session-id>/interactions \
   -H 'content-type: application/json' \
-  -d '{"actor":{"id":"agent","roles":["operator"]},"type":"approval","prompt":"Run destructive command?","required_votes":1}'
+  -d '{"actor":{"id":"agent","roles":["operator"]},"type":"approval","prompt":"Run destructive command?","required_votes":1,"ttl_seconds":300}'
 ```
 
 Users can inspect and resolve them through commands:
@@ -166,9 +167,10 @@ Users can inspect and resolve them through commands:
 /agent answer <interaction-id> Use expand-contract migration
 /agent approve <interaction-id> once
 /agent deny <interaction-id> too risky
+/agent approval cancel <interaction-id> superseded
 ```
 
-REST callers can use `GET /api/v1/interactions`, `POST /api/v1/interactions/{id}/answer`, and `POST /api/v1/interactions/{id}/vote`. Approval request events render with plain-text approve/deny actions for Bot delivery.
+REST callers can use `GET /api/v1/interactions`, `POST /api/v1/interactions/{id}/answer`, `POST /api/v1/interactions/{id}/vote`, and `POST /api/v1/interactions/{id}/cancel`. Expired interactions move to `expired` and cannot be approved later; approval request events render with plain-text approve/deny actions for Bot delivery.
 
 ## Group Role Bindings
 

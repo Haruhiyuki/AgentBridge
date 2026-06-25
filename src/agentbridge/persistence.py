@@ -213,6 +213,8 @@ class SQLAlchemyRepository(InMemoryRepository):
         "release_lease",
         "create_interaction",
         "answer_interaction",
+        "cancel_interaction",
+        "expire_due_interactions",
         "vote_interaction",
         "store_command_result",
         "store_bot_delivery_record",

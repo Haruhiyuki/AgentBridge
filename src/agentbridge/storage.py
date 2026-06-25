@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from uuid import uuid4
@@ -697,6 +698,7 @@ class InMemoryRepository:
         turn_id: str | None = None,
         options: list[str] | None = None,
         required_votes: int = 1,
+        expires_at: datetime | None = None,
     ) -> Interaction:
         with self._lock:
             self.get_session(session_id)
@@ -708,6 +710,7 @@ class InMemoryRepository:
                 prompt=prompt,
                 options=options or [],
                 required_votes=required_votes,
+                expires_at=expires_at,
             )
             self.interactions[interaction.id] = interaction
             return interaction
@@ -780,6 +783,43 @@ class InMemoryRepository:
             self.interactions[interaction_id] = updated
             return updated
 
+    def cancel_interaction(self, interaction_id: str, reason: str | None = None) -> Interaction:
+        with self._lock:
+            interaction = self._get_pending_interaction(interaction_id)
+            updated = interaction.model_copy(
+                update={
+                    "status": InteractionStatus.CANCELLED,
+                    "answer": reason,
+                    "resolved_at": utc_now(),
+                    "version": interaction.version + 1,
+                }
+            )
+            self.interactions[interaction_id] = updated
+            return updated
+
+    def expire_due_interactions(self, now: datetime | None = None) -> list[Interaction]:
+        now = now or utc_now()
+        expired: list[Interaction] = []
+        with self._lock:
+            for interaction in list(self.interactions.values()):
+                if interaction.status not in {
+                    InteractionStatus.PENDING,
+                    InteractionStatus.PARTIALLY_APPROVED,
+                }:
+                    continue
+                if interaction.expires_at is None or interaction.expires_at > now:
+                    continue
+                updated = interaction.model_copy(
+                    update={
+                        "status": InteractionStatus.EXPIRED,
+                        "resolved_at": now,
+                        "version": interaction.version + 1,
+                    }
+                )
+                self.interactions[interaction.id] = updated
+                expired.append(updated)
+        return expired
+
     def _get_pending_interaction(self, interaction_id: str) -> Interaction:
         interaction = self.interactions.get(interaction_id)
         if not interaction:
@@ -790,7 +830,13 @@ class InMemoryRepository:
                 status_code=404,
             )
         if interaction.expires_at and interaction.expires_at <= utc_now():
-            expired = interaction.model_copy(update={"status": InteractionStatus.EXPIRED})
+            expired = interaction.model_copy(
+                update={
+                    "status": InteractionStatus.EXPIRED,
+                    "resolved_at": utc_now(),
+                    "version": interaction.version + 1,
+                }
+            )
             self.interactions[interaction_id] = expired
             raise AgentBridgeError(
                 ErrorCode.INTERACTION_EXPIRED,

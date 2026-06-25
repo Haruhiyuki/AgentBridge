@@ -147,3 +147,52 @@ def test_api_can_use_sqlalchemy_repository_from_environment(tmp_path, monkeypatc
 
     assert response.status_code == 200
     assert response.json()["storage"] == "sqlalchemy"
+
+
+def test_interaction_cancellation_survives_repository_restart(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'interaction-cancel.db'}"
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    first_control = ControlPlane(repository=first_repo)
+    project = first_control.create_project(
+        actor=maintainer,
+        name="Backend",
+        trace_id="interaction-cancel-project",
+    )
+    workspace = first_control.add_workspace(
+        actor=maintainer,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="interaction-cancel-workspace",
+    )
+    session = first_control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Interaction Cancel",
+        agent_type=project.default_agent,
+        visibility="group",
+        trace_id="interaction-cancel-session",
+    )
+    interaction = first_control.create_interaction(
+        actor=maintainer,
+        session_id=session.id,
+        interaction_type=InteractionType.APPROVAL,
+        prompt="Approve persistent cancellation?",
+        trace_id="interaction-cancel-create",
+    )
+    cancelled = first_control.cancel_interaction(
+        actor=maintainer,
+        interaction_id=interaction.id,
+        reason="superseded",
+        trace_id="interaction-cancel",
+    )
+
+    second_repo = SQLAlchemyRepository(database_url)
+
+    assert second_repo.get_interaction(interaction.id) == cancelled
+    assert second_repo.get_interaction(interaction.id).status.value == "cancelled"
+    assert second_repo.get_interaction(interaction.id).answer == "superseded"

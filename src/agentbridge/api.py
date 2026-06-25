@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
 import uvicorn
 from fastapi import Depends, FastAPI
@@ -29,6 +30,7 @@ from agentbridge.domain import (
     SemanticEventSource,
     Visibility,
     WorkspaceType,
+    utc_now,
 )
 from agentbridge.onebot import OneBotInboundAdapter, OneBotV11HTTPTransport
 from agentbridge.persistence import SQLAlchemyRepository
@@ -173,6 +175,8 @@ class CreateInteractionRequest(BaseModel):
     turn_id: str | None = None
     options: list[str] = Field(default_factory=list)
     required_votes: int = 1
+    expires_at: datetime | None = None
+    ttl_seconds: int | None = None
     chat_context_id: str | None = None
     trace_id: str = "api"
 
@@ -191,6 +195,15 @@ class VoteInteractionRequest(BaseModel):
 
     actor: ActorPayload = Field(default_factory=ActorPayload)
     approve: bool
+    reason: str | None = None
+    chat_context_id: str | None = None
+    trace_id: str = "api"
+
+
+class CancelInteractionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
     reason: str | None = None
     chat_context_id: str | None = None
     trace_id: str = "api"
@@ -624,6 +637,9 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         payload: CreateInteractionRequest,
         control: ControlPlane = Depends(get_control),
     ):
+        expires_at = payload.expires_at
+        if expires_at is None and payload.ttl_seconds is not None:
+            expires_at = utc_now() + timedelta(seconds=payload.ttl_seconds)
         interaction = control.create_interaction(
             actor=payload.actor.to_actor(),
             session_id=session_id,
@@ -632,6 +648,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             turn_id=payload.turn_id,
             options=payload.options,
             required_votes=payload.required_votes,
+            expires_at=expires_at,
             trace_id=payload.trace_id,
             chat_context_id=payload.chat_context_id,
         )
@@ -672,6 +689,21 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             actor=payload.actor.to_actor(),
             interaction_id=interaction_id,
             answer=payload.answer,
+            trace_id=payload.trace_id,
+            chat_context_id=payload.chat_context_id,
+        )
+        return interaction.model_dump(mode="json")
+
+    @app.post("/api/v1/interactions/{interaction_id}/cancel")
+    def cancel_interaction(
+        interaction_id: str,
+        payload: CancelInteractionRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        interaction = control.cancel_interaction(
+            actor=payload.actor.to_actor(),
+            interaction_id=interaction_id,
+            reason=payload.reason,
             trace_id=payload.trace_id,
             chat_context_id=payload.chat_context_id,
         )
@@ -786,7 +818,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
                 "ask/send",
                 "control status/takeover/release",
                 "role list/grant/revoke",
-                "approvals/approval show/approve/deny/answer",
+                "approvals/approval show/approval cancel/approve/deny/answer",
             ]
         }
 

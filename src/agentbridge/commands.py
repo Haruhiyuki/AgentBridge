@@ -35,6 +35,7 @@ COMMAND_ALIASES = {
     "批准": "approve",
     "拒绝": "deny",
     "审批": "approval",
+    "取消": "cancel",
     "控制": "control",
     "状态": "status",
     "接管": "takeover",
@@ -387,10 +388,17 @@ class CommandService:
             return "interaction.show", {"interaction": positional[0]}
         if action == "list":
             return "interaction.list", {"pending": bool(options.get("pending"))}
+        if action == "cancel":
+            if not positional:
+                raise missing_argument("approval cancel", "<interaction-id>")
+            return "interaction.cancel", {
+                "interaction": positional[0],
+                "reason": " ".join(positional[1:]).strip() or None,
+            }
         raise AgentBridgeError(
             ErrorCode.COMMAND_UNKNOWN,
             f"未知 approval 子命令：{action}",
-            next_step="可用子命令：show、list。",
+            next_step="可用子命令：show、list、cancel。",
         )
 
     def _parse_approvals(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
@@ -701,6 +709,24 @@ class CommandService:
                 invocation,
                 "Interaction Answered",
                 f"已回答 {interaction.id}。",
+                {
+                    "session_id": interaction.session_id,
+                    "interaction_id": interaction.id,
+                    "interaction": interaction.model_dump(mode="json"),
+                },
+            )
+        if command == "interaction.cancel":
+            interaction = self.control.cancel_interaction(
+                actor=invocation.actor,
+                interaction_id=str(args["interaction"]),
+                reason=str(args["reason"]) if args.get("reason") else None,
+                trace_id=invocation.trace_id,
+                chat_context_id=invocation.chat_context_id,
+            )
+            return self._result(
+                invocation,
+                "Interaction Cancelled",
+                f"已取消 {interaction.id}。",
                 {
                     "session_id": interaction.session_id,
                     "interaction_id": interaction.id,

@@ -268,6 +268,57 @@ def test_approval_commands_list_show_vote_and_resolve(tmp_path):
     }
 
 
+def test_approval_cancel_command_blocks_late_votes(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    approver = Actor(id="usr_approver", roles={"approver"})
+
+    execute(
+        commands,
+        f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+        maintainer,
+        context.id,
+        "approval-cancel-project",
+    )
+    session_result = execute(
+        commands,
+        "/agent session new Approval Cancel",
+        maintainer,
+        context.id,
+        "approval-cancel-session",
+    )
+    interaction = control.create_interaction(
+        actor=maintainer,
+        session_id=session_result.data["session_id"],
+        interaction_type=InteractionType.APPROVAL,
+        prompt="Allow operation?",
+        trace_id="approval-cancel-request",
+        chat_context_id=context.id,
+    )
+
+    cancel_result = execute(
+        commands,
+        f"/agent approval cancel {interaction.id} superseded",
+        maintainer,
+        context.id,
+        "approval-cancel",
+    )
+    assert cancel_result.data["interaction"]["status"] == "cancelled"
+    assert cancel_result.data["interaction"]["answer"] == "superseded"
+
+    with pytest.raises(AgentBridgeError) as exc_info:
+        execute(
+            commands,
+            f"/agent approve {interaction.id}",
+            approver,
+            context.id,
+            "approval-cancel-late-vote",
+        )
+    assert exc_info.value.code == ErrorCode.RESOURCE_CONFLICT
+
+
 def test_unknown_ascii_command_is_rejected_but_non_command_text_becomes_prompt():
     control = ControlPlane()
     commands = CommandService(control)

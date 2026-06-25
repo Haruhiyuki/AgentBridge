@@ -65,6 +65,21 @@ def test_approval_request_event_renders_approver_actions():
     assert "/agent approve int_1 once" in messages[0]
 
 
+def test_interaction_expired_event_renders_operator_warning():
+    event = make_event(
+        "interaction.expired",
+        {"status": "expired", "expires_at": "2026-06-25T12:00:00Z"},
+    )
+    event = event.model_copy(update={"interaction_id": "int_expired"})
+
+    document = document_from_event(event)
+    messages = OneBotV11TextRenderer().render(document)
+
+    assert document.visibility == "operators"
+    assert "交互已过期" in messages[0]
+    assert "int_expired" in messages[0]
+
+
 def test_code_blocks_actions_and_message_splitting_are_stable():
     document = RenderDocument(
         id="rend_1",

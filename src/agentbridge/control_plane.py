@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from agentbridge.domain import (
     Actor,
     AgentBridgeError,
@@ -494,9 +496,22 @@ class ControlPlane:
         turn_id: str | None = None,
         options: list[str] | None = None,
         required_votes: int = 1,
+        expires_at: datetime | None = None,
     ) -> Interaction:
         effective_actor = self.effective_actor(actor, chat_context_id)
         self.policy.require(effective_actor, Permission.SESSION_SEND)
+        if not prompt.strip():
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "Interaction prompt 不能为空。",
+                next_step="请提供需要用户处理的问题或审批说明。",
+            )
+        if required_votes < 1:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "required_votes 必须大于等于 1。",
+                next_step="请提供至少 1 个所需票数。",
+            )
         interaction = self.repository.create_interaction(
             session_id=session_id,
             interaction_type=interaction_type,
@@ -504,6 +519,7 @@ class ControlPlane:
             turn_id=turn_id,
             options=options,
             required_votes=required_votes,
+            expires_at=expires_at,
         )
         session = self.repository.get_session(session_id)
         event_type = (
@@ -539,6 +555,9 @@ class ControlPlane:
                 "options": interaction.options,
                 "required_votes": interaction.required_votes,
                 "version": interaction.version,
+                "expires_at": (
+                    interaction.expires_at.isoformat() if interaction.expires_at else None
+                ),
             },
         )
         return interaction
@@ -553,6 +572,11 @@ class ControlPlane:
     ) -> list[Interaction]:
         effective_actor = self.effective_actor(actor, chat_context_id)
         self.policy.require(effective_actor, Permission.SESSION_VIEW)
+        self.expire_due_interactions(
+            actor=Actor(id="system", roles={"admin"}),
+            trace_id="interaction-expire",
+            chat_context_id=chat_context_id,
+        )
         return self.repository.list_interactions(session_id=session_id, status=status)
 
     def get_interaction(
@@ -564,6 +588,11 @@ class ControlPlane:
     ) -> Interaction:
         effective_actor = self.effective_actor(actor, chat_context_id)
         self.policy.require(effective_actor, Permission.SESSION_VIEW)
+        self.expire_due_interactions(
+            actor=Actor(id="system", roles={"admin"}),
+            trace_id="interaction-expire",
+            chat_context_id=chat_context_id,
+        )
         return self.repository.get_interaction(interaction_id)
 
     def answer_interaction(
@@ -577,6 +606,11 @@ class ControlPlane:
     ) -> Interaction:
         effective_actor = self.effective_actor(actor, chat_context_id)
         self.policy.require(effective_actor, Permission.SESSION_SEND)
+        self.expire_due_interactions(
+            actor=Actor(id="system", roles={"admin"}),
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+        )
         current = self.repository.get_interaction(interaction_id)
         if current.type == InteractionType.APPROVAL:
             raise AgentBridgeError(
@@ -615,6 +649,88 @@ class ControlPlane:
         )
         return interaction
 
+    def cancel_interaction(
+        self,
+        *,
+        actor: Actor,
+        interaction_id: str,
+        trace_id: str,
+        chat_context_id: str | None = None,
+        reason: str | None = None,
+    ) -> Interaction:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.policy.require(effective_actor, Permission.SESSION_MANAGE)
+        interaction = self.repository.cancel_interaction(interaction_id, reason)
+        session = self.repository.get_session(interaction.session_id)
+        self.audit(
+            action="interaction.cancelled",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            project_id=session.project_id,
+            session_id=session.id,
+            interaction_id=interaction.id,
+            details={"reason": reason},
+        )
+        self.emit_event(
+            event_type="interaction.cancelled",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session.id,
+            turn_id=interaction.turn_id,
+            interaction_id=interaction.id,
+            payload={
+                "status": interaction.status.value,
+                "reason": reason,
+                "version": interaction.version,
+            },
+        )
+        return interaction
+
+    def expire_due_interactions(
+        self,
+        *,
+        actor: Actor,
+        trace_id: str,
+        chat_context_id: str | None = None,
+        now: datetime | None = None,
+    ) -> list[Interaction]:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        expired = self.repository.expire_due_interactions(now)
+        for interaction in expired:
+            session = self.repository.get_session(interaction.session_id)
+            self.audit(
+                action="interaction.expired",
+                actor=effective_actor,
+                outcome=AuditOutcome.ALLOWED,
+                trace_id=trace_id,
+                chat_context_id=chat_context_id,
+                project_id=session.project_id,
+                session_id=session.id,
+                interaction_id=interaction.id,
+            )
+            self.emit_event(
+                event_type="interaction.expired",
+                source=SemanticEventSource.CONTROL_PLANE,
+                trace_id=trace_id,
+                project_id=session.project_id,
+                session_id=session.id,
+                turn_id=interaction.turn_id,
+                interaction_id=interaction.id,
+                payload={
+                    "status": interaction.status.value,
+                    "version": interaction.version,
+                    "expires_at": (
+                        interaction.expires_at.isoformat()
+                        if interaction.expires_at
+                        else None
+                    ),
+                },
+            )
+        return expired
+
     def vote_interaction(
         self,
         *,
@@ -627,6 +743,11 @@ class ControlPlane:
     ) -> Interaction:
         effective_actor = self.effective_actor(actor, chat_context_id)
         self.policy.require(effective_actor, Permission.APPROVAL_VOTE)
+        self.expire_due_interactions(
+            actor=Actor(id="system", roles={"admin"}),
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+        )
         current = self.repository.get_interaction(interaction_id)
         if current.type != InteractionType.APPROVAL:
             raise AgentBridgeError(
