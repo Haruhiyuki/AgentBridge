@@ -282,8 +282,13 @@ class SQLAlchemyRepository(InMemoryRepository):
         *,
         create_schema: bool = False,
         engine: Engine | None = None,
+        engine_options: dict[str, Any] | None = None,
     ) -> None:
-        self.engine = engine or create_engine(database_url, future=True)
+        self.engine = engine or create_engine(
+            database_url,
+            future=True,
+            **(engine_options or {}),
+        )
         if create_schema:
             metadata.create_all(self.engine)
         super().__init__()

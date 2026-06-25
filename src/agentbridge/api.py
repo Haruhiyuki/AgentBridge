@@ -2437,7 +2437,34 @@ def create_repository_from_env() -> InMemoryRepository:
     return SQLAlchemyRepository(
         database_url,
         create_schema=auto_create_schema in {"1", "true", "yes", "on"},
+        engine_options=database_engine_options_from_env(),
     )
+
+
+def database_engine_options_from_env() -> dict[str, object]:
+    options: dict[str, object] = {}
+    optional_int_options = {
+        "AGENTBRIDGE_DATABASE_POOL_SIZE": "pool_size",
+        "AGENTBRIDGE_DATABASE_MAX_OVERFLOW": "max_overflow",
+        "AGENTBRIDGE_DATABASE_POOL_TIMEOUT_SECONDS": "pool_timeout",
+        "AGENTBRIDGE_DATABASE_POOL_RECYCLE_SECONDS": "pool_recycle",
+    }
+    for env_name, option_name in optional_int_options.items():
+        raw_value = os.environ.get(env_name)
+        if raw_value is not None and raw_value.strip():
+            options[option_name] = env_int(env_name, default=0)
+
+    pool_pre_ping = os.environ.get("AGENTBRIDGE_DATABASE_POOL_PRE_PING")
+    if pool_pre_ping is not None:
+        options["pool_pre_ping"] = env_bool(
+            "AGENTBRIDGE_DATABASE_POOL_PRE_PING",
+            default=False,
+        )
+
+    echo = os.environ.get("AGENTBRIDGE_DATABASE_ECHO")
+    if echo is not None:
+        options["echo"] = env_bool("AGENTBRIDGE_DATABASE_ECHO", default=False)
+    return options
 
 
 def create_approval_policy_from_env() -> ApprovalPolicy:

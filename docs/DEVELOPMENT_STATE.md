@@ -39,7 +39,8 @@ Implemented in this slice:
 - Optional `AGENTBRIDGE_WS_TOKEN` authentication for session event, rendered event, and terminal command WebSocket routes; same-origin browser sessions with an unlocked Admin Web cookie can connect to protected WebSocket streams without exposing the token to page JavaScript.
 - Optional `AGENTBRIDGE_DEVICE_KEYS` JSON mapping for per-device HTTP and WebSocket keys, using device ID plus device key rather than one shared bearer token.
 - Database-managed device identities through `/api/v1/device-identities`, storing salted PBKDF2 key hashes, returning generated keys only once, supporting revoke, authorizing REST/WebSocket clients through the same device ID plus device key transport fields, enforcing coarse transport scopes, and tracking `last_used_at` on successful managed-device authentication.
-- SQLAlchemy-backed repository enabled with `AGENTBRIDGE_DATABASE_URL`.
+- SQLAlchemy-backed repository enabled with `AGENTBRIDGE_DATABASE_URL`, with environment-tunable runtime engine pool options for size, overflow, timeout, recycle, pre-ping, and SQL echo diagnostics.
+- Database deployment guide under `docs/operations/DATABASE_DEPLOYMENT.md`, covering SQLite/PostgreSQL URLs, explicit Alembic migration flow, runtime pool settings, and the current single-process persistence boundary.
 - Alembic initial migration for projects, workspaces, chat contexts, bindings, sessions, turns, interactions, writer leases, command idempotency records, audit events, and semantic events.
 - Recovery tests proving persisted control-plane state survives repository re-instantiation.
 - Terminal Agent input gateway with fake, tmux, and stdlib PTY backends.
@@ -157,7 +158,7 @@ Not implemented yet:
 - Native action/callback support for platforms that expose buttons or interactions.
 - Broader per-adapter action callback state beyond command-carrying callbacks.
 - Fully normalized relational query layer for arbitrary payload search and complex audit/event cross-field searches; audit and semantic event routing filters now use indexed columns where available, while the current `q` payload/details search is a bounded JSON text match.
-- PostgreSQL-specific operational hardening, connection pooling policy, and migration deployment docs.
+- Multi-process SQLAlchemy hardening with row-level writes, stronger transaction boundaries, and explicit concurrent-writer policy.
 
 ## Important Decisions
 
@@ -166,7 +167,7 @@ Not implemented yet:
 - Semantic events are separate from audit records: events drive product state replay and Bot rendering, while audit records preserve security/accountability history.
 - Audit listing is a repository concern. In-memory and SQLAlchemy repositories return bounded newest-first results; the SQLAlchemy path filters action/actor in the database and then applies project/session/interaction/trace payload filters until the requested limit is reached.
 - Semantic event replay and semantic event search are separate repository contracts. Replay APIs preserve per-stream ascending `seq` behavior for clients, while `/api/v1/events` and `list_semantic_events` provide bounded newest-first operational search across streams using SQLAlchemy routing columns. The current `q` search inspects serialized JSON payload/details after indexed filters, which is useful for operations but does not replace a normalized payload query layer.
-- SQLAlchemy persistence is currently a single-process write-through snapshot repository. It is sufficient for restart recovery and contract tests, but multi-process production deployments need row-level updates and stronger transaction boundaries.
+- SQLAlchemy persistence is currently a single-process write-through snapshot repository. Runtime connection pooling is configurable and migration deployment is documented, but multi-process production deployments still need row-level updates, stronger transaction boundaries, and explicit concurrent-writer policy.
 - Terminal input must pass through the AgentBridge gateway. Direct `tmux attach` remains outside the safety model because it bypasses writer leases.
 - The local Terminal Agent socket is token-gated and chmodded to `0600`; production hardening still needs OS user checks, token rotation, and Windows named-pipe parity.
 - Local console/daemon clients open a fresh socket per request and retry connection for short restart windows. Long offline periods still need explicit user-facing reconnect state during raw TTY passthrough.

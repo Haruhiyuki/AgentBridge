@@ -584,6 +584,29 @@ def test_api_can_use_sqlalchemy_repository_from_environment(tmp_path, monkeypatc
     assert response.json()["storage"] == "sqlalchemy"
 
 
+def test_api_sqlalchemy_repository_uses_pool_environment_options(tmp_path, monkeypatch):
+    database_url = f"sqlite:///{tmp_path / 'api-pool.db'}"
+    monkeypatch.setenv("AGENTBRIDGE_DATABASE_URL", database_url)
+    monkeypatch.setenv("AGENTBRIDGE_AUTO_CREATE_SCHEMA", "true")
+    monkeypatch.setenv("AGENTBRIDGE_DATABASE_POOL_SIZE", "3")
+    monkeypatch.setenv("AGENTBRIDGE_DATABASE_MAX_OVERFLOW", "4")
+    monkeypatch.setenv("AGENTBRIDGE_DATABASE_POOL_TIMEOUT_SECONDS", "5")
+    monkeypatch.setenv("AGENTBRIDGE_DATABASE_POOL_RECYCLE_SECONDS", "6")
+    monkeypatch.setenv("AGENTBRIDGE_DATABASE_POOL_PRE_PING", "true")
+    monkeypatch.setenv("AGENTBRIDGE_DATABASE_ECHO", "true")
+
+    app = create_app()
+    repository = app.state.control.repository
+
+    assert isinstance(repository, SQLAlchemyRepository)
+    assert repository.engine.echo is True
+    assert repository.engine.pool.size() == 3
+    assert repository.engine.pool._max_overflow == 4
+    assert repository.engine.pool._timeout == 5
+    assert repository.engine.pool._recycle == 6
+    assert repository.engine.pool._pre_ping is True
+
+
 def test_interaction_cancellation_survives_repository_restart(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'interaction-cancel.db'}"
     maintainer = Actor(id="usr_1", roles={"maintainer"})

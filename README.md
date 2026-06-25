@@ -59,7 +59,8 @@ python3 -m uvicorn agentbridge.api:create_app --factory --reload
 
 ## Persistence
 
-The app defaults to in-memory storage. Set `AGENTBRIDGE_DATABASE_URL` to enable the SQLAlchemy repository:
+The app defaults to in-memory storage. Set `AGENTBRIDGE_DATABASE_URL` to enable the
+SQLAlchemy repository:
 
 ```bash
 export AGENTBRIDGE_DATABASE_URL=sqlite:///./agentbridge.db
@@ -67,7 +68,14 @@ uv run alembic upgrade head
 uv run uvicorn agentbridge.api:create_app --factory --reload
 ```
 
-For local throwaway development, `AGENTBRIDGE_AUTO_CREATE_SCHEMA=true` can create tables on startup. Production deployments should run Alembic migrations explicitly.
+For local throwaway development, `AGENTBRIDGE_AUTO_CREATE_SCHEMA=true` can create tables
+on startup. Production deployments should run Alembic migrations explicitly and tune the
+SQLAlchemy pool with `AGENTBRIDGE_DATABASE_POOL_SIZE`,
+`AGENTBRIDGE_DATABASE_MAX_OVERFLOW`, `AGENTBRIDGE_DATABASE_POOL_TIMEOUT_SECONDS`,
+`AGENTBRIDGE_DATABASE_POOL_RECYCLE_SECONDS`, and
+`AGENTBRIDGE_DATABASE_POOL_PRE_PING`. See
+`docs/operations/DATABASE_DEPLOYMENT.md` for SQLite/PostgreSQL deployment notes and the
+current single-process persistence boundary.
 
 ## Terminal Backend
 
