@@ -3443,6 +3443,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       "chat_context_manage",
       "project_manage",
       "session_manage",
+      "session_send",
       "interaction_manage",
       "terminal_control",
       "session_events_ws",

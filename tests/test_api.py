@@ -940,6 +940,110 @@ def test_managed_device_identity_session_manage_scope_allows_session_write_apis(
     assert close_response.json()["status"] == "closed"
 
 
+def test_managed_device_identity_requires_session_send_scope_for_turn_writes(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-session-send-scope",
+        prefix="session-send-scope",
+        name="Session Send Scope",
+    )
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-session-send-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "session-send-scope-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-session-send-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    cert_headers = {"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"}
+    read_response = client.get(
+        f"/api/v1/sessions/{session_id}",
+        headers=key_headers,
+    )
+    key_turn_response = client.post(
+        f"/api/v1/sessions/{session_id}/turns",
+        json={
+            "actor": operator,
+            "prompt": "Denied via key",
+            "trace_id": "session-send-scope-denied-key",
+        },
+        headers=key_headers,
+    )
+    cert_turn_response = client.post(
+        f"/api/v1/sessions/{session_id}/turns",
+        json={
+            "actor": operator,
+            "prompt": "Denied via certificate",
+            "trace_id": "session-send-scope-denied-cert",
+        },
+        headers=cert_headers,
+    )
+
+    assert create_identity_response.status_code == 200
+    assert read_response.status_code == 200
+    assert key_turn_response.status_code == 403
+    assert cert_turn_response.status_code == 403
+
+
+def test_managed_device_identity_session_send_scope_allows_turn_writes(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-session-send-manager",
+        prefix="session-send-manager",
+        name="Session Send Manager",
+    )
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "session-send-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "session_send"],
+            "trace_id": "session-send-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "session-send-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    turn_response = client.post(
+        f"/api/v1/sessions/{session_id}/turns",
+        json={
+            "actor": operator,
+            "prompt": "Run the focused test suite.",
+            "trace_id": "session-send-manager-turn",
+        },
+        headers=headers,
+    )
+
+    assert create_identity_response.status_code == 200
+    assert turn_response.status_code == 200
+    assert turn_response.json()["actor_id"] == "usr_operator"
+    assert turn_response.json()["prompt"] == "Run the focused test suite."
+    assert turn_response.json()["status"] == "queued"
+
+
 def test_project_session_admin_ui_serves_dashboard():
     client = TestClient(create_app())
 
@@ -998,6 +1102,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "chat_context_manage" in html
     assert "project_manage" in html
     assert "session_manage" in html
+    assert "session_send" in html
     assert "interaction_manage" in html
     assert "terminal_control" in html
     assert "certificate-fingerprints" in html

@@ -207,20 +207,21 @@ For persisted device identities, create or rotate a key through
 optional caller-supplied `device_key`. `allowed_scopes` can narrow the key or managed
 certificate fingerprint to one or more scopes: `http_api`, `bot_gateway_manage`,
 `command_execute`, `device_manage`, `policy_manage`, `group_role_manage`,
-`chat_context_manage`, `project_manage`, `session_manage`, `interaction_manage`,
-`terminal_control`, `session_events_ws`, `rendered_events_ws`, `terminal_ws`, and
-`bot_gateway_ws`; omitting it grants all current scopes. Managed device credentials
-need `bot_gateway_manage` to call Bot Gateway HTTP mutation APIs, `command_execute` to
-call `/api/v1/commands/execute`, `device_manage` to call `/api/v1/device-identities`
-and its child routes, `policy_manage` to call `/api/v1/access-policy*` or
-`*/approval-policy` routes, `group_role_manage` to call
+`chat_context_manage`, `project_manage`, `session_manage`, `session_send`,
+`interaction_manage`, `terminal_control`, `session_events_ws`, `rendered_events_ws`,
+`terminal_ws`, and `bot_gateway_ws`; omitting it grants all current scopes. Managed
+device credentials need `bot_gateway_manage` to call Bot Gateway HTTP mutation APIs,
+`command_execute` to call `/api/v1/commands/execute`, `device_manage` to call
+`/api/v1/device-identities` and its child routes, `policy_manage` to call
+`/api/v1/access-policy*` or `*/approval-policy` routes, `group_role_manage` to call
 `/api/v1/chat-contexts/{id}/roles*`, `chat_context_manage` to create chat contexts or
 update their active project/session pointers, `project_manage` to create projects, add
 workspaces, or bind projects to chat spaces, `session_manage` to create or close
-sessions and acquire or release writer leases, `interaction_manage` to create
-interactions or answer, cancel, and vote on them, and `terminal_control` to call
-terminal start, restart, input, or lifecycle run-once HTTP routes. Command execution
-still evaluates the command actor through RBAC and access policy.
+sessions and acquire or release writer leases, `session_send` to enqueue session
+turns, `interaction_manage` to create interactions or answer, cancel, and vote on them,
+and `terminal_control` to call terminal start, restart, input, or lifecycle run-once
+HTTP routes. Command execution and direct turn enqueue still evaluate the command or
+turn actor through RBAC and access policy.
 `certificate_fingerprints` can bind one or more
 proxy-verified client certificate fingerprints to the same device identity. If a new
 identity has no certificate fingerprints and `device_key` is omitted, the server returns
