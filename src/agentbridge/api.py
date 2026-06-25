@@ -20,7 +20,7 @@ from agentbridge.domain import (
     Visibility,
     WorkspaceType,
 )
-from agentbridge.onebot import OneBotV11HTTPTransport
+from agentbridge.onebot import OneBotInboundAdapter, OneBotV11HTTPTransport
 from agentbridge.persistence import SQLAlchemyRepository
 from agentbridge.policy import Permission
 from agentbridge.renderer import OneBotV11TextRenderer, document_from_event
@@ -203,6 +203,14 @@ class RetryBotDeliveriesRequest(BaseModel):
 
     chat_context_id: str | None = None
     limit: int = 100
+
+
+class OneBotEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event: dict[str, object]
+    bot_instance_id: str = "onebot-http"
+    default_roles: set[str] = Field(default_factory=lambda: {"operator"})
 
 
 def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
@@ -615,6 +623,40 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             record.model_dump(mode="json")
             for record in bot_gateway_service.list_records(chat_context_id, status=status)
         ]
+
+    @app.post("/api/v1/onebot/events")
+    def receive_onebot_event(
+        payload: OneBotEventRequest,
+        command_service: CommandService = Depends(get_commands),
+        control: ControlPlane = Depends(get_control),
+    ):
+        adapter = OneBotInboundAdapter(
+            bot_instance_id=payload.bot_instance_id,
+            default_roles=payload.default_roles,
+        )
+        inbound = adapter.command_from_event(dict(payload.event))
+        if inbound is None:
+            return {"handled": False}
+        context = control.get_or_create_chat_context(
+            bot_instance_id=inbound.bot_instance_id,
+            platform=inbound.platform.value,
+            chat_space_id=inbound.chat_space_id,
+            thread_id=inbound.thread_id,
+            user_id=inbound.user_id,
+        )
+        invocation = command_service.parse(
+            raw_text=inbound.raw_text,
+            actor=inbound.actor,
+            chat_context_id=context.id,
+            idempotency_key=inbound.idempotency_key,
+            trace_id=inbound.trace_id,
+        )
+        result = command_service.execute(invocation)
+        return {
+            "handled": True,
+            "chat_context_id": context.id,
+            "result": result.model_dump(mode="json"),
+        }
 
     @app.get("/api/v1/audit")
     def list_audit(control: ControlPlane = Depends(get_control)):

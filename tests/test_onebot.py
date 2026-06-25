@@ -4,12 +4,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
+from agentbridge.api import create_app
 from agentbridge.bot_gateway import BotGatewayService
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, AgentBridgeError, BotPlatform
-from agentbridge.onebot import OneBotV11HTTPTransport, onebot_text_payload
+from agentbridge.onebot import OneBotInboundAdapter, OneBotV11HTTPTransport, onebot_text_payload
 
 
 @dataclass
@@ -158,3 +160,105 @@ def test_bot_gateway_can_deliver_through_onebot_transport(tmp_path):
     assert records[0].platform_message_id == "onebot:42"
     assert poster.calls[0]["url"] == "http://127.0.0.1:5700/send_group_msg"
     assert "OneBot Delivery" in poster.calls[0]["payload"]["message"]
+
+
+def test_onebot_inbound_adapter_maps_group_message_to_command():
+    adapter = OneBotInboundAdapter(bot_instance_id="bot-main", default_roles={"operator"})
+
+    command = adapter.command_from_event(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "group_id": 10001,
+            "user_id": 20002,
+            "message_id": 30003,
+            "raw_message": "/agent health",
+        }
+    )
+
+    assert command is not None
+    assert command.raw_text == "/agent health"
+    assert command.actor.id == "onebot:20002"
+    assert command.actor.roles == {"operator"}
+    assert command.chat_space_id == "10001"
+    assert command.user_id is None
+    assert command.idempotency_key == "onebot:30003"
+
+
+def test_onebot_inbound_adapter_extracts_segments_reply_and_private_context():
+    adapter = OneBotInboundAdapter(bot_instance_id="bot-main")
+
+    command = adapter.command_from_event(
+        {
+            "post_type": "message",
+            "message_type": "private",
+            "user_id": "20002",
+            "message_id": "30003",
+            "message": [
+                {"type": "reply", "data": {"id": "old-message"}},
+                {"type": "text", "data": {"text": "/agent "}},
+                {"type": "text", "data": {"text": "health"}},
+            ],
+        }
+    )
+
+    assert command is not None
+    assert command.raw_text == "/agent health"
+    assert command.chat_space_id == "private:20002"
+    assert command.user_id == "20002"
+    assert command.reply_message_id == "old-message"
+
+
+def test_onebot_inbound_adapter_ignores_non_command_message():
+    adapter = OneBotInboundAdapter(bot_instance_id="bot-main")
+
+    assert (
+        adapter.command_from_event(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 10001,
+                "user_id": 20002,
+                "message_id": 30003,
+                "raw_message": "hello",
+            }
+        )
+        is None
+    )
+
+
+def test_onebot_events_api_ignores_non_commands_and_executes_commands():
+    client = TestClient(create_app())
+
+    ignored = client.post(
+        "/api/v1/onebot/events",
+        json={
+            "event": {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 10001,
+                "user_id": 20002,
+                "message_id": 30003,
+                "raw_message": "hello",
+            }
+        },
+    )
+    handled = client.post(
+        "/api/v1/onebot/events",
+        json={
+            "event": {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 10001,
+                "user_id": 20002,
+                "message_id": 30004,
+                "raw_message": "/agent health",
+            }
+        },
+    )
+
+    assert ignored.status_code == 200
+    assert ignored.json() == {"handled": False}
+    assert handled.status_code == 200
+    assert handled.json()["handled"] is True
+    assert handled.json()["result"]["canonical_command"] == "health"

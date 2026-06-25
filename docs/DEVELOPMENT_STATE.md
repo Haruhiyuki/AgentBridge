@@ -51,6 +51,8 @@ Implemented in this slice:
 - Recovery tests prove replay after repository re-instantiation skips already delivered Bot messages.
 - OneBot V11 HTTP transport with group/private payload routing, bearer token support, and idempotency header.
 - Bot transport selection through `AGENTBRIDGE_BOT_TRANSPORT=onebot.v11` and `AGENTBRIDGE_ONEBOT_HTTP_URL`.
+- OneBot V11 inbound event adapter for group/private text messages and reply segments.
+- OneBot inbound API through `POST /api/v1/onebot/events`, converting `/agent` and `/ab` messages into the existing command execution flow.
 - Bot delivery failure records with attempt count, last error, next retry time, and exponential backoff.
 - Retry API through `POST /api/v1/bot-gateway/retry-failed-deliveries`.
 - Alembic migration `0003_bot_delivery_retry_metadata` adds retry metadata columns.
@@ -67,6 +69,7 @@ Not implemented yet:
 - WebSocket transport for Terminal Agent and Bot Gateway event delivery.
 - Rich platform-specific renderer delivery state, message editing, and button/card support.
 - NoneBot plugin wrapper around the OneBot transport and inbound command/action event handling.
+- Native action/callback support for platforms that expose buttons or interactions.
 - Background delivery retry worker and platform rate-limit aware scheduling.
 - Normalized relational query layer for large audit/event searches; the current SQLAlchemy repository persists Pydantic payload snapshots with indexed routing columns.
 - PostgreSQL-specific operational hardening, connection pooling policy, and migration deployment docs.
@@ -85,6 +88,7 @@ Not implemented yet:
 - Bot delivery records are persisted separately from semantic events so replay, delivery retries, and platform message IDs can evolve without mutating event history.
 - OneBot outbound delivery is implemented as a transport contract first. Full NoneBot integration still needs inbound event parsing, lifecycle registration, and adapter-specific rate-limit handling.
 - Delivery retry state is stored on delivery records, not events, so the immutable semantic event stream remains replayable while platform delivery can fail and recover independently.
+- OneBot inbound support currently executes text commands only. Callback/button semantics remain platform-specific and should enter through the same command execution path once supported by an adapter.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
 
 ## Verification
@@ -102,6 +106,6 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 
 1. Add tmux lifecycle supervision tests around the local daemon, including restart/reconnect behavior.
 2. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
-3. Add NoneBot plugin wrapper for OneBot V11 inbound messages, commands, and action callbacks.
+3. Add NoneBot plugin wrapper around the OneBot inbound/outbound adapters.
 4. Add a background delivery retry worker with platform rate-limit handling.
 5. Expand policy engine to explicit role bindings, approval quorum, and risk levels.

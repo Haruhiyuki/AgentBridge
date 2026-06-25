@@ -106,6 +106,16 @@ export AGENTBRIDGE_ONEBOT_ACCESS_TOKEN=...
 
 The OneBot transport maps chat contexts with `user_id` to `send_private_msg`; other contexts use `send_group_msg` with `chat_space_id` as `group_id`.
 
+Inbound OneBot HTTP events can be posted to:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/onebot/events \
+  -H 'content-type: application/json' \
+  -d '{"event":{"post_type":"message","message_type":"group","group_id":10001,"user_id":20002,"message_id":30003,"raw_message":"/agent health"}}'
+```
+
+Only `/agent` and `/ab` text commands are executed. Non-command messages are ignored.
+
 ## Console Client
 
 Attach to a session through the local Terminal Agent socket:
