@@ -197,6 +197,7 @@ class DeviceIdentityScope(StrEnum):
     PROJECT_MANAGE = "project_manage"
     SESSION_MANAGE = "session_manage"
     TERMINAL_CONTROL = "terminal_control"
+    BOT_GATEWAY_MANAGE = "bot_gateway_manage"
     SESSION_EVENTS_WS = "session_events_ws"
     RENDERED_EVENTS_WS = "rendered_events_ws"
     TERMINAL_WS = "terminal_ws"

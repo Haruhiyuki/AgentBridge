@@ -2184,6 +2184,8 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
     path = request.url.path.rstrip("/")
     path_segments = path.split("/")
     method = request.method.upper()
+    if method == "POST" and path.startswith("/api/v1/bot-gateway/"):
+        return DeviceIdentityScope.BOT_GATEWAY_MANAGE
     if method == "POST" and path == "/api/v1/commands/execute":
         return DeviceIdentityScope.COMMAND_EXECUTE
     if method == "POST" and path == "/api/v1/projects":

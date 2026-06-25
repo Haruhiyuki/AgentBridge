@@ -810,6 +810,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "async function revokeDevice()" in html
     assert "auth-device-key" in html
     assert "allowed-scopes" in html
+    assert "bot_gateway_manage" in html
     assert "command_execute" in html
     assert "device_manage" in html
     assert "policy_manage" in html
@@ -1114,6 +1115,82 @@ def test_managed_device_identity_command_execute_scope_allows_command_execute():
     assert execute_response.status_code == 200
     assert execute_response.json()["canonical_command"] == "project.list"
     assert execute_response.json()["data"] == {"projects": []}
+
+
+def test_managed_device_identity_requires_bot_gateway_manage_scope_for_bot_gateway_posts():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "bot-gateway-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    status_response = client.get(
+        "/api/v1/bot-gateway/retry-worker",
+        headers=key_headers,
+    )
+    retry_response = client.post(
+        "/api/v1/bot-gateway/retry-worker/run-once",
+        json={},
+        headers=key_headers,
+    )
+    delivery_result_response = client.post(
+        "/api/v1/bot-gateway/delivery-results",
+        json={"idempotency_key": "missing", "action": "acknowledge"},
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert create_response.status_code == 200
+    assert status_response.status_code == 200
+    assert retry_response.status_code == 403
+    assert delivery_result_response.status_code == 403
+
+
+def test_managed_device_identity_bot_gateway_manage_scope_allows_bot_gateway_posts():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "bot-gateway-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "bot_gateway_manage"],
+            "trace_id": "bot-gateway-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "bot-gateway-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    retry_worker_response = client.post(
+        "/api/v1/bot-gateway/retry-worker/run-once",
+        json={},
+        headers=headers,
+    )
+    retry_failed_response = client.post(
+        "/api/v1/bot-gateway/retry-failed-deliveries",
+        json={},
+        headers=headers,
+    )
+
+    assert create_response.status_code == 200
+    assert retry_worker_response.status_code == 200
+    assert retry_worker_response.json()["records"] == []
+    assert retry_failed_response.status_code == 200
+    assert retry_failed_response.json() == []
 
 
 def test_api_returns_product_error_payload_for_permission_denied():

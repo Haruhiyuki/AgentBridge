@@ -403,6 +403,7 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
         display_name="Maintainer laptop",
         device_key="managed-secret",
         allowed_scopes={
+            DeviceIdentityScope.BOT_GATEWAY_MANAGE,
             DeviceIdentityScope.COMMAND_EXECUTE,
             DeviceIdentityScope.DEVICE_MANAGE,
             DeviceIdentityScope.GROUP_ROLE_MANAGE,
@@ -443,6 +444,7 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
     assert restored_identity.status == DeviceIdentityStatus.ACTIVE
     assert restored_identity.key_hash == identity.key_hash
     assert restored_identity.allowed_scopes == {
+        DeviceIdentityScope.BOT_GATEWAY_MANAGE,
         DeviceIdentityScope.COMMAND_EXECUTE,
         DeviceIdentityScope.DEVICE_MANAGE,
         DeviceIdentityScope.GROUP_ROLE_MANAGE,

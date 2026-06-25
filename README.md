@@ -205,11 +205,12 @@ JSON object mapping device IDs to secrets. REST clients present
 For persisted device identities, create or rotate a key through
 `POST /api/v1/device-identities` with `device_id`, optional `display_name`, and an
 optional caller-supplied `device_key`. `allowed_scopes` can narrow the key or managed
-certificate fingerprint to one or more scopes: `http_api`, `command_execute`,
-`device_manage`, `policy_manage`, `group_role_manage`, `project_manage`,
-`session_manage`, `terminal_control`, `session_events_ws`, `rendered_events_ws`,
-`terminal_ws`, and `bot_gateway_ws`; omitting it grants all current scopes. Managed
-device credentials need `command_execute` to call `/api/v1/commands/execute`,
+certificate fingerprint to one or more scopes: `http_api`, `bot_gateway_manage`,
+`command_execute`, `device_manage`, `policy_manage`, `group_role_manage`,
+`project_manage`, `session_manage`, `terminal_control`, `session_events_ws`,
+`rendered_events_ws`, `terminal_ws`, and `bot_gateway_ws`; omitting it grants all
+current scopes. Managed device credentials need `bot_gateway_manage` to call
+Bot Gateway HTTP mutation APIs, `command_execute` to call `/api/v1/commands/execute`,
 `device_manage` to call `/api/v1/device-identities` and its child routes,
 `policy_manage` to call `/api/v1/access-policy*` or `*/approval-policy` routes,
 `group_role_manage` to call `/api/v1/chat-contexts/{id}/roles*`, `project_manage` to
