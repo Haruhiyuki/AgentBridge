@@ -304,9 +304,17 @@ def test_queue_commands_list_remove_and_clear_queued_turns(tmp_path):
         context.id,
         "queue-command-remove",
     )
+    with pytest.raises(AgentBridgeError) as clear_without_confirm:
+        execute(
+            commands,
+            f"/agent queue clear --version {removed.data['queue_version']}",
+            maintainer,
+            context.id,
+            "queue-command-clear-without-confirm",
+        )
     cleared = execute(
         commands,
-        f"/agent queue clear --version {removed.data['queue_version']}",
+        f"/agent queue clear --version {removed.data['queue_version']} --confirm 2",
         maintainer,
         context.id,
         "queue-command-clear",
@@ -342,6 +350,8 @@ def test_queue_commands_list_remove_and_clear_queued_turns(tmp_path):
     assert moved.data["queue_version"] != listed.data["queue_version"]
     assert removed.canonical_command == "queue.remove"
     assert removed.data["turn"]["status"] == "cancelled"
+    assert clear_without_confirm.value.code == ErrorCode.COMMAND_ARGUMENT_INVALID
+    assert clear_without_confirm.value.details["current_count"] == 2
     assert cleared.canonical_command == "queue.clear"
     assert cleared.data["count"] == 2
     assert [turn["id"] for turn in cleared.data["turns"]] == [

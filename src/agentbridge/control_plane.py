@@ -601,6 +601,7 @@ class ControlPlane:
         session_id: str,
         trace_id: str,
         expected_queue_version: str | None = None,
+        confirmed_count: int | None = None,
         chat_context_id: str | None = None,
     ) -> tuple[list[Turn], str]:
         effective_actor = self.effective_actor(actor, chat_context_id)
@@ -614,6 +615,7 @@ class ControlPlane:
         cancelled = self.repository.clear_queued_turns(
             session_id,
             expected_queue_version=expected_queue_version,
+            confirmed_count=confirmed_count,
         )
         queue_version = self.repository.queue_version(session_id)
         turn_ids = [turn.id for turn in cancelled]
@@ -628,6 +630,7 @@ class ControlPlane:
             details={
                 "turn_ids": turn_ids,
                 "count": len(turn_ids),
+                "confirmed_count": confirmed_count,
                 "queue_version": queue_version,
             },
         )
@@ -641,6 +644,7 @@ class ControlPlane:
                 "actor_id": effective_actor.id,
                 "turn_ids": turn_ids,
                 "count": len(turn_ids),
+                "confirmed_count": confirmed_count,
                 "queue_version": queue_version,
             },
         )

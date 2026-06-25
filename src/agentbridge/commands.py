@@ -337,6 +337,7 @@ class CommandService:
             return "queue.clear", {
                 "session": session,
                 "expected_queue_version": queue_version,
+                "confirmed_count": parse_optional_int(options.get("confirm")),
             }
         if action == "move":
             if not positional:
@@ -791,6 +792,9 @@ class CommandService:
                 trace_id=invocation.trace_id,
                 expected_queue_version=str(args["expected_queue_version"])
                 if args.get("expected_queue_version")
+                else None,
+                confirmed_count=int(args["confirmed_count"])
+                if args.get("confirmed_count") is not None
                 else None,
                 chat_context_id=invocation.chat_context_id,
             )

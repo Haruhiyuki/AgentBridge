@@ -1184,15 +1184,63 @@ class InMemoryRepository:
         session_id: str,
         *,
         expected_queue_version: str | None = None,
+        confirmed_count: int | None = None,
     ) -> list[Turn]:
         with self._lock:
             self.get_session(session_id)
+            current_queue = self._sorted_queue_locked(session_id)
+            current_queue_version = self._queue_version_locked(session_id)
+            if expected_queue_version is None:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "清空队列需要携带 queue_version。",
+                    next_step=(
+                        "请先执行 /agent queue list，再使用 "
+                        f"/agent queue clear --version {current_queue_version} "
+                        f"--confirm {len(current_queue)}。"
+                    ),
+                    status_code=400,
+                    details={
+                        "session_id": session_id,
+                        "current_queue_version": current_queue_version,
+                        "current_count": len(current_queue),
+                    },
+                )
             self._validate_queue_version_locked(
                 session_id=session_id,
                 expected_queue_version=expected_queue_version,
             )
+            if confirmed_count is None:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "清空队列需要确认受影响 Turn 数量。",
+                    next_step=(
+                        "请先执行 /agent queue list 确认队列，再使用 "
+                        f"/agent queue clear --version {current_queue_version} "
+                        f"--confirm {len(current_queue)}。"
+                    ),
+                    status_code=400,
+                    details={
+                        "session_id": session_id,
+                        "current_queue_version": current_queue_version,
+                        "current_count": len(current_queue),
+                    },
+                )
+            if confirmed_count != len(current_queue):
+                raise AgentBridgeError(
+                    ErrorCode.RESOURCE_CONFLICT,
+                    "清空队列确认数量与当前队列数量不一致。",
+                    next_step="请重新执行 /agent queue list 获取最新数量和 queue_version 后重试。",
+                    status_code=409,
+                    details={
+                        "session_id": session_id,
+                        "confirmed_count": confirmed_count,
+                        "current_count": len(current_queue),
+                        "current_queue_version": current_queue_version,
+                    },
+                )
             cancelled: list[Turn] = []
-            for turn in self.list_queue(session_id):
+            for turn in current_queue:
                 updated = turn.model_copy(
                     update={"status": TurnStatus.CANCELLED, "completed_at": utc_now()}
                 )

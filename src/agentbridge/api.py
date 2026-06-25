@@ -190,6 +190,7 @@ class QueueMutationRequest(BaseModel):
 
     actor: ActorPayload = Field(default_factory=ActorPayload)
     expected_queue_version: str | None = None
+    confirm_count: int | None = Field(default=None, ge=0)
     trace_id: str = "api"
 
 
@@ -1071,6 +1072,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             session_id=session_id,
             trace_id=payload.trace_id,
             expected_queue_version=payload.expected_queue_version,
+            confirmed_count=payload.confirm_count,
         )
         return {
             "queue_version": queue_version,

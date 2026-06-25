@@ -1212,6 +1212,7 @@ def test_managed_device_identity_session_manage_scope_allows_session_write_apis(
         json={
             "actor": maintainer,
             "expected_queue_version": reorder_queue_response.json().get("queue_version"),
+            "confirm_count": 2,
             "trace_id": "session-manager-clear-queue",
         },
         headers=headers,
@@ -2174,11 +2175,20 @@ def test_session_queue_api_lists_removes_and_clears_queued_turns(tmp_path):
         },
     )
     remove_queue_version = own_remove_response.json()["queue_version"]
+    unconfirmed_clear_response = client.post(
+        f"/api/v1/sessions/{session['id']}/queue/clear",
+        json={
+            "actor": maintainer,
+            "expected_queue_version": remove_queue_version,
+            "trace_id": "test-queue-unconfirmed-clear",
+        },
+    )
     clear_response = client.post(
         f"/api/v1/sessions/{session['id']}/queue/clear",
         json={
             "actor": maintainer,
             "expected_queue_version": remove_queue_version,
+            "confirm_count": 2,
             "trace_id": "test-queue-clear",
         },
     )
@@ -2218,6 +2228,9 @@ def test_session_queue_api_lists_removes_and_clears_queued_turns(tmp_path):
     assert denied_remove_response.json()["error_code"] == "PERMISSION_DENIED"
     assert own_remove_response.status_code == 200
     assert own_remove_response.json()["turn"]["status"] == "cancelled"
+    assert unconfirmed_clear_response.status_code == 400
+    assert unconfirmed_clear_response.json()["error_code"] == "COMMAND_ARGUMENT_INVALID"
+    assert unconfirmed_clear_response.json()["details"]["current_count"] == 2
     assert clear_response.status_code == 200
     assert clear_response.json()["count"] == 2
     assert [turn["id"] for turn in clear_response.json()["turns"]] == [
