@@ -1039,6 +1039,7 @@ class TerminalAgentService:
             return bool(self._lifecycle_thread and self._lifecycle_thread.is_alive())
 
     def lifecycle_monitor_status(self) -> dict[str, object]:
+        backend_supervision_status = getattr(self.backend, "supervision_status", None)
         with self._lifecycle_lock:
             return {
                 "running": bool(self._lifecycle_thread and self._lifecycle_thread.is_alive()),
@@ -1054,6 +1055,11 @@ class TerminalAgentService:
                     self.lifecycle_policy.auto_restart_max_attempts
                 ),
                 "auto_restart_attempt_count": sum(self._auto_restart_attempts.values()),
+                "backend_supervision": (
+                    backend_supervision_status()
+                    if callable(backend_supervision_status)
+                    else {"enabled": False}
+                ),
             }
 
     def _run_lifecycle_monitor_loop(self) -> None:

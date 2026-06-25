@@ -43,6 +43,8 @@ Implemented in this slice:
 - Independent `agentbridge-pty-host` process that owns the stdlib PTY backend behind a chmod `0600` Unix socket, plus `AGENTBRIDGE_TERMINAL_BACKEND=pty_host` client backend for API/daemon processes to reconnect to host-owned PTYs after restart.
 - `pty_host` client backend can auto-start `agentbridge-pty-host` with `AGENTBRIDGE_TERMINAL_PTY_HOST_AUTO_START=true`; it removes stale Unix socket files, waits for host health, and retries the original request once.
 - `pty_host` supervisor can run an optional API/daemon-lifecycle watchdog with `AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_ENABLED=true`, periodically checking host health and restarting `agentbridge-pty-host` after a crash.
+- When PTY host watchdog and `AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=true` are both enabled, the lifecycle monitor can detect PTY sessions lost by host-process death, emit `terminal.lost`, and restart them from the latest persisted `terminal.started` command.
+- Terminal lifecycle status now includes backend supervision state, exposing whether a PTY host watchdog is enabled/running and how many host restarts it has performed.
 - Local Terminal Agent daemon using JSONL over a Unix socket with token authentication.
 - Local daemon actions for `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, `snapshot`, `status`, cursor-based `read_output`, and multi-frame `stream_output`.
 - Local Terminal Agent client waits briefly for Unix socket recovery, allowing console requests to survive short daemon restart windows.
@@ -129,7 +131,7 @@ Implemented in this slice:
 
 Not implemented yet:
 
-- Remaining PTY host hardening: preserving or rehydrating terminal sessions after host-process death, external service-manager integration, cross-platform stale socket/pipe cleanup, and Windows ConPTY/Named Pipe parity.
+- Remaining PTY host hardening: true process-preserving recovery across host-process death, external service-manager integration, cross-platform stale socket/pipe cleanup, and Windows ConPTY/Named Pipe parity.
 - Richer OneBot renderer/action adapter and native NoneBot lifecycle registration helpers.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
@@ -153,7 +155,7 @@ Not implemented yet:
 - Console raw mode is still an input/control passthrough over the Terminal Agent socket, not a full terminal emulator. Its daemon output stream consumes backend cursor chunks; with `AGENTBRIDGE_TERMINAL_BACKEND=pty` those chunks come from a stdlib PTY reader loop, while fake/tmux remain snapshot-derived.
 - The stdlib PTY backend is opt-in for local experiments. Fake remains the default test backend, and tmux remains the resumable MVP backend after Agent process restarts.
 - The PTY backend uses a bounded retained-output window rather than recording all terminal output. Cursor values are absolute within the session lifetime; when a reader falls behind the retained window, `read_output`/`stream_output` returns `reset=True` with the retained tail so consoles can repaint deterministically.
-- `agentbridge-pty-host` is the first independent PTY host process. It keeps PTY sessions alive across API/daemon client restarts when the host process itself remains running. The `pty_host` client can auto-start the host and clean stale Unix sockets, and the optional watchdog can restart a crashed host process. A host crash still destroys the owned PTY sessions; product-grade recovery needs explicit rehydration/restart semantics for those sessions.
+- `agentbridge-pty-host` is the first independent PTY host process. It keeps PTY sessions alive across API/daemon client restarts when the host process itself remains running. The `pty_host` client can auto-start the host and clean stale Unix sockets, and the optional watchdog can restart a crashed host process. A host crash still destroys the owned PTY sessions, but combining the watchdog with lost-terminal auto-restart now gives an explicit restart-based recovery path from the last persisted command. True process-preserving recovery after host death is not possible with the current stdlib PTY owner model.
 - Terminal exit observation can be driven by the in-process lifecycle monitor, so clients do not have to call `status` to produce `terminal.exited`. The monitor recovers tracked terminal generations from semantic events and emits `terminal.lost` when a recovered generation has no observable backend session. `restart_session` can explicitly recover a lost/exited backend from the latest persisted command, and the opt-in auto-restart policy can do that for lost recovered terminals with a bounded attempt count. Production lifecycle supervision still needs a persistent scheduler or service-manager deployment pattern that survives the supervising API/daemon process itself.
 - Automatic lost-terminal restart is disabled by default because restarting a native CLI can have side effects. Operators must opt in with `AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=true`, and `AGENTBRIDGE_TERMINAL_AUTO_RESTART_MAX_ATTEMPTS` bounds restart attempts per service process.
 - Desktop terminal auto-open is opt-in. Custom command templates remain supported, and built-in presets cover macOS Terminal plus common Linux terminal emulators. The daemon keeps sensitive local token/socket state out of launched argv; macOS Terminal uses a mode-0700 short-lived launcher script because AppleScript cannot directly propagate the daemon's environment into the new shell.
@@ -197,7 +199,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 
 ## Next Development Backlog
 
-1. Harden PTY host recovery beyond the in-process watchdog, including terminal session rehydration after host-process death, service-manager deployment docs, cross-platform socket/pipe cleanup, and Windows ConPTY/Named Pipe parity.
+1. Harden PTY host recovery beyond watchdog plus command restart, including service-manager deployment docs, cross-platform socket/pipe cleanup, Windows ConPTY/Named Pipe parity, and clearer operator policy for non-idempotent CLI restarts.
 2. Add an admin policy editor UI for access policy rules with simulation before save.
 3. Replace the MVP WebSocket token gate with mTLS/device-key auth.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.

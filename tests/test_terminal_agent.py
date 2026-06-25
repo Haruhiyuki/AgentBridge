@@ -759,6 +759,125 @@ def test_pty_host_watchdog_restarts_crashed_host(monkeypatch, tmp_path):
             socket_path.unlink()
 
 
+def test_pty_host_watchdog_restart_can_auto_restart_lost_terminal(
+    monkeypatch,
+    tmp_path,
+):
+    sh = shutil.which("sh")
+    if sh is None:
+        pytest.skip("sh executable is required for PTY host recovery test")
+
+    socket_path = Path(f"/tmp/agentbridge-pty-host-{uuid4().hex}.sock")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_BACKEND", "pty_host")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET", str(socket_path))
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN", "secret-token")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_ENABLED", "true")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH", str(tmp_path / "host.json"))
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_STARTUP_TIMEOUT_SECONDS", "5")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_INTERVAL_SECONDS", "0.05")
+
+    control = ControlPlane()
+    _, session = create_session(control, tmp_path)
+    backend = create_terminal_backend_from_env()
+    terminal = TerminalAgentService(
+        control,
+        backend=backend,
+        lifecycle_policy=TerminalLifecyclePolicy(
+            auto_restart_on_lost=True,
+            auto_restart_max_attempts=1,
+        ),
+    )
+
+    assert isinstance(backend, PtyHostTerminalBackend)
+    assert backend.supervisor is not None
+    backend.start_supervision()
+    command = f"{sh} -c 'printf agentbridge-ready; sleep 30'"
+    try:
+        terminal.start_session(
+            session_id=session.id,
+            command=command,
+            trace_id="pty-host-recovery-start",
+        )
+        first_process = backend.supervisor.process
+        assert first_process is not None
+        assert first_process.poll() is None
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if "agentbridge-ready" in terminal.snapshot(session_id=session.id):
+                break
+            time.sleep(0.05)
+        assert "agentbridge-ready" in terminal.snapshot(session_id=session.id)
+
+        first_process.kill()
+        first_process.wait(timeout=5)
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            candidate = backend.supervisor.process
+            if (
+                candidate is not None
+                and candidate is not first_process
+                and candidate.poll() is None
+                and backend.supervisor.is_healthy()
+            ):
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("PTY host watchdog did not restart the host")
+
+        observed = terminal.run_lifecycle_monitor_once(
+            trace_id="pty-host-recovery-monitor"
+        )
+
+        assert observed[session.id] == TerminalStatus(started=False, running=False)
+        deadline = time.monotonic() + 5
+        restarted_status = TerminalStatus(started=False, running=False)
+        while time.monotonic() < deadline:
+            restarted_status = terminal.status(
+                session_id=session.id,
+                trace_id="pty-host-recovery-status",
+            )
+            if restarted_status.started and restarted_status.running:
+                break
+            time.sleep(0.05)
+        assert restarted_status.started is True
+        assert restarted_status.running is True
+
+        events = control.repository.list_events(session_id=session.id)
+        assert [event.type for event in events] == [
+            "session.created",
+            "terminal.started",
+            "terminal.lost",
+            "terminal.started",
+        ]
+        assert events[-1].payload == {
+            "workspace_id": session.workspace_id,
+            "command": command,
+            "generation": 2,
+            "restart_of_generation": 1,
+            "restart_reason": "auto_lost_restart",
+        }
+        lifecycle_status = terminal.lifecycle_monitor_status()
+        assert lifecycle_status["auto_restart_attempt_count"] == 1
+        assert lifecycle_status["backend_supervision"]["watchdog_enabled"] is True
+        assert lifecycle_status["backend_supervision"]["restart_count"] >= 1
+    finally:
+        backend.stop_supervision()
+        with contextlib.suppress(Exception):
+            backend.terminate(session_id=session.id)
+        process = backend.supervisor.process
+        if process is not None and process.poll() is None:
+            process.terminate()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+        if socket_path.exists():
+            socket_path.unlink()
+
+
 def test_terminal_backend_supervision_hooks_call_backend():
     class SupervisedFakeBackend(FakeTerminalBackend):
         def __init__(self) -> None:
