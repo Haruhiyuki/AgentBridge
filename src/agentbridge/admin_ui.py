@@ -3380,7 +3380,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
     <section>
       <div class="toolbar">
         <button id="new-device" type="button">New</button>
-        <button id="save-device" class="primary" type="button">Create / Rotate</button>
+        <button id="save-device" class="primary" type="button">Save / Rotate Key</button>
         <button id="revoke-device" class="danger" type="button">Revoke</button>
       </div>
       <div class="field-grid">
@@ -3422,7 +3422,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
             id="device-key"
             type="password"
             autocomplete="new-password"
-            placeholder="optional generated key"
+            placeholder="optional key rotation"
           >
         </label>
       </div>

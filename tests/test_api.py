@@ -357,6 +357,53 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
     assert still_gated_response.status_code == 403
 
 
+def test_managed_device_identity_can_be_certificate_only():
+    client = TestClient(create_app())
+    actor = {"id": "security-admin", "roles": ["admin"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": actor,
+            "device_id": "cert-only",
+            "display_name": "Certificate only device",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "managed-device-cert-only-create",
+        },
+    )
+    certificate_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+    key_response = client.get(
+        "/api/v1/projects",
+        headers={
+            "x-agentbridge-device-id": "cert-only",
+            "x-agentbridge-device-key": "unused-key",
+        },
+    )
+    revoke_response = client.post(
+        "/api/v1/device-identities/cert-only/revoke",
+        json={"actor": actor, "trace_id": "managed-device-cert-only-revoke"},
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+    revoked_certificate_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["device_id"] == "cert-only"
+    assert created["certificate_fingerprints"] == ["aabbcc"]
+    assert "device_key" not in created
+    assert certificate_response.status_code == 200
+    assert key_response.status_code == 403
+    assert revoke_response.status_code == 200
+    assert revoked_certificate_response.status_code == 403
+
+
 def test_project_session_admin_ui_serves_dashboard():
     client = TestClient(create_app())
 

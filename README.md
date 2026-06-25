@@ -208,14 +208,17 @@ optional caller-supplied `device_key`. `allowed_scopes` can narrow the key or ma
 certificate fingerprint to one or more transport scopes: `http_api`,
 `session_events_ws`, `rendered_events_ws`, `terminal_ws`, and `bot_gateway_ws`; omitting
 it grants all current scopes. `certificate_fingerprints` can bind one or more
-proxy-verified client certificate fingerprints to the same device identity. If
-`device_key` is omitted, the server returns a generated key once in the creation
-response. Stored keys are salted PBKDF2 hashes, successful managed-device key or
-certificate authentication updates `last_used_at`, and list/revoke responses never
-include raw keys, hashes, or salts. Once any managed device identity exists, REST and
-WebSocket routes stay gated even if all managed devices are later revoked; use an
-admin/API token or global client-certificate fingerprint to create a new active device
-key and regain device-key access.
+proxy-verified client certificate fingerprints to the same device identity. If a new
+identity has no certificate fingerprints and `device_key` is omitted, the server returns
+a generated key once in the creation response. If certificate fingerprints are provided,
+the identity can be certificate-only and no fallback key is generated unless
+`device_key` is explicitly supplied. Existing keys are preserved unless a non-empty
+`device_key` is supplied to rotate them. Stored keys are salted PBKDF2 hashes,
+successful managed-device key or certificate authentication updates `last_used_at`, and
+list/revoke responses never include raw keys, hashes, or salts. Once any managed device
+identity exists, REST and WebSocket routes stay gated even if all managed devices are
+later revoked; use an admin/API token or global client-certificate fingerprint to create
+a new active device key and regain device-key access.
 
 For deployments behind a TLS-terminating reverse proxy that verifies client
 certificates, set `AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS` or

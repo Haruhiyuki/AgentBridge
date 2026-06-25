@@ -348,8 +348,8 @@ class DeviceIdentity(BaseModel):
     id: str
     device_id: str
     display_name: str | None = None
-    key_hash: str
-    key_salt: str
+    key_hash: str | None = None
+    key_salt: str | None = None
     key_iterations: int = 210000
     status: DeviceIdentityStatus = DeviceIdentityStatus.ACTIVE
     allowed_scopes: set[DeviceIdentityScope] = Field(

@@ -507,12 +507,12 @@ class InMemoryRepository:
         *,
         device_id: str,
         display_name: str | None,
-        key_hash: str,
-        key_salt: str,
-        key_iterations: int,
+        updated_by: str,
+        key_hash: str | None = None,
+        key_salt: str | None = None,
+        key_iterations: int = 210000,
         allowed_scopes: set[DeviceIdentityScope] | None = None,
         certificate_fingerprints: set[str] | None = None,
-        updated_by: str,
     ) -> DeviceIdentity:
         normalized_device_id = device_id.strip()
         if not normalized_device_id:
@@ -542,13 +542,32 @@ class InMemoryRepository:
                     else set()
                 )
             )
+            identity_key_hash = key_hash if key_hash is not None else (
+                existing.key_hash if existing else None
+            )
+            identity_key_salt = key_salt if key_salt is not None else (
+                existing.key_salt if existing else None
+            )
+            identity_key_iterations = (
+                key_iterations
+                if key_hash is not None
+                else (existing.key_iterations if existing else key_iterations)
+            )
+            if not identity_key_hash and not identity_certificate_fingerprints:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "设备身份至少需要一个 device_key 或客户端证书指纹。",
+                    next_step=(
+                        "请提供非空 device_key，或配置 certificate_fingerprints。"
+                    ),
+                )
             identity = DeviceIdentity(
                 id=existing.id if existing else new_id("dev"),
                 device_id=normalized_device_id,
                 display_name=display_name.strip() if display_name else None,
-                key_hash=key_hash,
-                key_salt=key_salt,
-                key_iterations=key_iterations,
+                key_hash=identity_key_hash,
+                key_salt=identity_key_salt,
+                key_iterations=identity_key_iterations,
                 status=DeviceIdentityStatus.ACTIVE,
                 allowed_scopes=identity_scopes,
                 certificate_fingerprints=identity_certificate_fingerprints,

@@ -874,7 +874,8 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             trace_id=payload.trace_id,
         )
         response = device_identity_public_payload(identity)
-        response["device_key"] = device_key
+        if device_key is not None:
+            response["device_key"] = device_key
         return response
 
     @app.post("/api/v1/device-identities/{device_id}/revoke")
@@ -2538,6 +2539,8 @@ def matching_managed_device_key(
     if identity.status != DeviceIdentityStatus.ACTIVE:
         return False
     if required_scope not in identity.allowed_scopes:
+        return False
+    if not identity.key_hash or not identity.key_salt:
         return False
     try:
         verified = verify_device_key(

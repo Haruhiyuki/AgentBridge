@@ -413,9 +413,24 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
     assert device_key == "managed-secret"
     assert identity.status == DeviceIdentityStatus.ACTIVE
     assert identity.key_hash != "managed-secret"
+    cert_only_identity, cert_only_key = first_control.upsert_device_identity(
+        actor=admin,
+        device_id="cert-only",
+        display_name="Certificate only",
+        allowed_scopes={DeviceIdentityScope.HTTP_API},
+        certificate_fingerprints={"SHA256:DD:EE:FF"},
+        trace_id="device-identity-cert-only-create",
+    )
+
+    assert cert_only_key is None
+    assert cert_only_identity.key_hash is None
+    assert cert_only_identity.certificate_fingerprints == {"ddeeff"}
 
     restored = SQLAlchemyRepository(database_url)
-    [restored_identity] = restored.list_device_identities()
+    restored_identities = {
+        identity.device_id: identity for identity in restored.list_device_identities()
+    }
+    restored_identity = restored_identities["laptop"]
     assert restored_identity.device_id == "laptop"
     assert restored_identity.display_name == "Maintainer laptop"
     assert restored_identity.status == DeviceIdentityStatus.ACTIVE
@@ -425,11 +440,14 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
         DeviceIdentityScope.SESSION_EVENTS_WS,
     }
     assert restored_identity.certificate_fingerprints == {"aabbcc"}
+    restored_cert_only = restored_identities["cert-only"]
+    assert restored_cert_only.key_hash is None
+    assert restored_cert_only.certificate_fingerprints == {"ddeeff"}
     used_identity = restored.mark_device_identity_used("laptop")
     assert used_identity.last_used_at is not None
 
     restored_after_use = SQLAlchemyRepository(database_url)
-    [used_restored_identity] = restored_after_use.list_device_identities()
+    used_restored_identity = restored_after_use.get_device_identity("laptop")
     assert used_restored_identity.last_used_at == used_identity.last_used_at
 
     restored_control = ControlPlane(repository=restored_after_use)
@@ -441,8 +459,15 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
     assert revoked.status == DeviceIdentityStatus.REVOKED
 
     second_restore = SQLAlchemyRepository(database_url)
-    assert second_restore.list_device_identities() == []
-    [revoked_identity] = second_restore.list_device_identities(include_revoked=True)
+    active_after_revoke = {
+        identity.device_id: identity for identity in second_restore.list_device_identities()
+    }
+    assert sorted(active_after_revoke) == ["cert-only"]
+    restored_after_revoke = {
+        identity.device_id: identity
+        for identity in second_restore.list_device_identities(include_revoked=True)
+    }
+    revoked_identity = restored_after_revoke["laptop"]
     assert revoked_identity.device_id == "laptop"
     assert revoked_identity.status == DeviceIdentityStatus.REVOKED
     assert revoked_identity.revoked_at is not None

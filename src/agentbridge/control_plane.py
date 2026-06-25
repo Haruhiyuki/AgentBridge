@@ -1458,7 +1458,7 @@ class ControlPlane:
         certificate_fingerprints: set[str] | None = None,
         trace_id: str,
         chat_context_id: str | None = None,
-    ) -> tuple[DeviceIdentity, str]:
+    ) -> tuple[DeviceIdentity, str | None]:
         effective_actor = self.effective_actor(actor, chat_context_id)
         normalized_device_id = self._validated_device_id(device_id)
         normalized_scopes = self._validated_device_scopes(allowed_scopes)
@@ -1475,22 +1475,38 @@ class ControlPlane:
                 **self._chat_policy_attributes(chat_context_id),
             },
         )
-        secret = device_key.strip() if device_key else generate_device_key()
-        if not secret:
+        existing_identity: DeviceIdentity | None = None
+        try:
+            existing_identity = self.repository.get_device_identity(normalized_device_id)
+        except AgentBridgeError as exc:
+            if exc.code != ErrorCode.NOT_FOUND:
+                raise
+
+        secret: str | None = None
+        if device_key is not None:
+            secret = device_key.strip()
+        elif existing_identity is None and not normalized_fingerprints:
+            secret = generate_device_key()
+        if device_key is not None and not secret:
             raise AgentBridgeError(
                 ErrorCode.COMMAND_ARGUMENT_INVALID,
                 "设备 key 不能为空。",
-                next_step="请提供非空 device_key，或省略该字段由服务端生成。",
+                next_step="请提供非空 device_key，或省略该字段保留/生成 key。",
             )
-        salt = generate_device_key_salt()
-        identity = self.repository.upsert_device_identity(
-            device_id=normalized_device_id,
-            display_name=display_name,
-            key_hash=hash_device_key(
+        salt = generate_device_key_salt() if secret else None
+        key_hash = (
+            hash_device_key(
                 secret,
                 salt=salt,
                 iterations=DEFAULT_DEVICE_KEY_ITERATIONS,
-            ),
+            )
+            if secret and salt
+            else None
+        )
+        identity = self.repository.upsert_device_identity(
+            device_id=normalized_device_id,
+            display_name=display_name,
+            key_hash=key_hash,
             key_salt=salt,
             key_iterations=DEFAULT_DEVICE_KEY_ITERATIONS,
             allowed_scopes=normalized_scopes,
