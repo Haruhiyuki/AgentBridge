@@ -3,7 +3,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import shutil
+import signal
 import sys
+import termios
+import tty
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +31,41 @@ class ConsoleLease:
     session_id: str
     owner_id: str
     epoch: int
+
+
+RAW_EXIT_BYTE = b"\x1d"
+RAW_SIGNAL_BYTES = {
+    0x03: "interrupt",
+    0x04: "eof",
+}
+
+
+class RawTerminalMode:
+    def __init__(
+        self,
+        fd: int,
+        *,
+        termios_module: Any = termios,
+        tty_module: Any = tty,
+    ) -> None:
+        self.fd = fd
+        self.termios_module = termios_module
+        self.tty_module = tty_module
+        self._saved_attrs: list[Any] | None = None
+
+    def __enter__(self) -> RawTerminalMode:
+        self._saved_attrs = self.termios_module.tcgetattr(self.fd)
+        self.tty_module.setraw(self.fd)
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        if self._saved_attrs is not None:
+            self.termios_module.tcsetattr(
+                self.fd,
+                self.termios_module.TCSADRAIN,
+                self._saved_attrs,
+            )
+            self._saved_attrs = None
 
 
 class LocalConsoleClient:
@@ -230,6 +270,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--paste", help="Send one paste payload and exit")
     parser.add_argument("--snapshot", action="store_true", help="Print snapshot and exit")
     parser.add_argument("--release", action="store_true", help="Release lease on exit")
+    parser.add_argument(
+        "--raw",
+        action="store_true",
+        help="Run raw TTY passthrough mode; Ctrl-] exits the console",
+    )
     return parser
 
 
@@ -257,6 +302,9 @@ async def async_main(argv: list[str] | None = None) -> int:
         if args.snapshot:
             print(await client.snapshot())
             return 0
+        if args.raw:
+            await run_raw_mode(client)
+            return 0
         await run_line_mode(client)
         return 0
     finally:
@@ -272,6 +320,91 @@ async def run_line_mode(client: LocalConsoleClient) -> None:
         if line == "":
             return
         await client.send_text(line)
+
+
+def decode_raw_input(chunk: bytes) -> str:
+    return chunk.decode("utf-8", errors="replace")
+
+
+async def forward_raw_input(client: LocalConsoleClient, chunk: bytes) -> None:
+    buffered = bytearray()
+    for byte in chunk:
+        signal_name = RAW_SIGNAL_BYTES.get(byte)
+        if signal_name is None:
+            buffered.append(byte)
+            continue
+        if buffered:
+            await client.send_text(decode_raw_input(bytes(buffered)))
+            buffered.clear()
+        await client.send_signal(signal_name)
+    if buffered:
+        await client.send_text(decode_raw_input(bytes(buffered)))
+
+
+async def forward_terminal_size(
+    client: LocalConsoleClient,
+    *,
+    size_provider: Callable[[], os.terminal_size] = shutil.get_terminal_size,
+) -> None:
+    size = size_provider()
+    await client.resize(cols=size.columns, rows=size.lines)
+
+
+async def run_raw_mode(
+    client: LocalConsoleClient,
+    *,
+    input_file: Any | None = None,
+    read_size: int = 4096,
+    exit_byte: bytes = RAW_EXIT_BYTE,
+    size_provider: Callable[[], os.terminal_size] = shutil.get_terminal_size,
+    raw_mode_factory: Callable[[int], Any] = RawTerminalMode,
+) -> None:
+    input_file = input_file or sys.stdin.buffer
+    if hasattr(input_file, "isatty") and not input_file.isatty():
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "raw 模式需要连接到本地 TTY。",
+            next_step="请在交互式终端中运行，或使用 --send/--paste 执行非交互输入。",
+        )
+    fd = input_file.fileno()
+    loop = asyncio.get_running_loop()
+    pending_resize_tasks: set[asyncio.Task[None]] = set()
+
+    def schedule_resize() -> None:
+        task = asyncio.create_task(
+            forward_terminal_size(client, size_provider=size_provider)
+        )
+        pending_resize_tasks.add(task)
+        task.add_done_callback(pending_resize_tasks.discard)
+
+    remove_resize_handler: Callable[[], object] | None = None
+    with raw_mode_factory(fd):
+        await forward_terminal_size(client, size_provider=size_provider)
+        try:
+            loop.add_signal_handler(signal.SIGWINCH, schedule_resize)
+
+            def remove_signal_handler() -> object:
+                return loop.remove_signal_handler(signal.SIGWINCH)
+
+            remove_resize_handler = remove_signal_handler
+        except (NotImplementedError, RuntimeError, ValueError):
+            remove_resize_handler = None
+        try:
+            while True:
+                chunk = await loop.run_in_executor(None, os.read, fd, read_size)
+                if not chunk:
+                    return
+                if exit_byte and exit_byte in chunk:
+                    chunk = chunk.split(exit_byte, 1)[0]
+                    if chunk:
+                        await forward_raw_input(client, chunk)
+                    return
+                await forward_raw_input(client, chunk)
+        finally:
+            if remove_resize_handler is not None:
+                remove_resize_handler()
+            if pending_resize_tasks:
+                await asyncio.gather(*pending_resize_tasks, return_exceptions=True)
 
 
 def run() -> None:
