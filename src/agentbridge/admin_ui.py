@@ -3918,9 +3918,15 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       const parts = [status];
       if (health.expired_count) parts.push(`expired:${health.expired_count}`);
       if (health.expiring_count) parts.push(`expiring:${health.expiring_count}`);
+      if (health.renewal_status) parts.push(`renewal:${health.renewal_status}`);
+      if (health.renewal_due_count) parts.push(`renewal_due:${health.renewal_due_count}`);
+      if (health.renewal_overdue_count) {
+        parts.push(`renewal_overdue:${health.renewal_overdue_count}`);
+      }
       if (health.untracked_certificate_count) {
         parts.push(`untracked:${health.untracked_certificate_count}`);
       }
+      if (health.renewal_due_at) parts.push(`renew_by:${health.renewal_due_at}`);
       if (health.next_expires_at) parts.push(health.next_expires_at);
       return parts.join(" ");
     }
@@ -4146,7 +4152,8 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       await loadDevices();
       setStatus(
         `Scanned ${result.total_device_count} devices; ` +
-          `${result.action_required_count} need attention`,
+          `${result.action_required_count} need attention; ` +
+          `${result.renewal_action_required_count || 0} need renewal`,
       );
     }
 

@@ -50,8 +50,10 @@ class DeviceCertificateScanWorker:
         self.last_notification_record_count = 0
         self.last_notification_status_counts: dict[str, int] = {}
         self.last_action_required_count = 0
+        self.last_renewal_action_required_count = 0
         self.last_total_device_count = 0
         self.last_status_counts: dict[str, int] = {}
+        self.last_renewal_status_counts: dict[str, int] = {}
         self.run_count = 0
 
     def start(self) -> bool:
@@ -118,6 +120,8 @@ class DeviceCertificateScanWorker:
                 self.last_notification_error = None
                 self.last_notification_record_count = 0
                 self.last_notification_status_counts = {}
+                self.last_renewal_action_required_count = 0
+                self.last_renewal_status_counts = {}
             return {}
         try:
             notification_records = self._deliver_notifications(result, trace_id=trace_id)
@@ -128,10 +132,17 @@ class DeviceCertificateScanWorker:
         with self._lock:
             self.last_error = None
             self.last_action_required_count = int(result["action_required_count"])
+            self.last_renewal_action_required_count = int(
+                result["renewal_action_required_count"]
+            )
             self.last_total_device_count = int(result["total_device_count"])
             self.last_status_counts = {
                 str(key): int(value)
                 for key, value in dict(result["status_counts"]).items()
+            }
+            self.last_renewal_status_counts = {
+                str(key): int(value)
+                for key, value in dict(result["renewal_status_counts"]).items()
             }
             self.last_notification_error = notification_error
             self.last_notification_record_count = len(notification_records)
@@ -159,8 +170,12 @@ class DeviceCertificateScanWorker:
                 "last_notification_record_count": self.last_notification_record_count,
                 "last_notification_status_counts": self.last_notification_status_counts,
                 "last_action_required_count": self.last_action_required_count,
+                "last_renewal_action_required_count": (
+                    self.last_renewal_action_required_count
+                ),
                 "last_total_device_count": self.last_total_device_count,
                 "last_status_counts": self.last_status_counts,
+                "last_renewal_status_counts": self.last_renewal_status_counts,
                 "run_count": self.run_count,
             }
 

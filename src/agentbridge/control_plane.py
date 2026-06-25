@@ -2265,8 +2265,18 @@ class ControlPlane:
             "none": 0,
             "revoked": 0,
         }
+        renewal_status_counts = {
+            "scheduled": 0,
+            "due": 0,
+            "overdue": 0,
+            "unknown": 0,
+            "not_applicable": 0,
+            "none": 0,
+            "revoked": 0,
+        }
         devices: list[dict[str, object]] = []
         action_required_devices: list[dict[str, object]] = []
+        renewal_action_required_count = 0
         for identity in self.repository.list_device_identities(
             include_revoked=include_revoked
         ):
@@ -2277,6 +2287,12 @@ class ControlPlane:
             )
             health_status = str(health["status"])
             status_counts[health_status] = status_counts.get(health_status, 0) + 1
+            renewal_status = str(health["renewal_status"])
+            renewal_status_counts[renewal_status] = (
+                renewal_status_counts.get(renewal_status, 0) + 1
+            )
+            if renewal_status in {"due", "overdue", "unknown"}:
+                renewal_action_required_count += 1
             device_item = {
                 "device_identity_id": identity.id,
                 "device_id": identity.device_id,
@@ -2300,6 +2316,16 @@ class ControlPlane:
                         ],
                         "missing_validity_count": health["missing_validity_count"],
                         "next_expires_at": health["next_expires_at"],
+                        "renewal_status": renewal_status,
+                        "renewal_due_count": health["renewal_due_count"],
+                        "renewal_overdue_count": health["renewal_overdue_count"],
+                        "renewal_due_fingerprints": health[
+                            "renewal_due_fingerprints"
+                        ],
+                        "renewal_overdue_fingerprints": health[
+                            "renewal_overdue_fingerprints"
+                        ],
+                        "renewal_due_at": health["renewal_due_at"],
                     }
                 )
         result = {
@@ -2308,7 +2334,9 @@ class ControlPlane:
             "include_revoked": include_revoked,
             "total_device_count": len(devices),
             "status_counts": status_counts,
+            "renewal_status_counts": renewal_status_counts,
             "action_required_count": len(action_required_devices),
+            "renewal_action_required_count": renewal_action_required_count,
             "action_required_devices": action_required_devices,
             "devices": devices,
         }
@@ -2318,7 +2346,9 @@ class ControlPlane:
             "include_revoked": include_revoked,
             "total_device_count": len(devices),
             "status_counts": status_counts,
+            "renewal_status_counts": renewal_status_counts,
             "action_required_count": len(action_required_devices),
+            "renewal_action_required_count": renewal_action_required_count,
             "action_required_devices": action_required_devices,
             "scanned_by": effective_actor.id,
         }

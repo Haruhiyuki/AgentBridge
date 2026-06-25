@@ -863,6 +863,11 @@ def test_managed_device_identity_issues_ca_backed_certificate(monkeypatch, tmp_p
     assert certificate_health["expiring_count"] == 1
     assert certificate_health["expiring_fingerprints"] == [issued_fingerprint]
     assert certificate_health["next_expires_at"] == issued["not_after"]
+    assert certificate_health["managed_ca_active_certificate_count"] == 1
+    assert certificate_health["renewal_status"] == "due"
+    assert certificate_health["renewal_due_count"] == 1
+    assert certificate_health["renewal_due_fingerprints"] == [issued_fingerprint]
+    assert certificate_health["renewal_due_at"] is not None
     assert issued["device_identity"]["allowed_scopes"] == ["device_manage", "http_api"]
     assert ExtendedKeyUsageOID.CLIENT_AUTH in extended_key_usage
     assert certificate_response.status_code == 200
@@ -1112,6 +1117,10 @@ def test_managed_device_identity_rejects_expired_tracked_certificate_fingerprint
     assert health["status"] == "expired"
     assert health["expired_count"] == 1
     assert health["expired_fingerprints"] == ["aabbcc"]
+    assert health["renewal_status"] == "overdue"
+    assert health["renewal_overdue_count"] == 1
+    assert health["renewal_overdue_fingerprints"] == ["aabbcc"]
+    assert health["renewal_due_at"] is not None
     assert health["next_expires_at"] is not None
     assert worker_status_response.status_code == 200
     assert worker_status_response.json()["enabled"] is False
@@ -1120,29 +1129,43 @@ def test_managed_device_identity_rejects_expired_tracked_certificate_fingerprint
     assert scan["warning_days"] == 7
     assert scan["total_device_count"] == 1
     assert scan["status_counts"]["expired"] == 1
+    assert scan["renewal_status_counts"]["overdue"] == 1
     assert scan["action_required_count"] == 1
+    assert scan["renewal_action_required_count"] == 1
     assert scan["action_required_devices"][0]["device_id"] == (
         "expired-certificate-device"
     )
     assert scan["action_required_devices"][0]["certificate_health_status"] == "expired"
+    assert scan["action_required_devices"][0]["renewal_status"] == "overdue"
+    assert scan["action_required_devices"][0]["renewal_overdue_count"] == 1
     assert scan["devices"][0]["certificate_health"]["expired_fingerprints"] == ["aabbcc"]
     assert worker_run_once_response.status_code == 200
     worker_scan = worker_run_once_response.json()
     assert worker_scan["worker"]["run_count"] == 1
     assert worker_scan["worker"]["last_action_required_count"] == 1
+    assert worker_scan["worker"]["last_renewal_action_required_count"] == 1
+    assert worker_scan["worker"]["last_renewal_status_counts"]["overdue"] == 1
     assert worker_scan["result"]["action_required_count"] == 1
+    assert worker_scan["result"]["renewal_action_required_count"] == 1
     assert len(audit_events) == 2
     assert all(event.details["action_required_count"] == 1 for event in audit_events)
     assert all(event.details["status_counts"]["expired"] == 1 for event in audit_events)
+    assert all(
+        event.details["renewal_status_counts"]["overdue"] == 1
+        for event in audit_events
+    )
     assert len(semantic_events) == 1
     assert semantic_events[0].payload["action_required_count"] == 1
+    assert semantic_events[0].payload["renewal_action_required_count"] == 1
     assert len(worker_events) == 1
     assert worker_events[0].payload["action_required_count"] == 1
+    assert worker_events[0].payload["renewal_action_required_count"] == 1
     assert rendered_scan_response.status_code == 200
     rendered_scan = rendered_scan_response.json()[0]
     assert rendered_scan["document"]["blocks"][0]["title"] == "设备证书扫描"
     assert rendered_scan["document"]["visibility"] == "operators"
     assert "需要处理：1" in rendered_scan["text_messages"][0]
+    assert "续期需处理：1" in rendered_scan["text_messages"][0]
     assert "expired-certificate-device" in rendered_scan["text_messages"][0]
 
 

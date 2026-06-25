@@ -33,7 +33,7 @@ This repository currently contains the first executable backend slice:
 - Built-in Admin Web pages for system health, project/session operations with active Turn, queue, pending approval, and lease status, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
-Production PTY supervision, device certificate renewal scheduling/runbooks, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
+Production PTY supervision, richer Bot renderers, KMS-backed signing/custody, and real Claude/Codex adapters are planned next milestones.
 
 ## Development
 
@@ -275,16 +275,20 @@ rejects removing the last credential from a certificate-only device. Device iden
 responses include `certificate_records`, retaining per-fingerprint source, issuance
 metadata where available, and removal timestamps for operational audit. Responses also
 include `certificate_health`, which reports `ok`, `expiring`, `expired`, `unknown`,
-`none`, or `revoked` based on active certificate records; known expired managed
-certificates are rejected during client-certificate fingerprint authentication.
+`none`, or `revoked` based on active certificate records, plus `renewal_status`,
+`renewal_due_at`, `renewal_due_count`, and `renewal_overdue_count` for active
+CA-issued certificates; known expired managed certificates are rejected during
+client-certificate fingerprint authentication.
 Operators can run
 `POST /api/v1/device-identities/certificates/scan` to produce an audited certificate
 health scan and a `device_identity.certificates_scanned` semantic event for expiring,
 expired, or metadata-incomplete managed certificates. Set
 `AGENTBRIDGE_DEVICE_CERT_SCAN_WORKER_ENABLED=true` to run the same scan in the
-background at `AGENTBRIDGE_DEVICE_CERT_SCAN_INTERVAL_SECONDS` intervals; worker status
-is exposed through `/api/v1/device-identities/certificates/scan-worker`. Scan events
-render as operator-readable summaries through `GET /api/v1/events/rendered`.
+background at `AGENTBRIDGE_DEVICE_CERT_SCAN_INTERVAL_SECONDS` intervals; the worker
+also reports renewal-due and renewal-overdue counts using
+`AGENTBRIDGE_DEVICE_CERT_EXPIRY_WARNING_DAYS` as the renewal planning window. Worker
+status is exposed through `/api/v1/device-identities/certificates/scan-worker`. Scan
+events render as operator-readable summaries through `GET /api/v1/events/rendered`.
 Set `AGENTBRIDGE_DEVICE_CERT_SCAN_NOTIFY_CHAT_CONTEXT_IDS` to a comma-separated list
 of chat context IDs to have the scan worker automatically deliver action-required scan
 events through Bot Gateway; `AGENTBRIDGE_DEVICE_CERT_SCAN_NOTIFY_PLATFORM` defaults to
@@ -305,6 +309,8 @@ or `AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD_FILE` can unlock encrypted CA keys, 
 `AGENTBRIDGE_DEVICE_CERT_DEFAULT_VALIDITY_DAYS` defaults new certificates to 30 days
 when the request omits `validity_days`. `AGENTBRIDGE_DEVICE_CERT_EXPIRY_WARNING_DAYS`
 sets the certificate health expiring window and defaults to 14 days.
+See `docs/operations/DEVICE_CERTIFICATE_OPERATIONS.md` for the renewal scheduler,
+cutover, TLS proxy, and CA key custody runbook.
 
 For deployments behind a TLS-terminating reverse proxy that verifies client
 certificates, set `AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS` or
