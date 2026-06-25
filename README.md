@@ -20,6 +20,7 @@ This repository currently contains the first executable backend slice:
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
 - Bot Gateway delivery service with persistent idempotent delivery records, in-memory text transport, and OneBot V11 HTTP transport.
 - Background Bot delivery retry worker with configurable interval and batch-size guardrails.
+- Platform-scoped Bot delivery rate-limit policies that schedule unsent messages for retry.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - REST API routes aligned with the design document's service interface.
 
@@ -106,9 +107,18 @@ export AGENTBRIDGE_BOT_RETRY_INTERVAL_SECONDS=30
 export AGENTBRIDGE_BOT_RETRY_BATCH_SIZE=100
 ```
 
+Configure platform-scoped rate limits as `<platform>=<capacity>/<window-seconds>`:
+
+```bash
+export AGENTBRIDGE_BOT_RATE_LIMITS="onebot.v11=20/60,plain_text=100/60"
+```
+
+When the limit is reached, AgentBridge records the delivery as `retrying` without sending it or incrementing the attempt count. The retry worker or run-once API sends it after `next_retry_at`.
+
 Check worker state or run one bounded retry pass:
 
 ```bash
+curl http://127.0.0.1:8000/api/v1/bot-gateway/rate-limits
 curl http://127.0.0.1:8000/api/v1/bot-gateway/retry-worker
 curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/retry-worker/run-once \
   -H 'content-type: application/json' \

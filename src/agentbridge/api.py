@@ -9,9 +9,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from agentbridge.bot_gateway import (
+    BotDeliveryRateLimiter,
     BotDeliveryRetryWorker,
     BotGatewayService,
     BotPlatform,
+    BotRateLimitPolicy,
     InMemoryBotTransport,
 )
 from agentbridge.commands import CommandService
@@ -239,7 +241,11 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     control = control_plane or ControlPlane(repository=create_repository_from_env())
     commands = CommandService(control)
     terminal = TerminalAgentService(control, backend=create_terminal_backend_from_env())
-    bot_gateway = BotGatewayService(control, transport=create_bot_transport_from_env())
+    bot_gateway = BotGatewayService(
+        control,
+        transport=create_bot_transport_from_env(),
+        rate_limiter=create_bot_rate_limiter_from_env(),
+    )
     bot_retry_worker = create_bot_retry_worker_from_env(bot_gateway)
 
     @asynccontextmanager
@@ -710,6 +716,12 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             for record in bot_gateway_service.list_records(chat_context_id, status=status)
         ]
 
+    @app.get("/api/v1/bot-gateway/rate-limits")
+    def list_bot_rate_limits(
+        bot_gateway_service: BotGatewayService = Depends(get_bot_gateway),
+    ):
+        return {"policies": bot_gateway_service.rate_limiter.describe()}
+
     @app.get("/api/v1/bot-gateway/retry-worker")
     def bot_retry_worker_status(
         retry_worker: BotDeliveryRetryWorker = Depends(get_bot_retry_worker),
@@ -808,6 +820,31 @@ def create_bot_transport_from_env():
             access_token=os.environ.get("AGENTBRIDGE_ONEBOT_ACCESS_TOKEN"),
         )
     return InMemoryBotTransport()
+
+
+def create_bot_rate_limiter_from_env() -> BotDeliveryRateLimiter:
+    config = os.environ.get("AGENTBRIDGE_BOT_RATE_LIMITS", "").strip()
+    if not config:
+        return BotDeliveryRateLimiter()
+    policies: list[BotRateLimitPolicy] = []
+    for item in config.split(","):
+        if not item.strip():
+            continue
+        try:
+            platform_value, quota_value = item.split("=", maxsplit=1)
+            capacity_value, window_value = quota_value.split("/", maxsplit=1)
+            policy = BotRateLimitPolicy(
+                platform=BotPlatform(platform_value.strip()),
+                capacity=int(capacity_value.strip()),
+                window_seconds=float(window_value.strip()),
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                "AGENTBRIDGE_BOT_RATE_LIMITS must use entries like "
+                "onebot.v11=20/60,plain_text=100/60"
+            ) from exc
+        policies.append(policy)
+    return BotDeliveryRateLimiter(policies)
 
 
 def create_bot_retry_worker_from_env(bot_gateway: BotGatewayService) -> BotDeliveryRetryWorker:

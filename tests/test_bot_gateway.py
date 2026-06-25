@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from fastapi.testclient import TestClient
 
 from agentbridge.api import create_app
 from agentbridge.bot_gateway import (
+    BotDeliveryRateLimiter,
     BotDeliveryRetryWorker,
     BotDeliveryStatus,
     BotGatewayService,
+    BotRateLimitPolicy,
     InMemoryBotTransport,
 )
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, AgentBridgeError, ErrorCode
+from agentbridge.domain import Actor, AgentBridgeError, BotPlatform, ErrorCode
 from agentbridge.persistence import SQLAlchemyRepository
 
 
@@ -135,6 +139,46 @@ def test_bot_gateway_records_failures_and_retries_due_deliveries(tmp_path):
     assert retry[0].attempt_count == 2
     assert retry[0].last_error is None
     assert len(transport.sent) == 1
+
+
+def test_bot_gateway_rate_limit_schedules_unsent_delivery_for_retry(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    transport = InMemoryBotTransport()
+    limiter = BotDeliveryRateLimiter(
+        [
+            BotRateLimitPolicy(
+                platform=BotPlatform.ONEBOT_V11,
+                capacity=1,
+                window_seconds=60,
+            )
+        ]
+    )
+    gateway = BotGatewayService(control, transport=transport, rate_limiter=limiter)
+
+    records = gateway.deliver_session_events(
+        session_id=session_id,
+        chat_context_id=context.id,
+    )
+    scheduled = records[1]
+
+    assert [record.status for record in records] == [
+        BotDeliveryStatus.SENT,
+        BotDeliveryStatus.RETRYING,
+    ]
+    assert scheduled.attempt_count == 0
+    assert scheduled.last_error == "rate limited"
+    assert scheduled.next_retry_at is not None
+    assert len(transport.sent) == 1
+
+    retry = gateway.retry_failed_deliveries(
+        chat_context_id=context.id,
+        now=scheduled.next_retry_at + timedelta(seconds=1),
+    )
+
+    assert retry[0].status == BotDeliveryStatus.SENT
+    assert retry[0].attempt_count == 1
+    assert len(transport.sent) == 2
 
 
 def test_bot_retry_worker_retries_due_failures_with_batch_limit(tmp_path):
@@ -309,6 +353,22 @@ def test_bot_retry_worker_api_reports_status_and_runs_once(tmp_path):
     assert run_response.json()["worker"]["last_record_count"] == 1
     assert run_response.json()["records"][0]["status"] == "sent"
     assert len(transport.sent) == 1
+
+
+def test_bot_rate_limit_config_is_exposed_from_environment(monkeypatch):
+    monkeypatch.setenv(
+        "AGENTBRIDGE_BOT_RATE_LIMITS",
+        "onebot.v11=20/60,plain_text=100/10",
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/bot-gateway/rate-limits")
+
+    assert response.status_code == 200
+    assert response.json()["policies"] == [
+        {"platform": "onebot.v11", "capacity": 20, "window_seconds": 60.0},
+        {"platform": "plain_text", "capacity": 100, "window_seconds": 10.0},
+    ]
 
 
 def test_bot_retry_worker_can_autostart_from_environment(monkeypatch):

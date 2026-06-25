@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import deque
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from threading import Event, RLock, Thread, current_thread
 from typing import Protocol
@@ -56,6 +58,67 @@ class InMemoryBotTransport:
         return message_id
 
 
+@dataclass(frozen=True)
+class BotRateLimitPolicy:
+    platform: BotPlatform
+    capacity: int
+    window_seconds: float
+
+    def __post_init__(self) -> None:
+        if self.capacity < 1:
+            raise ValueError("capacity must be >= 1")
+        if self.window_seconds <= 0:
+            raise ValueError("window_seconds must be > 0")
+
+
+@dataclass(frozen=True)
+class BotRateLimitDecision:
+    allowed: bool
+    retry_after_seconds: float = 0.0
+
+
+class BotDeliveryRateLimiter:
+    def __init__(self, policies: list[BotRateLimitPolicy] | None = None) -> None:
+        self._policies = {policy.platform: policy for policy in policies or []}
+        self._history: dict[tuple[BotPlatform, str], deque[datetime]] = {}
+        self._lock = RLock()
+
+    def acquire(
+        self,
+        *,
+        platform: BotPlatform,
+        chat_context_id: str,
+        now: datetime,
+    ) -> BotRateLimitDecision:
+        policy = self._policies.get(platform)
+        if policy is None:
+            return BotRateLimitDecision(allowed=True)
+        key = (platform, chat_context_id)
+        window = timedelta(seconds=policy.window_seconds)
+        with self._lock:
+            history = self._history.setdefault(key, deque())
+            while history and history[0] <= now - window:
+                history.popleft()
+            if len(history) < policy.capacity:
+                history.append(now)
+                return BotRateLimitDecision(allowed=True)
+            retry_after = max((history[0] + window - now).total_seconds(), 0.0)
+            return BotRateLimitDecision(
+                allowed=False,
+                retry_after_seconds=retry_after,
+            )
+
+    def describe(self) -> list[dict[str, object]]:
+        return [
+            {
+                "platform": policy.platform.value,
+                "capacity": policy.capacity,
+                "window_seconds": policy.window_seconds,
+            }
+            for policy in self._policies.values()
+        ]
+
+
 class BotGatewayService:
     def __init__(
         self,
@@ -64,12 +127,14 @@ class BotGatewayService:
         renderer: OneBotV11TextRenderer | None = None,
         retry_base_seconds: int = 30,
         retry_max_seconds: int = 300,
+        rate_limiter: BotDeliveryRateLimiter | None = None,
     ) -> None:
         self.control = control
         self.transport = transport or InMemoryBotTransport()
         self.renderer = renderer or OneBotV11TextRenderer()
         self.retry_base_seconds = retry_base_seconds
         self.retry_max_seconds = retry_max_seconds
+        self.rate_limiter = rate_limiter or BotDeliveryRateLimiter()
 
     def deliver_session_events(
         self,
@@ -109,7 +174,9 @@ class BotGatewayService:
         event_seq: int,
         chat_context_id: str,
         platform: BotPlatform,
+        now: datetime | None = None,
     ) -> list[BotDeliveryRecord]:
+        now = now or utc_now()
         messages = self.renderer.render(document)
         chat_context = self.control.repository.get_chat_context(chat_context_id)
         records: list[BotDeliveryRecord] = []
@@ -117,14 +184,33 @@ class BotGatewayService:
             idempotency_key = f"{platform.value}:{chat_context_id}:{event_id}:{index}"
             existing = self.control.repository.get_bot_delivery_record(idempotency_key)
             if existing:
+                if existing.status == BotDeliveryStatus.SENT:
+                    duplicate = existing.model_copy(
+                        update={"status": BotDeliveryStatus.SKIPPED_DUPLICATE}
+                    )
+                    records.append(duplicate)
+                    continue
                 if existing.status == BotDeliveryStatus.FAILED:
                     records.append(existing)
                     continue
-                duplicate = existing.model_copy(
-                    update={"status": BotDeliveryStatus.SKIPPED_DUPLICATE}
-                )
-                records.append(duplicate)
-                continue
+                if existing.status == BotDeliveryStatus.RETRYING:
+                    if existing.next_retry_at and existing.next_retry_at > now:
+                        records.append(existing)
+                        continue
+                    records.append(
+                        self._send_and_store(
+                            idempotency_key=idempotency_key,
+                            platform=platform,
+                            chat_context=chat_context,
+                            event_id=event_id,
+                            event_seq=event_seq,
+                            message_index=index,
+                            text=text,
+                            existing=existing,
+                            now=now,
+                        )
+                    )
+                    continue
             records.append(
                 self._send_and_store(
                     idempotency_key=idempotency_key,
@@ -135,6 +221,7 @@ class BotGatewayService:
                     message_index=index,
                     text=text,
                     existing=None,
+                    now=now,
                 )
             )
         return records
@@ -158,6 +245,13 @@ class BotGatewayService:
             chat_context_id=chat_context_id,
             status=BotDeliveryStatus.FAILED,
         )
+        candidates.extend(
+            self.control.repository.list_bot_delivery_records(
+                chat_context_id=chat_context_id,
+                status=BotDeliveryStatus.RETRYING,
+            )
+        )
+        candidates.sort(key=lambda record: record.next_retry_at or record.created_at)
         retried: list[BotDeliveryRecord] = []
         for record in candidates:
             if len(retried) >= limit:
@@ -175,6 +269,7 @@ class BotGatewayService:
                     message_index=record.message_index,
                     text=record.text,
                     existing=record,
+                    now=now,
                 )
             )
         return retried
@@ -190,8 +285,30 @@ class BotGatewayService:
         message_index: int,
         text: str,
         existing: BotDeliveryRecord | None,
+        now: datetime | None = None,
     ) -> BotDeliveryRecord:
-        now = utc_now()
+        now = now or utc_now()
+        rate_limit = self.rate_limiter.acquire(
+            platform=platform,
+            chat_context_id=chat_context.id,
+            now=now,
+        )
+        if not rate_limit.allowed:
+            record = self._retrying_record(
+                idempotency_key=idempotency_key,
+                platform=platform,
+                chat_context=chat_context,
+                event_id=event_id,
+                event_seq=event_seq,
+                message_index=message_index,
+                text=text,
+                retry_after_seconds=rate_limit.retry_after_seconds,
+                existing=existing,
+                now=now,
+            )
+            self.control.repository.store_bot_delivery_record(record)
+            return record
+
         attempt_count = (existing.attempt_count + 1) if existing else 1
         try:
             platform_message_id = self.transport.send_text(
@@ -248,6 +365,38 @@ class BotGatewayService:
             )
         self.control.repository.store_bot_delivery_record(record)
         return record
+
+    def _retrying_record(
+        self,
+        *,
+        idempotency_key: str,
+        platform: BotPlatform,
+        chat_context: ChatContext,
+        event_id: str,
+        event_seq: int,
+        message_index: int,
+        text: str,
+        retry_after_seconds: float,
+        existing: BotDeliveryRecord | None,
+        now: datetime,
+    ) -> BotDeliveryRecord:
+        return BotDeliveryRecord(
+            id=existing.id if existing else f"bdlv_{uuid4().hex[:12]}",
+            idempotency_key=idempotency_key,
+            platform=platform,
+            chat_context_id=chat_context.id,
+            event_id=event_id,
+            event_seq=event_seq,
+            message_index=message_index,
+            platform_message_id=existing.platform_message_id if existing else None,
+            text=text,
+            status=BotDeliveryStatus.RETRYING,
+            attempt_count=existing.attempt_count if existing else 0,
+            last_error="rate limited",
+            next_retry_at=now + timedelta(seconds=retry_after_seconds),
+            created_at=existing.created_at if existing else now,
+            updated_at=now,
+        )
 
     def _failed_record(
         self,
