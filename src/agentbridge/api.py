@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from agentbridge.bot_gateway import BotGatewayService, BotPlatform
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
@@ -185,14 +186,26 @@ class CommandRequest(BaseModel):
     trace_id: str | None = None
 
 
+class DeliverSessionEventsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    chat_context_id: str
+    platform: BotPlatform = BotPlatform.ONEBOT_V11
+    after_seq: int | None = None
+    limit: int = 100
+
+
 def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     app = FastAPI(title="AgentBridge Control Plane", version="0.1.0")
     control = control_plane or ControlPlane(repository=create_repository_from_env())
     commands = CommandService(control)
     terminal = TerminalAgentService(control, backend=create_terminal_backend_from_env())
+    bot_gateway = BotGatewayService(control)
     app.state.control = control
     app.state.commands = commands
     app.state.terminal = terminal
+    app.state.bot_gateway = bot_gateway
 
     @app.exception_handler(AgentBridgeError)
     async def agentbridge_error_handler(_, exc: AgentBridgeError):
@@ -206,6 +219,9 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
 
     def get_terminal() -> TerminalAgentService:
         return app.state.terminal
+
+    def get_bot_gateway() -> BotGatewayService:
+        return app.state.bot_gateway
 
     @app.get("/api/v1/health")
     def health(control: ControlPlane = Depends(get_control)):
@@ -554,6 +570,30 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
                 "control status/takeover/release",
             ]
         }
+
+    @app.post("/api/v1/bot-gateway/deliver-session-events")
+    def deliver_session_events(
+        payload: DeliverSessionEventsRequest,
+        bot_gateway_service: BotGatewayService = Depends(get_bot_gateway),
+    ):
+        records = bot_gateway_service.deliver_session_events(
+            session_id=payload.session_id,
+            chat_context_id=payload.chat_context_id,
+            platform=payload.platform,
+            after_seq=payload.after_seq,
+            limit=payload.limit,
+        )
+        return [record.model_dump(mode="json") for record in records]
+
+    @app.get("/api/v1/bot-gateway/deliveries")
+    def list_bot_deliveries(
+        bot_gateway_service: BotGatewayService = Depends(get_bot_gateway),
+        chat_context_id: str | None = None,
+    ):
+        return [
+            record.model_dump(mode="json")
+            for record in bot_gateway_service.list_records(chat_context_id)
+        ]
 
     @app.get("/api/v1/audit")
     def list_audit(control: ControlPlane = Depends(get_control)):

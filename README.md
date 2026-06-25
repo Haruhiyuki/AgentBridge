@@ -18,6 +18,7 @@ This repository currently contains the first executable backend slice:
 - Local Terminal Agent daemon over a token-protected Unix socket.
 - Local Console Client that acquires human lease on first input and forwards terminal input.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
+- Bot Gateway delivery service with idempotent in-memory text transport.
 - REST API routes aligned with the design document's service interface.
 
 NoneBot integration, Admin Web, visible local console attachment, and real Claude/Codex adapters are planned next milestones.
@@ -82,6 +83,18 @@ curl http://127.0.0.1:8000/api/v1/sessions/<session-id>/rendered-events
 ```
 
 The current renderer targets reliable text fallback for OneBot-style platforms. Rich buttons/cards and platform-specific delivery state are planned for the Bot Gateway layer.
+
+## Bot Gateway Delivery
+
+Rendered session events can be delivered through the MVP Bot Gateway service:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/deliver-session-events \
+  -H 'content-type: application/json' \
+  -d '{"session_id":"<session-id>","chat_context_id":"<chat-context-id>"}'
+```
+
+Delivery records are idempotent by platform, chat context, event, and message index. The current transport is in-memory and intended for contract tests; real NoneBot/OneBot delivery is the next integration layer.
 
 ## Console Client
 
