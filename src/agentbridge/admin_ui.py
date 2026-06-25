@@ -84,6 +84,10 @@ ADMIN_HOME_HTML = """<!doctype html>
       <strong>Projects & Sessions</strong>
       <span>Project inventory, workspaces, session lifecycle</span>
     </a>
+    <a href="/admin/interactions">
+      <strong>Interactions</strong>
+      <span>Questions, approvals, votes, cancellations</span>
+    </a>
     <a href="/admin/terminal-lifecycle">
       <strong>Terminal Lifecycle</strong>
       <span>Monitor status, backend supervision, run once</span>
@@ -315,6 +319,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     <nav>
       <a href="/admin">Admin</a>
       <a href="/admin/access-policy">Access Policy</a>
+      <a href="/admin/interactions">Interactions</a>
       <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
       <a href="/admin/bot-delivery">Bot Delivery</a>
     </nav>
@@ -746,6 +751,576 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
 """
 
 
+INTERACTION_ADMIN_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentBridge Interactions</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --panel-muted: #f0f3f7;
+      --line: #d6dde6;
+      --text: #17202a;
+      --muted: #5b6878;
+      --accent: #0f766e;
+      --danger: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+    header {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-weight: 650;
+    }
+    nav a:hover { color: var(--accent); }
+    main {
+      display: grid;
+      grid-template-columns: minmax(500px, 1.05fr) minmax(440px, .95fr);
+      min-height: calc(100vh - 56px);
+    }
+    section {
+      min-width: 0;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+    }
+    section:last-child { border-right: 0; }
+    .toolbar {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-muted);
+      flex-wrap: wrap;
+    }
+    button, input, select, textarea {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+    button {
+      min-height: 34px;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-weight: 650;
+    }
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+    button.danger {
+      border-color: #f3b4ad;
+      color: var(--danger);
+    }
+    input, select {
+      min-height: 34px;
+      width: 100%;
+      padding: 6px 8px;
+    }
+    textarea {
+      min-height: 68px;
+      width: 100%;
+      padding: 8px;
+      resize: vertical;
+    }
+    label {
+      display: grid;
+      gap: 5px;
+      min-width: 0;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .compact { max-width: 180px; }
+    .wide { grid-column: 1 / -1; }
+    .status {
+      flex: 1;
+      min-width: 180px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .table-wrap {
+      max-height: calc(100vh - 112px);
+      overflow: auto;
+      border-bottom: 1px solid var(--line);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    th, td {
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      color: var(--muted);
+      background: #f9fafb;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    tr { cursor: pointer; }
+    tr.selected td { background: #e8f5f3; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 0 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .pending { color: #915930; }
+    .resolved { color: var(--accent); }
+    .cancelled, .expired { color: var(--danger); }
+    pre {
+      margin: 0 14px 14px;
+      padding: 10px;
+      min-height: 148px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfe;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow: auto;
+    }
+    .danger-text { color: var(--danger); }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+      section { border-right: 0; border-bottom: 1px solid var(--line); }
+      .field-grid { grid-template-columns: 1fr; }
+      header { align-items: flex-start; flex-direction: column; }
+      .compact { max-width: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AgentBridge Interactions</h1>
+    <nav>
+      <a href="/admin">Admin</a>
+      <a href="/admin/projects">Projects & Sessions</a>
+      <a href="/admin/access-policy">Access Policy</a>
+      <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
+      <a href="/admin/bot-delivery">Bot Delivery</a>
+    </nav>
+  </header>
+  <main>
+    <section>
+      <div class="toolbar">
+        <button id="refresh" type="button">Refresh</button>
+        <label class="compact">
+          Session ID
+          <input id="filter-session-id" autocomplete="off" placeholder="optional">
+        </label>
+        <label class="compact">
+          Status
+          <select id="filter-status">
+            <option value="">All</option>
+            <option value="pending">pending</option>
+            <option value="partially_approved">partially_approved</option>
+            <option value="resolved">resolved</option>
+            <option value="expired">expired</option>
+            <option value="cancelled">cancelled</option>
+          </select>
+        </label>
+        <div class="status" id="status">Ready</div>
+      </div>
+      <div class="table-wrap">
+        <table aria-label="Interactions">
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Type</th>
+              <th>Risk</th>
+              <th>Session</th>
+              <th>Votes</th>
+              <th>Expires</th>
+            </tr>
+          </thead>
+          <tbody id="interactions"></tbody>
+        </table>
+      </div>
+      <pre id="selected">{}</pre>
+      <pre id="error" class="danger-text"></pre>
+    </section>
+
+    <section>
+      <div class="toolbar">
+        <label class="compact">
+          Actor ID
+          <input id="actor-id" value="admin-ui">
+        </label>
+        <label class="compact">
+          Actor Roles
+          <input id="actor-roles" value="admin">
+        </label>
+        <label class="compact">
+          Chat Context
+          <input id="chat-context-id" autocomplete="off" placeholder="optional">
+        </label>
+      </div>
+
+      <div class="field-grid">
+        <label>
+          New Interaction Session ID
+          <input id="create-session-id" autocomplete="off">
+        </label>
+        <label>
+          Type
+          <select id="create-type">
+            <option value="question">question</option>
+            <option value="approval">approval</option>
+            <option value="plan">plan</option>
+          </select>
+        </label>
+        <label>
+          Risk
+          <select id="create-risk">
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="critical">critical</option>
+          </select>
+        </label>
+        <label>
+          Required Votes
+          <input id="create-required-votes" type="number" min="1" placeholder="policy">
+        </label>
+        <label>
+          TTL Seconds
+          <input id="create-ttl" type="number" min="1" placeholder="optional">
+        </label>
+        <label>
+          Turn ID
+          <input id="create-turn-id" autocomplete="off" placeholder="optional">
+        </label>
+        <label class="wide">
+          Options
+          <input id="create-options" autocomplete="off" placeholder="option A, option B">
+        </label>
+        <label class="wide">
+          Prompt
+          <textarea id="create-prompt"></textarea>
+        </label>
+        <button class="primary wide" id="create-interaction" type="button">
+          Create Interaction
+        </button>
+      </div>
+
+      <div class="field-grid">
+        <label class="wide">
+          Answer
+          <textarea id="answer-text"></textarea>
+        </label>
+        <button class="primary" id="answer" type="button">Answer</button>
+        <button class="danger" id="cancel" type="button">Cancel</button>
+        <label class="wide">
+          Vote / Cancel Reason
+          <input id="reason" autocomplete="off">
+        </label>
+        <button class="primary" id="approve" type="button">Approve</button>
+        <button class="danger" id="deny" type="button">Deny</button>
+      </div>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let selectedInteractionId = "";
+
+    function csv(value) {
+      return value.split(",").map((item) => item.trim()).filter(Boolean);
+    }
+
+    function actor() {
+      return {
+        id: $("actor-id").value.trim() || "admin-ui",
+        roles: csv($("actor-roles").value || "admin"),
+      };
+    }
+
+    function optional(value) {
+      const trimmed = value.trim();
+      return trimmed ? trimmed : null;
+    }
+
+    function optionalNumber(value) {
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      const parsed = Number.parseInt(trimmed, 10);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    function setStatus(text) {
+      $("status").textContent = text;
+    }
+
+    async function requestJson(url, options = {}) {
+      const response = await fetch(url, {
+        headers: {"content-type": "application/json"},
+        ...options,
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || data.detail || response.statusText);
+      }
+      return data;
+    }
+
+    function querySuffix() {
+      const params = new URLSearchParams();
+      const sessionId = $("filter-session-id").value.trim();
+      const status = $("filter-status").value;
+      if (sessionId) params.set("session_id", sessionId);
+      if (status) params.set("status", status);
+      const suffix = params.toString();
+      return suffix ? `?${suffix}` : "";
+    }
+
+    function appendCell(row, value) {
+      const td = document.createElement("td");
+      td.textContent = String(value ?? "");
+      td.title = String(value ?? "");
+      row.appendChild(td);
+    }
+
+    function appendStatusCell(row, interaction) {
+      const td = document.createElement("td");
+      const span = document.createElement("span");
+      span.className = `pill ${interaction.status}`;
+      span.textContent = interaction.status;
+      td.appendChild(span);
+      row.appendChild(td);
+    }
+
+    function voteSummary(interaction) {
+      const votes = interaction.votes || {};
+      const approvals = Object.values(votes).filter(Boolean).length;
+      return `${approvals}/${interaction.required_votes}`;
+    }
+
+    function renderInteractions(interactions) {
+      const rows = interactions.map((interaction) => {
+        const tr = document.createElement("tr");
+        tr.dataset.interactionId = interaction.id;
+        tr.className = interaction.id === selectedInteractionId ? "selected" : "";
+        appendStatusCell(tr, interaction);
+        for (const value of [
+          interaction.type,
+          interaction.risk_level,
+          interaction.session_id,
+          voteSummary(interaction),
+          interaction.expires_at || "",
+        ]) {
+          appendCell(tr, value);
+        }
+        tr.addEventListener("click", () => selectInteraction(interaction.id));
+        return tr;
+      });
+      $("interactions").replaceChildren(...rows);
+      setStatus(`${interactions.length} interactions`);
+    }
+
+    async function refreshInteractions() {
+      setStatus("Loading");
+      const interactions = await requestJson(`/api/v1/interactions${querySuffix()}`);
+      renderInteractions(interactions);
+      if (
+        selectedInteractionId &&
+        interactions.some((interaction) => interaction.id === selectedInteractionId)
+      ) {
+        await selectInteraction(selectedInteractionId);
+      }
+    }
+
+    async function selectInteraction(interactionId) {
+      selectedInteractionId = interactionId;
+      const interaction = await requestJson(
+        `/api/v1/interactions/${encodeURIComponent(interactionId)}`,
+      );
+      $("selected").textContent = JSON.stringify(interaction, null, 2);
+      $("create-session-id").value = interaction.session_id;
+      $("answer-text").value = interaction.answer || "";
+      document.querySelectorAll("#interactions tr").forEach((row) => {
+        row.classList.toggle("selected", row.dataset.interactionId === interactionId);
+      });
+      setStatus(`Selected ${interactionId}`);
+    }
+
+    function interactionPayload() {
+      const payload = {
+        actor: actor(),
+        type: $("create-type").value,
+        prompt: $("create-prompt").value.trim(),
+        turn_id: optional($("create-turn-id").value),
+        options: csv($("create-options").value),
+        risk_level: $("create-risk").value,
+        required_votes: optionalNumber($("create-required-votes").value),
+        ttl_seconds: optionalNumber($("create-ttl").value),
+        chat_context_id: optional($("chat-context-id").value),
+        trace_id: "admin-ui-interaction-create",
+      };
+      Object.keys(payload).forEach((key) => {
+        if (payload[key] === null) delete payload[key];
+      });
+      return payload;
+    }
+
+    async function createInteraction() {
+      const sessionId = $("create-session-id").value.trim();
+      if (!sessionId) throw new Error("Session ID is required");
+      setStatus("Creating interaction");
+      const interaction = await requestJson(
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/interactions`,
+        {
+          method: "POST",
+          body: JSON.stringify(interactionPayload()),
+        },
+      );
+      selectedInteractionId = interaction.id;
+      $("selected").textContent = JSON.stringify(interaction, null, 2);
+      await refreshInteractions();
+      setStatus(`Created ${interaction.id}`);
+    }
+
+    async function answerInteraction() {
+      if (!selectedInteractionId) throw new Error("Select an interaction first");
+      const interaction = await requestJson(
+        `/api/v1/interactions/${encodeURIComponent(selectedInteractionId)}/answer`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            actor: actor(),
+            answer: $("answer-text").value.trim(),
+            chat_context_id: optional($("chat-context-id").value),
+            trace_id: "admin-ui-interaction-answer",
+          }),
+        },
+      );
+      $("selected").textContent = JSON.stringify(interaction, null, 2);
+      await refreshInteractions();
+      setStatus(`Answered ${interaction.id}`);
+    }
+
+    async function voteInteraction(approve) {
+      if (!selectedInteractionId) throw new Error("Select an interaction first");
+      const interaction = await requestJson(
+        `/api/v1/interactions/${encodeURIComponent(selectedInteractionId)}/vote`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            actor: actor(),
+            approve,
+            reason: optional($("reason").value),
+            chat_context_id: optional($("chat-context-id").value),
+            trace_id: approve ? "admin-ui-approval-approve" : "admin-ui-approval-deny",
+          }),
+        },
+      );
+      $("selected").textContent = JSON.stringify(interaction, null, 2);
+      await refreshInteractions();
+      setStatus(`${approve ? "Approved" : "Denied"} ${interaction.id}`);
+    }
+
+    async function cancelInteraction() {
+      if (!selectedInteractionId) throw new Error("Select an interaction first");
+      const interaction = await requestJson(
+        `/api/v1/interactions/${encodeURIComponent(selectedInteractionId)}/cancel`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            actor: actor(),
+            reason: optional($("reason").value),
+            chat_context_id: optional($("chat-context-id").value),
+            trace_id: "admin-ui-interaction-cancel",
+          }),
+        },
+      );
+      $("selected").textContent = JSON.stringify(interaction, null, 2);
+      await refreshInteractions();
+      setStatus(`Cancelled ${interaction.id}`);
+    }
+
+    async function run(action) {
+      try {
+        $("error").textContent = "";
+        await action();
+      } catch (error) {
+        $("error").textContent = error.message;
+        setStatus(error.message);
+      }
+    }
+
+    $("refresh").addEventListener("click", () => run(refreshInteractions));
+    $("filter-status").addEventListener("change", () => run(refreshInteractions));
+    $("create-interaction").addEventListener("click", () => run(createInteraction));
+    $("answer").addEventListener("click", () => run(answerInteraction));
+    $("approve").addEventListener("click", () => run(() => voteInteraction(true)));
+    $("deny").addEventListener("click", () => run(() => voteInteraction(false)));
+    $("cancel").addEventListener("click", () => run(cancelInteraction));
+    refreshInteractions().catch((error) => {
+      $("error").textContent = error.message;
+      setStatus(error.message);
+    });
+  </script>
+</body>
+</html>
+"""
+
+
 ACCESS_POLICY_ADMIN_HTML = """<!doctype html>
 <html lang="en">
 <head>
@@ -960,6 +1535,7 @@ ACCESS_POLICY_ADMIN_HTML = """<!doctype html>
     <nav>
       <a href="/admin">Admin</a>
       <a href="/admin/projects">Projects & Sessions</a>
+      <a href="/admin/interactions">Interactions</a>
       <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
       <a href="/admin/bot-delivery">Bot Delivery</a>
     </nav>
@@ -1467,6 +2043,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
       <a href="/admin">Admin</a>
       <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/access-policy">Access Policy</a>
+      <a href="/admin/interactions">Interactions</a>
       <a href="/admin/bot-delivery">Bot Delivery</a>
     </nav>
   </header>
@@ -1818,6 +2395,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
       <a href="/admin">Admin</a>
       <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/access-policy">Access Policy</a>
+      <a href="/admin/interactions">Interactions</a>
       <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
     </nav>
   </header>

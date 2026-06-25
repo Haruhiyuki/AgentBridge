@@ -67,6 +67,24 @@ def test_project_session_admin_ui_serves_dashboard():
     assert "async function closeSession()" in html
 
 
+def test_interaction_admin_ui_serves_dashboard():
+    client = TestClient(create_app())
+
+    response = client.get("/admin/interactions")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    html = response.text
+    assert "AgentBridge Interactions" in html
+    assert "/api/v1/interactions" in html
+    assert "/interactions/${encodeURIComponent(selectedInteractionId)}/answer" in html
+    assert "/interactions/${encodeURIComponent(selectedInteractionId)}/vote" in html
+    assert "/interactions/${encodeURIComponent(selectedInteractionId)}/cancel" in html
+    assert "async function createInteraction()" in html
+    assert "async function answerInteraction()" in html
+    assert "async function voteInteraction(approve)" in html
+
+
 def test_project_session_rest_flow_supports_admin_operations(tmp_path):
     client = TestClient(create_app())
     actor = {"id": "admin-ui", "roles": ["admin"]}

@@ -17,6 +17,7 @@ from agentbridge.admin_ui import (
     ACCESS_POLICY_ADMIN_HTML,
     ADMIN_HOME_HTML,
     BOT_DELIVERY_ADMIN_HTML,
+    INTERACTION_ADMIN_HTML,
     PROJECT_SESSION_ADMIN_HTML,
     TERMINAL_LIFECYCLE_ADMIN_HTML,
 )
@@ -478,6 +479,10 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     @app.get("/admin/projects", response_class=HTMLResponse)
     def project_session_admin_ui():
         return HTMLResponse(PROJECT_SESSION_ADMIN_HTML)
+
+    @app.get("/admin/interactions", response_class=HTMLResponse)
+    def interaction_admin_ui():
+        return HTMLResponse(INTERACTION_ADMIN_HTML)
 
     @app.get("/admin/terminal-lifecycle", response_class=HTMLResponse)
     def terminal_lifecycle_admin_ui():

@@ -330,6 +330,7 @@ def test_admin_home_and_terminal_lifecycle_ui_routes():
     assert home_response.headers["content-type"].startswith("text/html")
     assert "/admin/access-policy" in home_response.text
     assert "/admin/projects" in home_response.text
+    assert "/admin/interactions" in home_response.text
     assert "/admin/terminal-lifecycle" in home_response.text
     assert "/admin/bot-delivery" in home_response.text
 
