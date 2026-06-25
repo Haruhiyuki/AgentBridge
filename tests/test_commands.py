@@ -255,6 +255,13 @@ def test_queue_commands_list_remove_and_clear_queued_turns(tmp_path):
         context.id,
         "queue-command-turn-two",
     )
+    third_turn = execute(
+        commands,
+        "/agent ask third queued command",
+        maintainer,
+        context.id,
+        "queue-command-turn-three",
+    )
     listed = execute(
         commands,
         "/agent queue list",
@@ -262,16 +269,30 @@ def test_queue_commands_list_remove_and_clear_queued_turns(tmp_path):
         context.id,
         "queue-command-list",
     )
+    moved = execute(
+        commands,
+        (
+            f"/agent queue move {third_turn.data['turn_id']} "
+            f"--before {first_turn.data['turn_id']} "
+            f"--version {listed.data['queue_version']}"
+        ),
+        maintainer,
+        context.id,
+        "queue-command-move",
+    )
     removed = execute(
         commands,
-        f"/agent queue remove {first_turn.data['turn_id']}",
+        (
+            f"/agent queue remove {first_turn.data['turn_id']} "
+            f"--version {moved.data['queue_version']}"
+        ),
         maintainer,
         context.id,
         "queue-command-remove",
     )
     cleared = execute(
         commands,
-        "/agent queue clear",
+        f"/agent queue clear --version {removed.data['queue_version']}",
         maintainer,
         context.id,
         "queue-command-clear",
@@ -288,12 +309,24 @@ def test_queue_commands_list_remove_and_clear_queued_turns(tmp_path):
     assert [turn["id"] for turn in listed.data["turns"]] == [
         first_turn.data["turn_id"],
         second_turn.data["turn_id"],
+        third_turn.data["turn_id"],
     ]
+    assert listed.data["queue_version"].startswith("qv_")
+    assert moved.canonical_command == "queue.move"
+    assert [turn["id"] for turn in moved.data["turns"]] == [
+        third_turn.data["turn_id"],
+        first_turn.data["turn_id"],
+        second_turn.data["turn_id"],
+    ]
+    assert moved.data["queue_version"] != listed.data["queue_version"]
     assert removed.canonical_command == "queue.remove"
     assert removed.data["turn"]["status"] == "cancelled"
     assert cleared.canonical_command == "queue.clear"
-    assert cleared.data["count"] == 1
-    assert [turn["id"] for turn in cleared.data["turns"]] == [second_turn.data["turn_id"]]
+    assert cleared.data["count"] == 2
+    assert [turn["id"] for turn in cleared.data["turns"]] == [
+        third_turn.data["turn_id"],
+        second_turn.data["turn_id"],
+    ]
     assert listed_after_clear.data["turns"] == []
 
 

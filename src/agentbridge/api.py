@@ -189,6 +189,17 @@ class QueueMutationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     actor: ActorPayload = Field(default_factory=ActorPayload)
+    expected_queue_version: str | None = None
+    trace_id: str = "api"
+
+
+class QueueReorderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    turn_id: str
+    before_turn_id: str
+    expected_queue_version: str
     trace_id: str = "api"
 
 
@@ -955,11 +966,33 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
 
     @app.get("/api/v1/sessions/{session_id}/queue")
     def list_turn_queue(session_id: str, control: ControlPlane = Depends(get_control)):
-        turns = control.list_turn_queue(
+        turns, queue_version = control.list_turn_queue(
             actor=Actor(id="api", roles={"admin"}),
             session_id=session_id,
         )
-        return [turn.model_dump(mode="json") for turn in turns]
+        return {
+            "queue_version": queue_version,
+            "turns": [turn.model_dump(mode="json") for turn in turns],
+        }
+
+    @app.post("/api/v1/sessions/{session_id}/queue/reorder")
+    def reorder_turn_queue(
+        session_id: str,
+        payload: QueueReorderRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        turns, queue_version = control.reorder_turn_queue(
+            actor=payload.actor.to_actor(),
+            session_id=session_id,
+            turn_id=payload.turn_id,
+            before_turn_id=payload.before_turn_id,
+            expected_queue_version=payload.expected_queue_version,
+            trace_id=payload.trace_id,
+        )
+        return {
+            "queue_version": queue_version,
+            "turns": [turn.model_dump(mode="json") for turn in turns],
+        }
 
     @app.delete("/api/v1/sessions/{session_id}/queue/{turn_id}")
     def remove_queued_turn(
@@ -968,13 +1001,17 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         payload: QueueMutationRequest,
         control: ControlPlane = Depends(get_control),
     ):
-        turn = control.remove_queued_turn(
+        turn, queue_version = control.remove_queued_turn(
             actor=payload.actor.to_actor(),
             session_id=session_id,
             turn_id=turn_id,
             trace_id=payload.trace_id,
+            expected_queue_version=payload.expected_queue_version,
         )
-        return turn.model_dump(mode="json")
+        return {
+            "queue_version": queue_version,
+            "turn": turn.model_dump(mode="json"),
+        }
 
     @app.post("/api/v1/sessions/{session_id}/queue/clear")
     def clear_turn_queue(
@@ -982,12 +1019,14 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         payload: QueueMutationRequest,
         control: ControlPlane = Depends(get_control),
     ):
-        turns = control.clear_turn_queue(
+        turns, queue_version = control.clear_turn_queue(
             actor=payload.actor.to_actor(),
             session_id=session_id,
             trace_id=payload.trace_id,
+            expected_queue_version=payload.expected_queue_version,
         )
         return {
+            "queue_version": queue_version,
             "count": len(turns),
             "turns": [turn.model_dump(mode="json") for turn in turns],
         }
@@ -2322,7 +2361,7 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         and len(path_segments) == 7
         and path_segments[:4] == ["", "api", "v1", "sessions"]
         and path_segments[5] == "queue"
-        and path_segments[6] == "clear"
+        and path_segments[6] in {"clear", "reorder"}
     ):
         return DeviceIdentityScope.SESSION_MANAGE
     if (

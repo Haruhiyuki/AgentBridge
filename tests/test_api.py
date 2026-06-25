@@ -1087,7 +1087,8 @@ def test_managed_device_identity_session_read_scope_allows_session_read_apis(
     assert detail_response.status_code == 200
     assert detail_response.json()["id"] == existing_session["id"]
     assert queue_response.status_code == 200
-    assert [turn["id"] for turn in queue_response.json()] == [queued_turn["id"]]
+    assert queue_response.json()["queue_version"].startswith("qv_")
+    assert [turn["id"] for turn in queue_response.json()["turns"]] == [queued_turn["id"]]
     assert create_session_response.status_code == 403
 
 
@@ -1145,11 +1146,17 @@ def test_managed_device_identity_session_manage_scope_allows_session_write_apis(
         headers=headers,
     )
     session_id = create_session_response.json().get("id")
-    queued_turn = control.enqueue_turn(
+    first_queued_turn = control.enqueue_turn(
         actor=Actor(id=operator["id"], roles=set(operator["roles"])),
         session_id=session_id,
-        prompt="Queue clear scope fixture",
-        trace_id="session-manager-queued-turn",
+        prompt="First queue scope fixture",
+        trace_id="session-manager-queued-turn-one",
+    )
+    second_queued_turn = control.enqueue_turn(
+        actor=Actor(id=operator["id"], roles=set(operator["roles"])),
+        session_id=session_id,
+        prompt="Second queue scope fixture",
+        trace_id="session-manager-queued-turn-two",
     )
     lease_response = client.post(
         f"/api/v1/sessions/{session_id}/lease/acquire",
@@ -1170,10 +1177,22 @@ def test_managed_device_identity_session_manage_scope_allows_session_write_apis(
         },
         headers=headers,
     )
+    reorder_queue_response = client.post(
+        f"/api/v1/sessions/{session_id}/queue/reorder",
+        json={
+            "actor": maintainer,
+            "turn_id": second_queued_turn.id,
+            "before_turn_id": first_queued_turn.id,
+            "expected_queue_version": control.repository.queue_version(session_id),
+            "trace_id": "session-manager-reorder-queue",
+        },
+        headers=headers,
+    )
     clear_queue_response = client.post(
         f"/api/v1/sessions/{session_id}/queue/clear",
         json={
             "actor": maintainer,
+            "expected_queue_version": reorder_queue_response.json().get("queue_version"),
             "trace_id": "session-manager-clear-queue",
         },
         headers=headers,
@@ -1191,9 +1210,16 @@ def test_managed_device_identity_session_manage_scope_allows_session_write_apis(
     assert lease_response.json()["owner_id"] == "usr_maintainer"
     assert release_response.status_code == 200
     assert release_response.json()["next_epoch"] == lease_response.json()["epoch"] + 1
+    assert reorder_queue_response.status_code == 200
+    assert [turn["id"] for turn in reorder_queue_response.json()["turns"]] == [
+        second_queued_turn.id,
+        first_queued_turn.id,
+    ]
     assert clear_queue_response.status_code == 200
+    assert clear_queue_response.json()["queue_version"].startswith("qv_")
     assert [turn["id"] for turn in clear_queue_response.json()["turns"]] == [
-        queued_turn.id
+        second_queued_turn.id,
+        first_queued_turn.id,
     ]
     assert close_response.status_code == 200
     assert close_response.json()["status"] == "closed"
@@ -1310,7 +1336,8 @@ def test_managed_device_identity_session_send_scope_allows_turn_writes(
     assert turn_response.json()["prompt"] == "Run the focused test suite."
     assert turn_response.json()["status"] == "queued"
     assert remove_response.status_code == 200
-    assert remove_response.json()["status"] == "cancelled"
+    assert remove_response.json()["queue_version"].startswith("qv_")
+    assert remove_response.json()["turn"]["status"] == "cancelled"
 
 
 def test_managed_device_identity_requires_session_event_ingest_scope_for_event_writes(
@@ -2041,44 +2068,109 @@ def test_session_queue_api_lists_removes_and_clears_queued_turns(tmp_path):
             "trace_id": "test-queue-second-turn",
         },
     )
+    third_turn_response = client.post(
+        f"/api/v1/sessions/{session['id']}/turns",
+        json={
+            "actor": operator_one,
+            "prompt": "Third queued turn",
+            "trace_id": "test-queue-third-turn",
+        },
+    )
     assert first_turn_response.status_code == 200
     assert second_turn_response.status_code == 200
+    assert third_turn_response.status_code == 200
     first_turn = first_turn_response.json()
     second_turn = second_turn_response.json()
+    third_turn = third_turn_response.json()
 
     list_response = client.get(f"/api/v1/sessions/{session['id']}/queue")
+    queue_version = list_response.json()["queue_version"]
+    reorder_response = client.post(
+        f"/api/v1/sessions/{session['id']}/queue/reorder",
+        json={
+            "actor": maintainer,
+            "turn_id": third_turn["id"],
+            "before_turn_id": first_turn["id"],
+            "expected_queue_version": queue_version,
+            "trace_id": "test-queue-reorder",
+        },
+    )
+    reordered_queue_version = reorder_response.json()["queue_version"]
+    stale_reorder_response = client.post(
+        f"/api/v1/sessions/{session['id']}/queue/reorder",
+        json={
+            "actor": maintainer,
+            "turn_id": second_turn["id"],
+            "before_turn_id": third_turn["id"],
+            "expected_queue_version": queue_version,
+            "trace_id": "test-queue-stale-reorder",
+        },
+    )
     denied_remove_response = client.request(
         "DELETE",
         f"/api/v1/sessions/{session['id']}/queue/{first_turn['id']}",
-        json={"actor": operator_two, "trace_id": "test-queue-denied-remove"},
+        json={
+            "actor": operator_two,
+            "expected_queue_version": reordered_queue_version,
+            "trace_id": "test-queue-denied-remove",
+        },
     )
     own_remove_response = client.request(
         "DELETE",
         f"/api/v1/sessions/{session['id']}/queue/{first_turn['id']}",
-        json={"actor": operator_one, "trace_id": "test-queue-own-remove"},
+        json={
+            "actor": operator_one,
+            "expected_queue_version": reordered_queue_version,
+            "trace_id": "test-queue-own-remove",
+        },
     )
+    remove_queue_version = own_remove_response.json()["queue_version"]
     clear_response = client.post(
         f"/api/v1/sessions/{session['id']}/queue/clear",
-        json={"actor": maintainer, "trace_id": "test-queue-clear"},
+        json={
+            "actor": maintainer,
+            "expected_queue_version": remove_queue_version,
+            "trace_id": "test-queue-clear",
+        },
     )
     final_list_response = client.get(f"/api/v1/sessions/{session['id']}/queue")
 
     assert list_response.status_code == 200
-    assert [turn["id"] for turn in list_response.json()] == [
+    assert queue_version.startswith("qv_")
+    assert [turn["id"] for turn in list_response.json()["turns"]] == [
+        first_turn["id"],
+        second_turn["id"],
+        third_turn["id"],
+    ]
+    assert reorder_response.status_code == 200
+    assert reordered_queue_version.startswith("qv_")
+    assert reordered_queue_version != queue_version
+    assert [turn["id"] for turn in reorder_response.json()["turns"]] == [
+        third_turn["id"],
         first_turn["id"],
         second_turn["id"],
     ]
+    assert stale_reorder_response.status_code == 409
+    assert stale_reorder_response.json()["error_code"] == "RESOURCE_CONFLICT"
+    assert (
+        stale_reorder_response.json()["details"]["current_queue_version"]
+        == reordered_queue_version
+    )
     assert denied_remove_response.status_code == 403
     assert denied_remove_response.json()["error_code"] == "PERMISSION_DENIED"
     assert own_remove_response.status_code == 200
-    assert own_remove_response.json()["status"] == "cancelled"
+    assert own_remove_response.json()["turn"]["status"] == "cancelled"
     assert clear_response.status_code == 200
-    assert clear_response.json()["count"] == 1
-    assert [turn["id"] for turn in clear_response.json()["turns"]] == [second_turn["id"]]
+    assert clear_response.json()["count"] == 2
+    assert [turn["id"] for turn in clear_response.json()["turns"]] == [
+        third_turn["id"],
+        second_turn["id"],
+    ]
     assert final_list_response.status_code == 200
-    assert final_list_response.json() == []
+    assert final_list_response.json()["turns"] == []
     assert control.repository.turns[first_turn["id"]].status == TurnStatus.CANCELLED
     assert control.repository.turns[second_turn["id"]].status == TurnStatus.CANCELLED
+    assert control.repository.turns[third_turn["id"]].status == TurnStatus.CANCELLED
 
 
 def test_project_session_rest_flow_supports_admin_operations(tmp_path):

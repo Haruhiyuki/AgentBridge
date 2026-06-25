@@ -899,6 +899,60 @@ class InMemoryRepository:
             and turn.queued_at.date() == today
         )
 
+    def _sorted_queue_locked(self, session_id: str) -> list[Turn]:
+        return sorted(
+            [
+                turn
+                for turn in self.turns.values()
+                if turn.session_id == session_id and turn.status == TurnStatus.QUEUED
+            ],
+            key=lambda turn: (turn.queue_order, turn.queued_at, turn.id),
+        )
+
+    @staticmethod
+    def _queue_version_for_turns(turns: list[Turn]) -> str:
+        serialized = "\n".join(turn.id for turn in turns)
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+        return f"qv_{digest}"
+
+    def _queue_version_locked(self, session_id: str) -> str:
+        return self._queue_version_for_turns(self._sorted_queue_locked(session_id))
+
+    def _validate_queue_version_locked(
+        self,
+        *,
+        session_id: str,
+        expected_queue_version: str | None,
+    ) -> None:
+        if expected_queue_version is None:
+            return
+        current_version = self._queue_version_locked(session_id)
+        if expected_queue_version != current_version:
+            raise AgentBridgeError(
+                ErrorCode.RESOURCE_CONFLICT,
+                "队列版本已变化，拒绝覆盖并发修改。",
+                next_step="请重新执行 /agent queue list 获取最新 queue_version 后重试。",
+                status_code=409,
+                details={
+                    "session_id": session_id,
+                    "expected_queue_version": expected_queue_version,
+                    "current_queue_version": current_version,
+                },
+            )
+
+    def _next_session_queue_order_locked(self, session_id: str) -> int:
+        return (
+            max(
+                (
+                    turn.queue_order
+                    for turn in self.turns.values()
+                    if turn.session_id == session_id
+                ),
+                default=0,
+            )
+            + 1
+        )
+
     def _next_utc_day_start(self) -> datetime:
         now = utc_now()
         return datetime.combine(
@@ -1047,6 +1101,7 @@ class InMemoryRepository:
                 session_id=session_id,
                 prompt=prompt.strip(),
                 actor_id=actor.id,
+                queue_order=self._next_session_queue_order_locked(session_id),
             )
             self.turns[turn.id] = turn
             return turn
@@ -1058,14 +1113,18 @@ class InMemoryRepository:
     def list_queue(self, session_id: str) -> list[Turn]:
         with self._lock:
             self.get_session(session_id)
-            return sorted(
-                [
-                    turn
-                    for turn in self.turns.values()
-                    if turn.session_id == session_id and turn.status == TurnStatus.QUEUED
-                ],
-                key=lambda turn: turn.queued_at,
-            )
+            return self._sorted_queue_locked(session_id)
+
+    def queue_version(self, session_id: str) -> str:
+        with self._lock:
+            self.get_session(session_id)
+            return self._queue_version_locked(session_id)
+
+    def queue_snapshot(self, session_id: str) -> tuple[list[Turn], str]:
+        with self._lock:
+            self.get_session(session_id)
+            turns = self._sorted_queue_locked(session_id)
+            return turns, self._queue_version_for_turns(turns)
 
     def get_turn(self, turn_id: str) -> Turn:
         with self._lock:
@@ -1080,8 +1139,18 @@ class InMemoryRepository:
                 )
             return turn
 
-    def cancel_queued_turn(self, *, session_id: str, turn_id: str) -> Turn:
+    def cancel_queued_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        expected_queue_version: str | None = None,
+    ) -> Turn:
         with self._lock:
+            self._validate_queue_version_locked(
+                session_id=session_id,
+                expected_queue_version=expected_queue_version,
+            )
             turn = self._get_session_turn(session_id=session_id, turn_id=turn_id)
             if turn.status != TurnStatus.QUEUED:
                 raise AgentBridgeError(
@@ -1097,9 +1166,18 @@ class InMemoryRepository:
             self.turns[turn.id] = updated
             return updated
 
-    def clear_queued_turns(self, session_id: str) -> list[Turn]:
+    def clear_queued_turns(
+        self,
+        session_id: str,
+        *,
+        expected_queue_version: str | None = None,
+    ) -> list[Turn]:
         with self._lock:
             self.get_session(session_id)
+            self._validate_queue_version_locked(
+                session_id=session_id,
+                expected_queue_version=expected_queue_version,
+            )
             cancelled: list[Turn] = []
             for turn in self.list_queue(session_id):
                 updated = turn.model_copy(
@@ -1108,6 +1186,58 @@ class InMemoryRepository:
                 self.turns[turn.id] = updated
                 cancelled.append(updated)
             return cancelled
+
+    def reorder_queued_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        before_turn_id: str,
+        expected_queue_version: str,
+    ) -> list[Turn]:
+        with self._lock:
+            self.get_session(session_id)
+            self._validate_queue_version_locked(
+                session_id=session_id,
+                expected_queue_version=expected_queue_version,
+            )
+            turns = self._sorted_queue_locked(session_id)
+            turn_ids = [turn.id for turn in turns]
+            if turn_id not in turn_ids:
+                raise AgentBridgeError(
+                    ErrorCode.RESOURCE_CONFLICT,
+                    "只能重排尚未开始的 queued Turn。",
+                    next_step="请执行 /agent queue list 查看可重排的 Turn。",
+                    status_code=409,
+                    details={"turn_id": turn_id, "session_id": session_id},
+                )
+            if before_turn_id not in turn_ids:
+                raise AgentBridgeError(
+                    ErrorCode.RESOURCE_CONFLICT,
+                    "目标位置 Turn 不在当前队列中。",
+                    next_step="请确认 --before 指向同一 Session 中尚未开始的 Turn。",
+                    status_code=409,
+                    details={
+                        "turn_id": turn_id,
+                        "before_turn_id": before_turn_id,
+                        "session_id": session_id,
+                    },
+                )
+            if turn_id == before_turn_id:
+                return turns
+
+            moving = self.turns[turn_id]
+            reordered = [turn for turn in turns if turn.id != turn_id]
+            before_index = next(
+                index for index, turn in enumerate(reordered) if turn.id == before_turn_id
+            )
+            reordered.insert(before_index, moving)
+            updated_turns: list[Turn] = []
+            for index, turn in enumerate(reordered, start=1):
+                updated = turn.model_copy(update={"queue_order": index})
+                self.turns[turn.id] = updated
+                updated_turns.append(updated)
+            return updated_turns
 
     def start_turn(self, *, session_id: str, turn_id: str) -> Turn:
         with self._lock:
