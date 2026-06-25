@@ -58,6 +58,9 @@ class TerminalBackend(Protocol):
     def read_output(self, *, session_id: str, after_cursor: int = 0) -> TerminalOutputChunk: ...
 
 
+DEFAULT_PTY_OUTPUT_LIMIT_CHARS = 1_000_000
+
+
 @dataclass
 class FakeTerminalBackend:
     started: dict[str, tuple[str, str]] = field(default_factory=dict)
@@ -215,13 +218,14 @@ class PtySession:
     process: subprocess.Popen[bytes]
     master_fd: int
     output: str = ""
+    output_base_cursor: int = 0
     closed: bool = False
     lock: RLock = field(default_factory=RLock)
     reader: Thread | None = None
 
 
 class PtyTerminalBackend:
-    def __init__(self) -> None:
+    def __init__(self, *, max_output_chars: int = DEFAULT_PTY_OUTPUT_LIMIT_CHARS) -> None:
         if not hasattr(pty, "openpty"):
             raise AgentBridgeError(
                 ErrorCode.PLATFORM_CAPABILITY_MISSING,
@@ -229,6 +233,13 @@ class PtyTerminalBackend:
                 next_step="请使用 fake 或 tmux 终端后端。",
                 status_code=503,
             )
+        if max_output_chars <= 0:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "PTY 输出保留上限必须大于 0。",
+                next_step="请配置正整数的 PTY 输出保留字符数。",
+            )
+        self.max_output_chars = max_output_chars
         self.sessions: dict[str, PtySession] = {}
         self._lock = RLock()
 
@@ -323,9 +334,12 @@ class PtyTerminalBackend:
             return session.output
 
     def read_output(self, *, session_id: str, after_cursor: int = 0) -> TerminalOutputChunk:
-        snapshot = self.snapshot(session_id=session_id)
-        cursor = len(snapshot)
-        if after_cursor < 0 or after_cursor > cursor:
+        session = self._require_session(session_id)
+        with session.lock:
+            snapshot = session.output
+            base_cursor = session.output_base_cursor
+            cursor = base_cursor + len(snapshot)
+        if after_cursor < base_cursor or after_cursor > cursor:
             return TerminalOutputChunk(
                 cursor=cursor,
                 data=snapshot,
@@ -334,7 +348,7 @@ class PtyTerminalBackend:
             )
         return TerminalOutputChunk(
             cursor=cursor,
-            data=snapshot[after_cursor:],
+            data=snapshot[after_cursor - base_cursor :],
             snapshot=snapshot,
         )
 
@@ -380,8 +394,7 @@ class PtyTerminalBackend:
                 if not data:
                     return
                 text = data.decode("utf-8", errors="replace")
-                with session.lock:
-                    session.output += text
+                self._append_output(session, text)
             elif session.process.poll() is not None:
                 return
 
@@ -407,6 +420,15 @@ class PtyTerminalBackend:
                 status_code=409,
                 details={"reason": str(exc)},
             ) from exc
+
+    def _append_output(self, session: PtySession, text: str) -> None:
+        with session.lock:
+            session.output += text
+            overflow = len(session.output) - self.max_output_chars
+            if overflow > 0:
+                session.output = session.output[overflow:]
+                session.output_base_cursor += overflow
+
 
 class TerminalAgentService:
     def __init__(self, control: ControlPlane, backend: TerminalBackend | None = None) -> None:

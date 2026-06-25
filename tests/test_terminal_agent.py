@@ -272,6 +272,7 @@ def test_tmux_backend_reuses_existing_session_after_agent_restart(monkeypatch, t
 
 def test_terminal_backend_env_selects_pty(monkeypatch):
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_BACKEND", "pty")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_OUTPUT_LIMIT_CHARS", "2048")
     try:
         backend = create_terminal_backend_from_env()
     except AgentBridgeError as exc:
@@ -280,6 +281,7 @@ def test_terminal_backend_env_selects_pty(monkeypatch):
         raise
 
     assert isinstance(backend, PtyTerminalBackend)
+    assert backend.max_output_chars == 2048
 
 
 def test_pty_backend_streams_process_output(tmp_path):
@@ -316,4 +318,38 @@ def test_pty_backend_streams_process_output(tmp_path):
             backend.signal(session_id=session_id, name="eof")
         except AgentBridgeError:
             pass
+        backend.terminate(session_id)
+
+
+def test_pty_backend_resets_when_cursor_falls_behind_retained_output(tmp_path):
+    shell = shutil.which("sh")
+    if shell is None:
+        pytest.skip("sh executable is required for PTY retention test")
+
+    backend = PtyTerminalBackend(max_output_chars=12)
+    session_id = "pty-retention"
+    backend.start(
+        session_id=session_id,
+        cwd=str(tmp_path),
+        command=f"{shell} -c 'printf abcdefghijklmnopqrstuvwxyz; sleep 10'",
+    )
+    try:
+        deadline = time.monotonic() + 2
+        chunk = TerminalOutputChunk(cursor=0, data="", snapshot="")
+        while time.monotonic() < deadline:
+            chunk = backend.read_output(session_id=session_id, after_cursor=0)
+            if chunk.reset and chunk.cursor >= 26:
+                break
+            time.sleep(0.05)
+
+        assert chunk.reset is True
+        assert chunk.cursor >= 26
+        assert len(chunk.snapshot) <= 12
+        assert chunk.cursor > len(chunk.snapshot)
+        assert chunk.snapshot.endswith("opqrstuvwxyz")
+
+        fresh_chunk = backend.read_output(session_id=session_id, after_cursor=chunk.cursor)
+        assert fresh_chunk.reset is False
+        assert fresh_chunk.data == ""
+    finally:
         backend.terminate(session_id)

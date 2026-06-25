@@ -55,6 +55,7 @@ from agentbridge.renderer import (
 )
 from agentbridge.storage import InMemoryRepository
 from agentbridge.terminal_agent import (
+    DEFAULT_PTY_OUTPUT_LIMIT_CHARS,
     FakeTerminalBackend,
     PtyTerminalBackend,
     TerminalAgentService,
@@ -1785,8 +1786,25 @@ def create_terminal_backend_from_env():
     if backend == "tmux":
         return TmuxTerminalBackend()
     if backend in {"pty", "local_pty"}:
-        return PtyTerminalBackend()
+        return PtyTerminalBackend(max_output_chars=terminal_pty_output_limit_from_env())
     raise RuntimeError("AGENTBRIDGE_TERMINAL_BACKEND must be one of: fake, tmux, pty")
+
+
+def terminal_pty_output_limit_from_env() -> int:
+    raw_limit = os.environ.get("AGENTBRIDGE_TERMINAL_PTY_OUTPUT_LIMIT_CHARS")
+    if raw_limit is None or not raw_limit.strip():
+        return DEFAULT_PTY_OUTPUT_LIMIT_CHARS
+    try:
+        limit = int(raw_limit)
+    except ValueError as exc:
+        raise RuntimeError(
+            "AGENTBRIDGE_TERMINAL_PTY_OUTPUT_LIMIT_CHARS must be a positive integer"
+        ) from exc
+    if limit <= 0:
+        raise RuntimeError(
+            "AGENTBRIDGE_TERMINAL_PTY_OUTPUT_LIMIT_CHARS must be a positive integer"
+        )
+    return limit
 
 
 def create_bot_transport_from_env():
