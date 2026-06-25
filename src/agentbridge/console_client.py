@@ -206,6 +206,33 @@ class LocalConsoleClient:
             reset=bool(response.get("reset")),
         )
 
+    async def stream_output(
+        self,
+        *,
+        after_cursor: int = 0,
+        poll_interval_seconds: float = 0.25,
+    ):
+        async for frame in self.daemon.stream_output(
+            {
+                "session_id": self.session_id,
+                "after_cursor": after_cursor,
+                "poll_interval_seconds": poll_interval_seconds,
+            }
+        ):
+            if frame.get("ok") is not True:
+                raise ConsoleClientError(frame)
+            if frame.get("type") != "terminal.output":
+                continue
+            data = frame.get("data") or {}
+            if not isinstance(data, dict):
+                continue
+            yield TerminalOutputChunk(
+                cursor=int(data.get("cursor") or 0),
+                data=str(data.get("data") or ""),
+                snapshot=str(data.get("snapshot") or ""),
+                reset=bool(data.get("reset")),
+            )
+
     async def release(self) -> int | None:
         if self.lease is None:
             return None
@@ -376,6 +403,26 @@ async def follow_terminal_output(
     cursor = 0
     iterations = 0
     poll_interval_seconds = max(poll_interval_seconds, 0.01)
+    if hasattr(client, "stream_output") and max_iterations is None:
+        async for chunk in client.stream_output(
+            after_cursor=cursor,
+            poll_interval_seconds=poll_interval_seconds,
+        ):
+            current = chunk.snapshot
+            cursor = chunk.cursor
+            update = (
+                f"{TERMINAL_REPAINT_PREFIX}{chunk.snapshot}"
+                if chunk.reset
+                else chunk.data
+            )
+            if update:
+                output_file.write(update)
+                output_file.flush()
+            previous = current
+            if stop_event is not None and stop_event.is_set():
+                return
+        return
+
     while stop_event is None or not stop_event.is_set():
         if hasattr(client, "read_output"):
             chunk = await client.read_output(cursor)

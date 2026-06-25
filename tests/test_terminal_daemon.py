@@ -109,6 +109,30 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
                 "snapshot": "hello daemon\n",
                 "reset": False,
             }
+
+            stream_frames = [
+                frame
+                async for frame in client.stream_output(
+                    {
+                        "session_id": session.id,
+                        "after_cursor": 0,
+                        "poll_interval_seconds": 0.01,
+                        "max_frames": 1,
+                    }
+                )
+            ]
+            assert stream_frames == [
+                {
+                    "ok": True,
+                    "type": "terminal.output",
+                    "data": {
+                        "cursor": 13,
+                        "data": "hello daemon\n",
+                        "snapshot": "hello daemon\n",
+                        "reset": False,
+                    },
+                }
+            ]
         finally:
             await server.stop()
             assert not socket_path.exists()

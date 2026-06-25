@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hmac
 import json
 import os
@@ -72,16 +73,50 @@ class LocalTerminalAgentServer:
     ) -> None:
         try:
             while line := await reader.readline():
-                response = self.handle_request_line(line)
-                writer.write(json.dumps(response, ensure_ascii=False).encode("utf-8") + b"\n")
-                await writer.drain()
+                try:
+                    request = self.decode_request_line(line)
+                except (TypeError, ValueError) as exc:
+                    error = AgentBridgeError(
+                        ErrorCode.COMMAND_ARGUMENT_INVALID,
+                        "本地 Terminal Agent 请求格式无效。",
+                        next_step="请发送包含 token、action 和 payload 的 JSON 行。",
+                        details={"reason": str(exc)},
+                    )
+                    await self.write_response(writer, {"ok": False, "error": error.to_payload()})
+                    continue
+                if request.get("action") == "stream_output":
+                    await self.stream_output(request, writer)
+                    return
+                response = self.handle_request_object(request)
+                await self.write_response(writer, response)
         finally:
             writer.close()
-            await writer.wait_closed()
+            with contextlib.suppress(ConnectionError, OSError):
+                await writer.wait_closed()
 
     def handle_request_line(self, line: bytes) -> dict[str, Any]:
         try:
-            request = json.loads(line.decode("utf-8"))
+            request = self.decode_request_line(line)
+            return self.handle_request_object(request)
+        except AgentBridgeError as exc:
+            return {"ok": False, "error": exc.to_payload()}
+        except (TypeError, ValueError) as exc:
+            error = AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "本地 Terminal Agent 请求格式无效。",
+                next_step="请发送包含 token、action 和 payload 的 JSON 行。",
+                details={"reason": str(exc)},
+            )
+            return {"ok": False, "error": error.to_payload()}
+
+    def decode_request_line(self, line: bytes) -> dict[str, Any]:
+        request = json.loads(line.decode("utf-8"))
+        if not isinstance(request, dict):
+            raise ValueError("request must be a JSON object")
+        return request
+
+    def handle_request_object(self, request: dict[str, Any]) -> dict[str, Any]:
+        try:
             data = self.handle_request(request)
             return {"ok": True, "data": data}
         except AgentBridgeError as exc:
@@ -94,6 +129,93 @@ class LocalTerminalAgentServer:
                 details={"reason": str(exc)},
             )
             return {"ok": False, "error": error.to_payload()}
+
+    async def write_response(
+        self,
+        writer: asyncio.StreamWriter,
+        response: dict[str, Any],
+    ) -> None:
+        writer.write(json.dumps(response, ensure_ascii=False).encode("utf-8") + b"\n")
+        await writer.drain()
+
+    async def stream_output(
+        self,
+        request: dict[str, Any],
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            token = request.get("token")
+            if not isinstance(token, str) or not hmac.compare_digest(token, self.auth_token):
+                raise AgentBridgeError(
+                    ErrorCode.PERMISSION_DENIED,
+                    "本地 Terminal Agent token 无效。",
+                    next_step="请使用当前本地 token 重新连接。",
+                    status_code=403,
+                )
+            payload = request.get("payload") or {}
+            if not isinstance(payload, dict):
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "payload 必须是对象。",
+                    next_step="请检查本地客户端请求格式。",
+                )
+            session_id = required_str(payload, "session_id")
+            cursor = int(payload.get("after_cursor") or 0)
+            poll_interval_seconds = max(float(payload.get("poll_interval_seconds") or 0.25), 0.01)
+            idle_timeout_seconds = payload.get("idle_timeout_seconds")
+            idle_timeout = (
+                max(float(idle_timeout_seconds), 0.0)
+                if idle_timeout_seconds is not None
+                else None
+            )
+            max_frames = payload.get("max_frames")
+            frame_limit = int(max_frames) if max_frames is not None else None
+            sent_frames = 0
+            loop = asyncio.get_running_loop()
+            last_frame_at = loop.time()
+            while frame_limit is None or sent_frames < frame_limit:
+                chunk = self.terminal.read_output(
+                    session_id=session_id,
+                    after_cursor=cursor,
+                )
+                cursor = chunk.cursor
+                if chunk.data or chunk.reset:
+                    await self.write_response(
+                        writer,
+                        {
+                            "ok": True,
+                            "type": "terminal.output",
+                            "data": {
+                                "cursor": chunk.cursor,
+                                "data": chunk.data,
+                                "snapshot": chunk.snapshot,
+                                "reset": chunk.reset,
+                            },
+                        },
+                    )
+                    sent_frames += 1
+                    last_frame_at = loop.time()
+                elif idle_timeout is not None and loop.time() - last_frame_at >= idle_timeout:
+                    await self.write_response(
+                        writer,
+                        {
+                            "ok": True,
+                            "type": "terminal.output.idle_timeout",
+                            "data": {"cursor": cursor},
+                        },
+                    )
+                    return
+                await asyncio.sleep(poll_interval_seconds)
+        except AgentBridgeError as exc:
+            await self.write_response(writer, {"ok": False, "error": exc.to_payload()})
+        except (TypeError, ValueError) as exc:
+            error = AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "本地 Terminal Agent 请求格式无效。",
+                next_step="请发送包含 token、action 和 payload 的 JSON 行。",
+                details={"reason": str(exc)},
+            )
+            await self.write_response(writer, {"ok": False, "error": error.to_payload()})
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any]:
         token = request.get("token")
@@ -175,7 +297,7 @@ class LocalTerminalAgentServer:
             f"未知本地 Terminal Agent action：{action}",
             next_step=(
                 "请使用 health、start_session、acquire_human_lease、release_lease、"
-                "submit_input、snapshot 或 read_output。"
+                "submit_input、snapshot、read_output 或 stream_output。"
             ),
         )
 
@@ -217,7 +339,23 @@ class LocalTerminalAgentClient:
                     raise
                 await asyncio.sleep(
                     min(self.connect_retry_interval_seconds, max(deadline - loop.time(), 0.0))
-                )
+            )
+
+    async def stream_output(
+        self,
+        payload: dict[str, Any],
+    ):
+        reader, writer = await self._connect()
+        request = {"token": self.auth_token, "action": "stream_output", "payload": payload}
+        writer.write(json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n")
+        await writer.drain()
+        try:
+            while line := await reader.readline():
+                yield json.loads(line.decode("utf-8"))
+        finally:
+            writer.close()
+            with contextlib.suppress(ConnectionError, OSError):
+                await writer.wait_closed()
 
 
 def required_str(payload: dict[str, Any], key: str) -> str:

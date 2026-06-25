@@ -290,3 +290,45 @@ def test_follow_terminal_output_prefers_cursor_chunks():
 
     assert output == f"hello world{TERMINAL_REPAINT_PREFIX}new"
     assert cursors == [0, 5, 11]
+
+
+def test_follow_terminal_output_prefers_daemon_stream():
+    class FakeClient:
+        def __init__(self) -> None:
+            self.stream_calls: list[tuple[int, float]] = []
+
+        async def stream_output(
+            self,
+            *,
+            after_cursor: int = 0,
+            poll_interval_seconds: float = 0.25,
+        ):
+            self.stream_calls.append((after_cursor, poll_interval_seconds))
+            for chunk in (
+                TerminalOutputChunk(cursor=5, data="hello", snapshot="hello"),
+                TerminalOutputChunk(
+                    cursor=3,
+                    data="new",
+                    snapshot="new",
+                    reset=True,
+                ),
+            ):
+                yield chunk
+
+        async def read_output(self, after_cursor: int) -> TerminalOutputChunk:
+            raise AssertionError("stream output should not call read_output")
+
+    async def scenario():
+        output = io.StringIO()
+        client = FakeClient()
+        await follow_terminal_output(
+            client,  # type: ignore[arg-type]
+            output_file=output,
+            poll_interval_seconds=0.01,
+        )
+        return output.getvalue(), client.stream_calls
+
+    output, stream_calls = asyncio.run(scenario())
+
+    assert output == f"hello{TERMINAL_REPAINT_PREFIX}new"
+    assert stream_calls == [(0, 0.01)]
