@@ -552,7 +552,10 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         rate_limiter=create_bot_rate_limiter_from_env(),
     )
     bot_retry_worker = create_bot_retry_worker_from_env(bot_gateway)
-    certificate_scan_worker = create_certificate_scan_worker_from_env(control)
+    certificate_scan_worker = create_certificate_scan_worker_from_env(
+        control,
+        bot_gateway,
+    )
     terminal_lifecycle_monitor_enabled = env_bool(
         "AGENTBRIDGE_TERMINAL_LIFECYCLE_MONITOR_ENABLED",
         default=False,
@@ -3793,6 +3796,7 @@ def create_bot_retry_worker_from_env(bot_gateway: BotGatewayService) -> BotDeliv
 
 def create_certificate_scan_worker_from_env(
     control: ControlPlane,
+    bot_gateway: BotGatewayService,
 ) -> DeviceCertificateScanWorker:
     return DeviceCertificateScanWorker(
         control,
@@ -3813,7 +3817,31 @@ def create_certificate_scan_worker_from_env(
             "AGENTBRIDGE_DEVICE_CERT_SCAN_ACTOR_ID",
             "certificate-scan-worker",
         ),
+        bot_gateway=bot_gateway,
+        notify_chat_context_ids=certificate_scan_notify_chat_context_ids_from_env(),
+        notify_platform=certificate_scan_notify_platform_from_env(),
+        notify_only_action_required=env_bool(
+            "AGENTBRIDGE_DEVICE_CERT_SCAN_NOTIFY_ONLY_ACTION_REQUIRED",
+            default=True,
+        ),
     )
+
+
+def certificate_scan_notify_chat_context_ids_from_env() -> tuple[str, ...]:
+    config = os.environ.get("AGENTBRIDGE_DEVICE_CERT_SCAN_NOTIFY_CHAT_CONTEXT_IDS", "")
+    return tuple(item.strip() for item in config.split(",") if item.strip())
+
+
+def certificate_scan_notify_platform_from_env() -> BotPlatform:
+    config = os.environ.get("AGENTBRIDGE_DEVICE_CERT_SCAN_NOTIFY_PLATFORM", "")
+    value = config.strip() or BotPlatform.ONEBOT_V11.value
+    try:
+        return BotPlatform(value)
+    except ValueError as exc:
+        raise RuntimeError(
+            "AGENTBRIDGE_DEVICE_CERT_SCAN_NOTIFY_PLATFORM must be one of: "
+            "onebot.v11, plain_text"
+        ) from exc
 
 
 def env_bool(name: str, *, default: bool) -> bool:

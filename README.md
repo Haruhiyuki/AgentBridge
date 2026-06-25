@@ -285,6 +285,11 @@ expired, or metadata-incomplete managed certificates. Set
 background at `AGENTBRIDGE_DEVICE_CERT_SCAN_INTERVAL_SECONDS` intervals; worker status
 is exposed through `/api/v1/device-identities/certificates/scan-worker`. Scan events
 render as operator-readable summaries through `GET /api/v1/events/rendered`.
+Set `AGENTBRIDGE_DEVICE_CERT_SCAN_NOTIFY_CHAT_CONTEXT_IDS` to a comma-separated list
+of chat context IDs to have the scan worker automatically deliver action-required scan
+events through Bot Gateway; `AGENTBRIDGE_DEVICE_CERT_SCAN_NOTIFY_PLATFORM` defaults to
+`onebot.v11`, and `AGENTBRIDGE_DEVICE_CERT_SCAN_NOTIFY_ONLY_ACTION_REQUIRED` defaults
+to `true`.
 Set `AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE` and
 `AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE` to enable CSR-based certificate issuance through
 `POST /api/v1/device-identities/{device_id}/certificates/issue`. The CSR Common Name

@@ -15,6 +15,7 @@ from agentbridge.bot_gateway import (
 )
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
+from agentbridge.device_certificate_scan import DeviceCertificateScanWorker
 from agentbridge.domain import (
     Actor,
     AgentBridgeError,
@@ -806,6 +807,67 @@ def test_bot_gateway_api_delivers_filtered_semantic_events():
     assert unfiltered_response.json()["error_code"] == "COMMAND_ARGUMENT_INVALID"
     assert len(transport.sent) == 1
     assert "api-expired-device" in transport.sent[0]["text"]
+
+
+def test_certificate_scan_worker_notifies_configured_bot_context():
+    control = ControlPlane()
+    admin = Actor(id="security-admin", roles={"admin"})
+    context = control.get_or_create_chat_context(
+        bot_instance_id="bot-test",
+        platform="onebot.v11",
+        chat_space_id="group-cert-alerts",
+    )
+    control.upsert_device_identity(
+        actor=admin,
+        device_id="unknown-certificate-device",
+        device_key="managed-secret",
+        certificate_fingerprints={"SHA256:AA:BB:CC"},
+        trace_id="cert-notify-device-create",
+    )
+    transport = InMemoryBotTransport()
+    gateway = BotGatewayService(control, transport=transport)
+    worker = DeviceCertificateScanWorker(
+        control,
+        bot_gateway=gateway,
+        notify_chat_context_ids=(context.id,),
+        warning_days=7,
+    )
+
+    result = worker.run_once(trace_id="cert-scan-notify")
+    status = worker.status()
+
+    assert result["action_required_count"] == 1
+    assert status["last_notification_error"] is None
+    assert status["last_notification_record_count"] == 1
+    assert status["last_notification_status_counts"] == {"sent": 1}
+    assert status["notify_chat_context_ids"] == [context.id]
+    assert len(transport.sent) == 1
+    assert "设备证书扫描" in transport.sent[0]["text"]
+    assert "unknown-certificate-device" in transport.sent[0]["text"]
+
+
+def test_certificate_scan_worker_skips_notification_without_action_required():
+    control = ControlPlane()
+    context = control.get_or_create_chat_context(
+        bot_instance_id="bot-test",
+        platform="onebot.v11",
+        chat_space_id="group-cert-alerts",
+    )
+    transport = InMemoryBotTransport()
+    gateway = BotGatewayService(control, transport=transport)
+    worker = DeviceCertificateScanWorker(
+        control,
+        bot_gateway=gateway,
+        notify_chat_context_ids=(context.id,),
+    )
+
+    result = worker.run_once(trace_id="cert-scan-clear")
+    status = worker.status()
+
+    assert result["action_required_count"] == 0
+    assert status["last_notification_record_count"] == 0
+    assert status["last_notification_status_counts"] == {}
+    assert transport.sent == []
 
 
 def test_bot_retry_worker_api_reports_status_and_runs_once(tmp_path):

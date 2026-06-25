@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 from threading import Event, RLock, Thread, current_thread
 
+from agentbridge.bot_gateway import BotGatewayService
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, utc_now
+from agentbridge.domain import Actor, BotDeliveryRecord, BotPlatform, utc_now
 
 
 class DeviceCertificateScanWorker:
@@ -19,6 +21,10 @@ class DeviceCertificateScanWorker:
         warning_days: int = 14,
         include_revoked: bool = False,
         actor_id: str = "certificate-scan-worker",
+        bot_gateway: BotGatewayService | None = None,
+        notify_chat_context_ids: tuple[str, ...] = (),
+        notify_platform: BotPlatform = BotPlatform.ONEBOT_V11,
+        notify_only_action_required: bool = True,
     ) -> None:
         self.control = control
         self.enabled = enabled
@@ -26,12 +32,23 @@ class DeviceCertificateScanWorker:
         self.warning_days = max(int(warning_days), 1)
         self.include_revoked = include_revoked
         self.actor_id = actor_id.strip() or "certificate-scan-worker"
+        self.bot_gateway = bot_gateway
+        self.notify_chat_context_ids = tuple(
+            chat_context_id.strip()
+            for chat_context_id in notify_chat_context_ids
+            if chat_context_id.strip()
+        )
+        self.notify_platform = notify_platform
+        self.notify_only_action_required = notify_only_action_required
         self._lock = RLock()
         self._stop_event = Event()
         self._thread: Thread | None = None
         self.started_at: datetime | None = None
         self.last_run_at: datetime | None = None
         self.last_error: str | None = None
+        self.last_notification_error: str | None = None
+        self.last_notification_record_count = 0
+        self.last_notification_status_counts: dict[str, int] = {}
         self.last_action_required_count = 0
         self.last_total_device_count = 0
         self.last_status_counts: dict[str, int] = {}
@@ -98,7 +115,16 @@ class DeviceCertificateScanWorker:
                 self.last_action_required_count = 0
                 self.last_total_device_count = 0
                 self.last_status_counts = {}
+                self.last_notification_error = None
+                self.last_notification_record_count = 0
+                self.last_notification_status_counts = {}
             return {}
+        try:
+            notification_records = self._deliver_notifications(result, trace_id=trace_id)
+            notification_error = None
+        except Exception as exc:
+            notification_records = []
+            notification_error = str(exc)
         with self._lock:
             self.last_error = None
             self.last_action_required_count = int(result["action_required_count"])
@@ -107,6 +133,11 @@ class DeviceCertificateScanWorker:
                 str(key): int(value)
                 for key, value in dict(result["status_counts"]).items()
             }
+            self.last_notification_error = notification_error
+            self.last_notification_record_count = len(notification_records)
+            self.last_notification_status_counts = dict(
+                Counter(record.status.value for record in notification_records)
+            )
         return result
 
     def status(self) -> dict[str, object]:
@@ -118,14 +149,44 @@ class DeviceCertificateScanWorker:
                 "warning_days": self.warning_days,
                 "include_revoked": self.include_revoked,
                 "actor_id": self.actor_id,
+                "notify_chat_context_ids": list(self.notify_chat_context_ids),
+                "notify_platform": self.notify_platform.value,
+                "notify_only_action_required": self.notify_only_action_required,
                 "started_at": self.started_at.isoformat() if self.started_at else None,
                 "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
                 "last_error": self.last_error,
+                "last_notification_error": self.last_notification_error,
+                "last_notification_record_count": self.last_notification_record_count,
+                "last_notification_status_counts": self.last_notification_status_counts,
                 "last_action_required_count": self.last_action_required_count,
                 "last_total_device_count": self.last_total_device_count,
                 "last_status_counts": self.last_status_counts,
                 "run_count": self.run_count,
             }
+
+    def _deliver_notifications(
+        self,
+        result: dict[str, object],
+        *,
+        trace_id: str,
+    ) -> list[BotDeliveryRecord]:
+        if self.bot_gateway is None or not self.notify_chat_context_ids:
+            return []
+        action_required_count = int(result.get("action_required_count") or 0)
+        if self.notify_only_action_required and action_required_count <= 0:
+            return []
+        records: list[BotDeliveryRecord] = []
+        for chat_context_id in self.notify_chat_context_ids:
+            records.extend(
+                self.bot_gateway.deliver_events(
+                    chat_context_id=chat_context_id,
+                    platform=self.notify_platform,
+                    event_type="device_identity.certificates_scanned",
+                    trace_id=trace_id,
+                    limit=1,
+                )
+            )
+        return records
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():

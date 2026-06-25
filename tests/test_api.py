@@ -1059,6 +1059,11 @@ def test_device_certificate_scan_worker_can_autostart_from_environment(monkeypat
     monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_SCAN_WORKER_ENABLED", "true")
     monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_SCAN_INTERVAL_SECONDS", "60")
     monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_EXPIRY_WARNING_DAYS", "21")
+    monkeypatch.setenv(
+        "AGENTBRIDGE_DEVICE_CERT_SCAN_NOTIFY_CHAT_CONTEXT_IDS",
+        "ctx-alerts, ctx-backup",
+    )
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_SCAN_NOTIFY_PLATFORM", "plain_text")
     app = create_app()
 
     with TestClient(app) as client:
@@ -1067,6 +1072,11 @@ def test_device_certificate_scan_worker_can_autostart_from_environment(monkeypat
         assert running_status.json()["enabled"] is True
         assert running_status.json()["running"] is True
         assert running_status.json()["warning_days"] == 21
+        assert running_status.json()["notify_chat_context_ids"] == [
+            "ctx-alerts",
+            "ctx-backup",
+        ]
+        assert running_status.json()["notify_platform"] == "plain_text"
 
     assert app.state.certificate_scan_worker.is_running() is False
 
