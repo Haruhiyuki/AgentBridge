@@ -5,7 +5,13 @@ from fastapi.testclient import TestClient
 from agentbridge.api import create_app
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, InteractionType, LeaseOwnerType, SemanticEventSource
+from agentbridge.domain import (
+    Actor,
+    InteractionType,
+    LeaseOwnerType,
+    RiskLevel,
+    SemanticEventSource,
+)
 from agentbridge.persistence import SQLAlchemyRepository
 
 
@@ -182,6 +188,7 @@ def test_interaction_cancellation_survives_repository_restart(tmp_path):
         session_id=session.id,
         interaction_type=InteractionType.APPROVAL,
         prompt="Approve persistent cancellation?",
+        risk_level=RiskLevel.CRITICAL,
         trace_id="interaction-cancel-create",
     )
     cancelled = first_control.cancel_interaction(
@@ -195,4 +202,8 @@ def test_interaction_cancellation_survives_repository_restart(tmp_path):
 
     assert second_repo.get_interaction(interaction.id) == cancelled
     assert second_repo.get_interaction(interaction.id).status.value == "cancelled"
+    assert second_repo.get_interaction(interaction.id).risk_level == RiskLevel.CRITICAL
+    assert second_repo.get_interaction(interaction.id).policy_snapshot[
+        "dangerous_permission_required"
+    ] is True
     assert second_repo.get_interaction(interaction.id).answer == "superseded"

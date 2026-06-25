@@ -71,6 +71,10 @@ Implemented in this slice:
 - Interaction expiration through `expires_at` or API `ttl_seconds`, with `interaction.expired` events.
 - Interaction cancellation through `POST /api/v1/interactions/{id}/cancel` and `/agent approval cancel`.
 - Expired and cancelled interactions are persisted and cannot be answered or approved afterward.
+- Risk-aware approval policy for low/medium/high/critical interactions.
+- `AGENTBRIDGE_APPROVAL_QUORUMS` can override default risk quorum.
+- High and critical approvals require `approval.dangerous`, exposed through the `dangerous_approver` role.
+- Approval interactions store requester, risk level, required quorum, and policy snapshot.
 - Explicit chat-context role bindings for group users.
 - Effective actor roles now merge request/default roles with persisted group role bindings before permission checks.
 - `/agent role list/grant/revoke` commands for maintainers/admins.
@@ -85,7 +89,7 @@ Not implemented yet:
 - NoneBot/OneBot adapter and renderer.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
-- ABAC policy editor, risk levels, and policy-driven approval rule management.
+- ABAC policy editor and project/group-level approval rule management.
 - WebSocket transport for Terminal Agent and Bot Gateway event delivery.
 - Rich platform-specific renderer delivery state, message editing, and button/card support.
 - NoneBot plugin wrapper around the OneBot transport and inbound command/action event handling.
@@ -112,6 +116,7 @@ Not implemented yet:
 - Platform rate-limit policies intentionally schedule unsent records as `retrying` instead of sleeping inside request handlers. This keeps API calls bounded and leaves actual waiting to the retry worker.
 - Interaction commands now route through the same command parser and audit chain as project/session commands. Approval voting is permission-gated by `approval.vote`; answering questions is gated by `session.send`.
 - Interaction expiry is a terminal state and never auto-approves. Reads and interaction actions opportunistically advance due interactions to `expired` so pending lists do not show stale approval requests.
+- Approval policy snapshots are copied onto each approval interaction so later policy changes do not rewrite historical approval requirements.
 - OneBot inbound support currently executes text commands only. Callback/button semantics remain platform-specific and should enter through the same command execution path once supported by an adapter.
 - Group role bindings are scoped to a chat context and actor ID. This keeps OneBot user permissions local to the group/private context while still allowing command/API callers to carry bootstrap roles.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
@@ -133,4 +138,4 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 2. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
 3. Add NoneBot plugin wrapper around the OneBot inbound/outbound adapters.
 4. Add adaptive delivery scheduling from live platform rate-limit responses.
-5. Expand policy engine to risk levels, ABAC policy rules, and configurable approval policies.
+5. Expand policy engine to ABAC policy rules and project/group-level approval policy management.

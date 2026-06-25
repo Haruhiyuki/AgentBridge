@@ -27,6 +27,7 @@ from agentbridge.domain import (
     InteractionStatus,
     InteractionType,
     LeaseOwnerType,
+    RiskLevel,
     SemanticEventSource,
     Visibility,
     WorkspaceType,
@@ -34,7 +35,7 @@ from agentbridge.domain import (
 )
 from agentbridge.onebot import OneBotInboundAdapter, OneBotV11HTTPTransport
 from agentbridge.persistence import SQLAlchemyRepository
-from agentbridge.policy import Permission
+from agentbridge.policy import ApprovalPolicy, Permission
 from agentbridge.renderer import OneBotV11TextRenderer, document_from_event
 from agentbridge.storage import InMemoryRepository
 from agentbridge.terminal_agent import (
@@ -174,7 +175,8 @@ class CreateInteractionRequest(BaseModel):
     prompt: str
     turn_id: str | None = None
     options: list[str] = Field(default_factory=list)
-    required_votes: int = 1
+    risk_level: RiskLevel = RiskLevel.MEDIUM
+    required_votes: int | None = None
     expires_at: datetime | None = None
     ttl_seconds: int | None = None
     chat_context_id: str | None = None
@@ -285,7 +287,10 @@ class GroupRoleChangeRequest(BaseModel):
 
 
 def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
-    control = control_plane or ControlPlane(repository=create_repository_from_env())
+    control = control_plane or ControlPlane(
+        repository=create_repository_from_env(),
+        approval_policy=create_approval_policy_from_env(),
+    )
     commands = CommandService(control)
     terminal = TerminalAgentService(control, backend=create_terminal_backend_from_env())
     bot_gateway = BotGatewayService(
@@ -648,6 +653,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             turn_id=payload.turn_id,
             options=payload.options,
             required_votes=payload.required_votes,
+            risk_level=payload.risk_level,
             expires_at=expires_at,
             trace_id=payload.trace_id,
             chat_context_id=payload.chat_context_id,
@@ -942,6 +948,26 @@ def create_repository_from_env() -> InMemoryRepository:
         database_url,
         create_schema=auto_create_schema in {"1", "true", "yes", "on"},
     )
+
+
+def create_approval_policy_from_env() -> ApprovalPolicy:
+    config = os.environ.get("AGENTBRIDGE_APPROVAL_QUORUMS", "").strip()
+    if not config:
+        return ApprovalPolicy.default()
+    policy = ApprovalPolicy.default()
+    quorum_by_risk = dict(policy.quorum_by_risk)
+    for item in config.split(","):
+        if not item.strip():
+            continue
+        try:
+            risk_value, quorum_value = item.split("=", maxsplit=1)
+            quorum_by_risk[RiskLevel(risk_value.strip())] = int(quorum_value.strip())
+        except ValueError as exc:
+            raise RuntimeError(
+                "AGENTBRIDGE_APPROVAL_QUORUMS must use entries like "
+                "low=1,medium=1,high=1,critical=2"
+            ) from exc
+    return ApprovalPolicy(quorum_by_risk=quorum_by_risk)
 
 
 def create_terminal_backend_from_env():

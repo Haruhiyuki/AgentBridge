@@ -28,6 +28,7 @@ from agentbridge.domain import (
     Project,
     ProjectBinding,
     ProjectStatus,
+    RiskLevel,
     SemanticEvent,
     SemanticEventSource,
     SessionStatus,
@@ -699,6 +700,9 @@ class InMemoryRepository:
         options: list[str] | None = None,
         required_votes: int = 1,
         expires_at: datetime | None = None,
+        risk_level: RiskLevel = RiskLevel.MEDIUM,
+        requested_by: str | None = None,
+        policy_snapshot: dict[str, object] | None = None,
     ) -> Interaction:
         with self._lock:
             self.get_session(session_id)
@@ -709,7 +713,10 @@ class InMemoryRepository:
                 type=interaction_type,
                 prompt=prompt,
                 options=options or [],
+                risk_level=risk_level,
                 required_votes=required_votes,
+                requested_by=requested_by,
+                policy_snapshot=policy_snapshot or {},
                 expires_at=expires_at,
             )
             self.interactions[interaction.id] = interaction

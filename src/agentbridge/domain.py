@@ -127,6 +127,13 @@ class InteractionStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class RiskLevel(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
 class LeaseOwnerType(StrEnum):
     BOT = "bot"
     HUMAN = "human"
@@ -317,9 +324,12 @@ class Interaction(BaseModel):
     status: InteractionStatus = InteractionStatus.PENDING
     prompt: str
     options: list[str] = Field(default_factory=list)
+    risk_level: RiskLevel = RiskLevel.MEDIUM
     required_votes: int = 1
     votes: dict[str, bool] = Field(default_factory=dict)
     answer: str | None = None
+    requested_by: str | None = None
+    policy_snapshot: dict[str, Any] = Field(default_factory=dict)
     version: int = 1
     expires_at: datetime | None = None
     created_at: datetime = Field(default_factory=utc_now)

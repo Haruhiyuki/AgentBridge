@@ -125,6 +125,7 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 "需要审批",
                 (
                     f"Interaction：{interaction_id}\n"
+                    f"风险等级：{payload.get('risk_level')}\n"
                     f"需要票数：{required_votes}\n"
                     f"{payload.get('prompt') or ''}"
                 ),

@@ -17,6 +17,7 @@ from agentbridge.domain import (
     InteractionType,
     LeaseOwnerType,
     Project,
+    RiskLevel,
     SemanticEvent,
     SemanticEventSource,
     Turn,
@@ -25,7 +26,7 @@ from agentbridge.domain import (
     WorkspaceType,
     WriterLease,
 )
-from agentbridge.policy import ROLE_PERMISSIONS, Permission, PolicyEngine
+from agentbridge.policy import ROLE_PERMISSIONS, ApprovalPolicy, Permission, PolicyEngine
 from agentbridge.storage import InMemoryRepository
 
 
@@ -34,9 +35,11 @@ class ControlPlane:
         self,
         repository: InMemoryRepository | None = None,
         policy: PolicyEngine | None = None,
+        approval_policy: ApprovalPolicy | None = None,
     ) -> None:
         self.repository = repository or InMemoryRepository()
         self.policy = policy or PolicyEngine()
+        self.approval_policy = approval_policy or ApprovalPolicy.default()
 
     def health(self) -> dict[str, object]:
         return {
@@ -495,8 +498,9 @@ class ControlPlane:
         chat_context_id: str | None = None,
         turn_id: str | None = None,
         options: list[str] | None = None,
-        required_votes: int = 1,
+        required_votes: int | None = None,
         expires_at: datetime | None = None,
+        risk_level: RiskLevel = RiskLevel.MEDIUM,
     ) -> Interaction:
         effective_actor = self.effective_actor(actor, chat_context_id)
         self.policy.require(effective_actor, Permission.SESSION_SEND)
@@ -506,20 +510,30 @@ class ControlPlane:
                 "Interaction prompt 不能为空。",
                 next_step="请提供需要用户处理的问题或审批说明。",
             )
-        if required_votes < 1:
+        computed_votes = (
+            required_votes
+            if required_votes is not None
+            else self.approval_policy.quorum_for(risk_level)
+        )
+        if computed_votes < 1:
             raise AgentBridgeError(
                 ErrorCode.COMMAND_ARGUMENT_INVALID,
                 "required_votes 必须大于等于 1。",
                 next_step="请提供至少 1 个所需票数。",
             )
+        policy_snapshot = self.approval_policy.snapshot_for(risk_level)
+        policy_snapshot["requested_votes"] = required_votes
         interaction = self.repository.create_interaction(
             session_id=session_id,
             interaction_type=interaction_type,
             prompt=prompt,
             turn_id=turn_id,
             options=options,
-            required_votes=required_votes,
+            required_votes=computed_votes,
             expires_at=expires_at,
+            risk_level=risk_level,
+            requested_by=effective_actor.id,
+            policy_snapshot=policy_snapshot,
         )
         session = self.repository.get_session(session_id)
         event_type = (
@@ -539,6 +553,7 @@ class ControlPlane:
             details={
                 "type": interaction.type.value,
                 "required_votes": interaction.required_votes,
+                "risk_level": interaction.risk_level.value,
             },
         )
         self.emit_event(
@@ -553,7 +568,10 @@ class ControlPlane:
                 "type": interaction.type.value,
                 "prompt": interaction.prompt,
                 "options": interaction.options,
+                "risk_level": interaction.risk_level.value,
                 "required_votes": interaction.required_votes,
+                "requested_by": interaction.requested_by,
+                "policy_snapshot": interaction.policy_snapshot,
                 "version": interaction.version,
                 "expires_at": (
                     interaction.expires_at.isoformat() if interaction.expires_at else None
@@ -742,7 +760,6 @@ class ControlPlane:
         reason: str | None = None,
     ) -> Interaction:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.APPROVAL_VOTE)
         self.expire_due_interactions(
             actor=Actor(id="system", roles={"admin"}),
             trace_id=trace_id,
@@ -755,6 +772,28 @@ class ControlPlane:
                 "非审批类 Interaction 不能投票。",
                 next_step="请执行 /agent answer <interaction-id> <answer> 处理问题。",
             )
+        self.policy.require_approval_vote(effective_actor, current.risk_level)
+        if (
+            approve
+            and current.requested_by == effective_actor.id
+            and current.risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}
+        ):
+            approvals_without_actor = sum(
+                1
+                for actor_id, vote in current.votes.items()
+                if actor_id != effective_actor.id and vote
+            )
+            if approvals_without_actor + 1 >= current.required_votes:
+                raise AgentBridgeError(
+                    ErrorCode.PERMISSION_DENIED,
+                    "请求人不能单独完成高危审批。",
+                    next_step="请由其他具备高危审批权限的用户完成审批。",
+                    status_code=403,
+                    details={
+                        "risk_level": current.risk_level.value,
+                        "required_votes": current.required_votes,
+                    },
+                )
         interaction = self.repository.vote_interaction(
             interaction_id,
             actor=effective_actor,
@@ -785,6 +824,7 @@ class ControlPlane:
                 "approve": approve,
                 "reason": reason,
                 "status": interaction.status.value,
+                "risk_level": interaction.risk_level.value,
                 "votes": interaction.votes,
                 "required_votes": interaction.required_votes,
                 "version": interaction.version,
@@ -894,7 +934,10 @@ class ControlPlane:
             raise AgentBridgeError(
                 ErrorCode.COMMAND_ARGUMENT_INVALID,
                 f"未知角色：{', '.join(unknown)}。",
-                next_step="请使用 member、operator、approver、maintainer 或 admin。",
+                next_step=(
+                    "请使用 member、operator、approver、dangerous_approver、"
+                    "maintainer 或 admin。"
+                ),
                 details={"allowed_roles": sorted(ROLE_PERMISSIONS)},
             )
         return normalized

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 
-from agentbridge.domain import Actor, AgentBridgeError, ErrorCode
+from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, RiskLevel
 
 
 class Permission(StrEnum):
@@ -13,6 +14,7 @@ class Permission(StrEnum):
     SESSION_SEND = "session.send"
     SESSION_MANAGE = "session.manage"
     APPROVAL_VOTE = "approval.vote"
+    APPROVAL_DANGEROUS = "approval.dangerous"
     TERMINAL_CONTROL = "terminal.control"
     AUDIT_VIEW = "audit.view"
     GROUP_ROLE_MANAGE = "group.role.manage"
@@ -34,6 +36,12 @@ ROLE_PERMISSIONS: dict[str, set[Permission]] = {
         Permission.SESSION_VIEW,
         Permission.APPROVAL_VOTE,
     },
+    "dangerous_approver": {
+        Permission.PROJECT_VIEW,
+        Permission.SESSION_VIEW,
+        Permission.APPROVAL_VOTE,
+        Permission.APPROVAL_DANGEROUS,
+    },
     "maintainer": {
         Permission.PROJECT_VIEW,
         Permission.PROJECT_MANAGE,
@@ -48,6 +56,33 @@ ROLE_PERMISSIONS: dict[str, set[Permission]] = {
     },
     "admin": set(Permission),
 }
+
+
+@dataclass(frozen=True)
+class ApprovalPolicy:
+    quorum_by_risk: dict[RiskLevel, int]
+
+    @classmethod
+    def default(cls) -> ApprovalPolicy:
+        return cls(
+            quorum_by_risk={
+                RiskLevel.LOW: 1,
+                RiskLevel.MEDIUM: 1,
+                RiskLevel.HIGH: 1,
+                RiskLevel.CRITICAL: 2,
+            }
+        )
+
+    def quorum_for(self, risk_level: RiskLevel) -> int:
+        return max(self.quorum_by_risk.get(risk_level, 1), 1)
+
+    def snapshot_for(self, risk_level: RiskLevel) -> dict[str, object]:
+        return {
+            "risk_level": risk_level.value,
+            "required_votes": self.quorum_for(risk_level),
+            "dangerous_permission_required": risk_level
+            in {RiskLevel.HIGH, RiskLevel.CRITICAL},
+        }
 
 
 class PolicyEngine:
@@ -70,3 +105,9 @@ class PolicyEngine:
             status_code=403,
             details={"required_permission": permission.value, "roles": sorted(actor.roles)},
         )
+
+    def require_approval_vote(self, actor: Actor, risk_level: RiskLevel) -> None:
+        if risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
+            self.require(actor, Permission.APPROVAL_DANGEROUS)
+            return
+        self.require(actor, Permission.APPROVAL_VOTE)

@@ -334,6 +334,198 @@ def test_interaction_api_expires_due_interactions(tmp_path):
     assert vote_response.json()["error_code"] == "INTERACTION_EXPIRED"
 
 
+def test_high_risk_approval_requires_dangerous_approver(tmp_path):
+    client = TestClient(create_app())
+    chat = {
+        "bot_instance_id": "bot-test",
+        "platform": "onebot.v11",
+        "chat_space_id": "group-risk-api",
+    }
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
+    approver = {"id": "usr_approver", "roles": ["approver"]}
+    dangerous = {"id": "usr_dangerous", "roles": ["dangerous_approver"]}
+    context = client.post("/api/v1/chat-contexts", json=chat).json()
+
+    client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+            "actor": maintainer,
+            "chat_context_id": context["id"],
+            "idempotency_key": "risk-api-project",
+        },
+    )
+    session_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": "/agent session new Risk API",
+            "actor": maintainer,
+            "chat_context_id": context["id"],
+            "idempotency_key": "risk-api-session",
+        },
+    )
+    session_id = session_response.json()["data"]["session_id"]
+    approval_response = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": operator,
+            "type": "approval",
+            "risk_level": "high",
+            "prompt": "Push to protected branch?",
+            "chat_context_id": context["id"],
+            "trace_id": "risk-api-approval",
+        },
+    )
+    approval_id = approval_response.json()["id"]
+    normal_vote = client.post(
+        f"/api/v1/interactions/{approval_id}/vote",
+        json={
+            "actor": approver,
+            "approve": True,
+            "chat_context_id": context["id"],
+            "trace_id": "risk-api-normal-vote",
+        },
+    )
+    dangerous_vote = client.post(
+        f"/api/v1/interactions/{approval_id}/vote",
+        json={
+            "actor": dangerous,
+            "approve": True,
+            "chat_context_id": context["id"],
+            "trace_id": "risk-api-dangerous-vote",
+        },
+    )
+
+    assert approval_response.status_code == 200
+    assert approval_response.json()["risk_level"] == "high"
+    assert approval_response.json()["required_votes"] == 1
+    assert approval_response.json()["policy_snapshot"][
+        "dangerous_permission_required"
+    ] is True
+    assert normal_vote.status_code == 403
+    assert normal_vote.json()["details"]["required_permission"] == "approval.dangerous"
+    assert dangerous_vote.status_code == 200
+    assert dangerous_vote.json()["status"] == "resolved"
+
+
+def test_dangerous_requester_cannot_complete_own_approval(tmp_path):
+    client = TestClient(create_app())
+    chat = {
+        "bot_instance_id": "bot-test",
+        "platform": "onebot.v11",
+        "chat_space_id": "group-risk-self-api",
+    }
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    requester = {"id": "usr_requester", "roles": ["operator", "dangerous_approver"]}
+    dangerous = {"id": "usr_dangerous", "roles": ["dangerous_approver"]}
+    context = client.post("/api/v1/chat-contexts", json=chat).json()
+
+    client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+            "actor": maintainer,
+            "chat_context_id": context["id"],
+            "idempotency_key": "risk-self-project",
+        },
+    )
+    session_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": "/agent session new Risk Self",
+            "actor": maintainer,
+            "chat_context_id": context["id"],
+            "idempotency_key": "risk-self-session",
+        },
+    )
+    session_id = session_response.json()["data"]["session_id"]
+    approval = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": requester,
+            "type": "approval",
+            "risk_level": "high",
+            "prompt": "Delete protected file?",
+            "chat_context_id": context["id"],
+            "trace_id": "risk-self-approval",
+        },
+    ).json()
+
+    self_vote = client.post(
+        f"/api/v1/interactions/{approval['id']}/vote",
+        json={
+            "actor": requester,
+            "approve": True,
+            "chat_context_id": context["id"],
+            "trace_id": "risk-self-vote",
+        },
+    )
+    peer_vote = client.post(
+        f"/api/v1/interactions/{approval['id']}/vote",
+        json={
+            "actor": dangerous,
+            "approve": True,
+            "chat_context_id": context["id"],
+            "trace_id": "risk-peer-vote",
+        },
+    )
+
+    assert self_vote.status_code == 403
+    assert self_vote.json()["message"] == "请求人不能单独完成高危审批。"
+    assert peer_vote.status_code == 200
+    assert peer_vote.json()["status"] == "resolved"
+
+
+def test_approval_quorum_can_be_configured_from_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_APPROVAL_QUORUMS", "critical=3")
+    client = TestClient(create_app())
+    chat = {
+        "bot_instance_id": "bot-test",
+        "platform": "onebot.v11",
+        "chat_space_id": "group-quorum-api",
+    }
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
+    context = client.post("/api/v1/chat-contexts", json=chat).json()
+
+    client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+            "actor": maintainer,
+            "chat_context_id": context["id"],
+            "idempotency_key": "quorum-api-project",
+        },
+    )
+    session_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": "/agent session new Quorum API",
+            "actor": maintainer,
+            "chat_context_id": context["id"],
+            "idempotency_key": "quorum-api-session",
+        },
+    )
+    session_id = session_response.json()["data"]["session_id"]
+    approval_response = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": operator,
+            "type": "approval",
+            "risk_level": "critical",
+            "prompt": "Deploy production?",
+            "chat_context_id": context["id"],
+            "trace_id": "quorum-api-approval",
+        },
+    )
+
+    assert approval_response.status_code == 200
+    assert approval_response.json()["risk_level"] == "critical"
+    assert approval_response.json()["required_votes"] == 3
+    assert approval_response.json()["policy_snapshot"]["required_votes"] == 3
+
+
 def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
     client = TestClient(create_app())
     chat = {

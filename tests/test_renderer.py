@@ -47,6 +47,7 @@ def test_approval_request_event_renders_approver_actions():
         "approval.requested",
         {
             "prompt": "Allow shell command?",
+            "risk_level": "high",
             "required_votes": 1,
             "version": 1,
         },
@@ -62,6 +63,7 @@ def test_approval_request_event_renders_approver_actions():
         "/agent deny int_1",
     ]
     assert "需要审批" in messages[0]
+    assert "风险等级：high" in messages[0]
     assert "/agent approve int_1 once" in messages[0]
 
 

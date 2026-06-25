@@ -23,6 +23,7 @@ This repository currently contains the first executable backend slice:
 - Platform-scoped Bot delivery rate-limit policies that schedule unsent messages for retry.
 - Interaction and approval flow APIs with `/agent answer`, `/agent approve`, `/agent deny`, and `/agent approvals`.
 - Interaction expiration and cancellation lifecycle with audit and semantic events.
+- Risk-aware approval policy with configurable quorum and dangerous approval roles.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - REST API routes aligned with the design document's service interface.
 
@@ -156,8 +157,16 @@ Agents can request questions or approvals against a session:
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/sessions/<session-id>/interactions \
   -H 'content-type: application/json' \
-  -d '{"actor":{"id":"agent","roles":["operator"]},"type":"approval","prompt":"Run destructive command?","required_votes":1,"ttl_seconds":300}'
+  -d '{"actor":{"id":"agent","roles":["operator"]},"type":"approval","risk_level":"high","prompt":"Run destructive command?","ttl_seconds":300}'
 ```
+
+Default approval quorum is risk-aware: `low=1`, `medium=1`, `high=1`, `critical=2`. Override it at startup:
+
+```bash
+export AGENTBRIDGE_APPROVAL_QUORUMS="high=2,critical=3"
+```
+
+High and critical approvals require a user with `dangerous_approver` or `admin`; normal `approver` users can approve low and medium requests.
 
 Users can inspect and resolve them through commands:
 
