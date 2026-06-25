@@ -30,7 +30,7 @@ This repository currently contains the first executable backend slice:
 - Project/chat-context approval quorum overrides through REST and `/agent policy`.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - Persistent access policy allow/deny rules with action/resource/actor/role/attribute matching and a simulation API.
-- Built-in Admin Web pages for system health, project/session operations, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
+- Built-in Admin Web pages for system health, project/session and queue operations, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
 Production PTY supervision, full mTLS/device certificate rotation workflows, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.

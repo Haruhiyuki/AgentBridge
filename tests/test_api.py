@@ -1630,6 +1630,17 @@ def test_project_session_admin_ui_serves_dashboard():
     assert "workspace-writable" in html
     assert "workspace-max-write-sessions" in html
     assert "function syncWorkspaceWritePolicy()" in html
+    assert "queue-refresh" in html
+    assert "queue-pause" in html
+    assert "queue-resume" in html
+    assert "queue-clear" in html
+    assert "queue-version" in html
+    assert "queue_paused" in html
+    assert "async function loadQueue()" in html
+    assert "async function setQueuePaused(paused)" in html
+    assert "async function clearQueue()" in html
+    assert "/queue/${action}" in html
+    assert "/queue/clear" in html
 
 
 def test_interaction_admin_ui_serves_dashboard():

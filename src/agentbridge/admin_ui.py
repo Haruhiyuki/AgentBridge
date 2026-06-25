@@ -1467,6 +1467,40 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
           <tbody id="sessions"></tbody>
         </table>
       </div>
+
+      <div class="toolbar">
+        <button id="queue-refresh" type="button">Refresh Queue</button>
+        <button id="queue-pause" type="button">Pause Queue</button>
+        <button id="queue-resume" type="button">Resume Queue</button>
+        <button class="danger" id="queue-clear" type="button">Clear Queue</button>
+        <div class="status" id="queue-status">No session selected</div>
+      </div>
+      <div class="metrics">
+        <div class="metric">
+          <span>Queued Turns</span><strong id="queue-count">-</strong>
+        </div>
+        <div class="metric">
+          <span>Queue State</span><strong id="queue-state">-</strong>
+        </div>
+        <div class="metric">
+          <span>Queue Version</span><strong id="queue-version">-</strong>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table aria-label="Queued Turns">
+          <thead>
+            <tr>
+              <th>Turn</th>
+              <th>Actor</th>
+              <th>Status</th>
+              <th>Order</th>
+              <th>Queued At</th>
+            </tr>
+          </thead>
+          <tbody id="queue-turns"></tbody>
+        </table>
+      </div>
+      <pre id="queue-json">{}</pre>
       <pre id="session-json">{}</pre>
       <pre id="error" class="danger"></pre>
     </section>
@@ -1476,6 +1510,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     let projects = [];
     let selectedProjectId = "";
     let selectedSessionId = "";
+    let queueState = null;
 
     function csv(value) {
       return value.split(",").map((item) => item.trim()).filter(Boolean);
@@ -1617,7 +1652,43 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       if (selectedSessionId && !sessions.some((session) => session.id === selectedSessionId)) {
         selectedSessionId = "";
         $("session-json").textContent = "{}";
+        renderQueue(null);
       }
+    }
+
+    function renderQueue(queue) {
+      queueState = queue;
+      if (!queue) {
+        setText("queue-count", "-");
+        setText("queue-state", "-");
+        setText("queue-version", "-");
+        $("queue-status").textContent = selectedSessionId
+          ? "Queue not loaded"
+          : "No session selected";
+        $("queue-turns").replaceChildren();
+        $("queue-json").textContent = "{}";
+        return;
+      }
+      const turns = queue.turns || [];
+      setText("queue-count", turns.length);
+      setText("queue-state", queue.queue_paused ? "paused" : "active");
+      setText("queue-version", queue.queue_version);
+      $("queue-status").textContent = `${turns.length} queued`;
+      const rows = turns.map((turn) => {
+        const tr = document.createElement("tr");
+        for (const value of [
+          turn.id,
+          turn.actor_id,
+          turn.status,
+          turn.queue_order,
+          turn.queued_at,
+        ]) {
+          appendCell(tr, value);
+        }
+        return tr;
+      });
+      $("queue-turns").replaceChildren(...rows);
+      $("queue-json").textContent = JSON.stringify(queue, null, 2);
     }
 
     function readWorkspaceMaxWriteSessions() {
@@ -1668,12 +1739,18 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       ]);
       renderWorkspaces(workspaces);
       renderSessions(sessions);
+      if (selectedSessionId) {
+        await loadQueue();
+      } else {
+        renderQueue(null);
+      }
     }
 
     async function selectProject(projectId) {
       selectedProjectId = projectId;
       selectedSessionId = "";
       $("session-json").textContent = "{}";
+      renderQueue(null);
       renderProjects();
       await refreshSelectedProject();
       setStatus(`Selected ${projectId}`);
@@ -1685,6 +1762,66 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       document.querySelectorAll("#sessions tr").forEach((row) => {
         row.classList.toggle("selected", row.dataset.sessionId === selectedSessionId);
       });
+      loadQueue().catch((error) => {
+        $("error").textContent = error.message;
+        setStatus(error.message);
+      });
+    }
+
+    async function loadQueue() {
+      if (!selectedSessionId) {
+        renderQueue(null);
+        return null;
+      }
+      const queue = await requestJson(
+        `/api/v1/sessions/${encodeURIComponent(selectedSessionId)}/queue`,
+      );
+      renderQueue(queue);
+      return queue;
+    }
+
+    async function setQueuePaused(paused) {
+      if (!selectedSessionId) throw new Error("Select a session first");
+      if (!queueState?.queue_version) await loadQueue();
+      const action = paused ? "pause" : "resume";
+      const result = await requestJson(
+        `/api/v1/sessions/${encodeURIComponent(selectedSessionId)}/queue/${action}`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            actor: actor(),
+            expected_queue_version: queueState.queue_version,
+            trace_id: `admin-ui-queue-${action}`,
+          }),
+        },
+      );
+      await loadQueue();
+      setStatus(`Queue ${result.queue_paused ? "paused" : "resumed"}`);
+    }
+
+    async function clearQueue() {
+      if (!selectedSessionId) throw new Error("Select a session first");
+      if (!queueState?.queue_version) await loadQueue();
+      const turns = queueState.turns || [];
+      const confirmed = window.confirm(`Clear ${turns.length} queued Turns?`);
+      if (!confirmed) {
+        setStatus("Queue clear cancelled");
+        return;
+      }
+      const result = await requestJson(
+        `/api/v1/sessions/${encodeURIComponent(selectedSessionId)}/queue/clear`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            actor: actor(),
+            expected_queue_version: queueState.queue_version,
+            confirm_count: turns.length,
+            trace_id: "admin-ui-queue-clear",
+          }),
+        },
+      );
+      await loadQueue();
+      setStatus(`Cleared ${result.count} queued Turns`);
     }
 
     async function createProject() {
@@ -1751,6 +1888,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       selectedSessionId = session.id;
       $("session-json").textContent = JSON.stringify(session, null, 2);
       await refreshSelectedProject();
+      await loadQueue();
       setStatus(`Created session ${session.short_code}`);
     }
 
@@ -1766,6 +1904,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       );
       $("session-json").textContent = JSON.stringify(session, null, 2);
       await refreshSelectedProject();
+      await loadQueue();
       setStatus(`Closed session ${session.short_code}`);
     }
 
@@ -1785,6 +1924,10 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     $("workspace-type").addEventListener("change", syncWorkspaceWritePolicy);
     $("create-session").addEventListener("click", () => run(createSession));
     $("close-session").addEventListener("click", () => run(closeSession));
+    $("queue-refresh").addEventListener("click", () => run(loadQueue));
+    $("queue-pause").addEventListener("click", () => run(() => setQueuePaused(true)));
+    $("queue-resume").addEventListener("click", () => run(() => setQueuePaused(false)));
+    $("queue-clear").addEventListener("click", () => run(clearQueue));
     syncWorkspaceWritePolicy();
     loadProjects().catch((error) => {
       $("error").textContent = error.message;
