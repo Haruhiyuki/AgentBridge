@@ -290,14 +290,14 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
     )
     denied_response = client.get("/api/v1/projects")
     authorized_response = client.get(
-        "/api/v1/projects",
+        "/api/v1/commands",
         headers={
             "x-agentbridge-device-id": "laptop",
             "x-agentbridge-device-key": "managed-secret",
         },
     )
     certificate_response = client.get(
-        "/api/v1/projects",
+        "/api/v1/commands",
         headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
     )
     list_response = client.get(
@@ -316,14 +316,14 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
         },
     )
     revoked_key_response = client.get(
-        "/api/v1/projects",
+        "/api/v1/commands",
         headers={
             "x-agentbridge-device-id": "laptop",
             "x-agentbridge-device-key": "managed-secret",
         },
     )
     revoked_certificate_response = client.get(
-        "/api/v1/projects",
+        "/api/v1/commands",
         headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
     )
     still_gated_response = client.get("/api/v1/projects")
@@ -340,9 +340,9 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
     assert "key_salt" not in created
     assert denied_response.status_code == 403
     assert authorized_response.status_code == 200
-    assert authorized_response.json() == []
+    assert "help" in authorized_response.json()["commands"]
     assert certificate_response.status_code == 200
-    assert certificate_response.json() == []
+    assert "help" in certificate_response.json()["commands"]
     assert list_response.status_code == 200
     listed = list_response.json()[0]
     assert listed["device_id"] == "laptop"
@@ -373,11 +373,11 @@ def test_managed_device_identity_can_be_certificate_only():
         },
     )
     certificate_response = client.get(
-        "/api/v1/projects",
+        "/api/v1/commands",
         headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
     )
     key_response = client.get(
-        "/api/v1/projects",
+        "/api/v1/commands",
         headers={
             "x-agentbridge-device-id": "cert-only",
             "x-agentbridge-device-key": "unused-key",
@@ -389,7 +389,7 @@ def test_managed_device_identity_can_be_certificate_only():
         headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
     )
     revoked_certificate_response = client.get(
-        "/api/v1/projects",
+        "/api/v1/commands",
         headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
     )
 
@@ -420,7 +420,7 @@ def test_managed_device_identity_requires_device_manage_scope_for_device_api():
         },
     )
     key_http_response = client.get(
-        "/api/v1/projects",
+        "/api/v1/commands",
         headers={
             "x-agentbridge-device-id": "readonly-device",
             "x-agentbridge-device-key": "managed-secret",
@@ -434,7 +434,7 @@ def test_managed_device_identity_requires_device_manage_scope_for_device_api():
         },
     )
     cert_http_response = client.get(
-        "/api/v1/projects",
+        "/api/v1/commands",
         headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
     )
     cert_device_api_response = client.get(
@@ -469,7 +469,16 @@ def test_managed_device_identity_requires_project_manage_scope_for_project_write
         "x-agentbridge-device-id": "readonly-device",
         "x-agentbridge-device-key": "managed-secret",
     }
+    commands_response = client.get("/api/v1/commands", headers=key_headers)
     list_response = client.get("/api/v1/projects", headers=key_headers)
+    detail_response = client.get(
+        "/api/v1/projects/project-missing",
+        headers=key_headers,
+    )
+    workspace_read_response = client.get(
+        "/api/v1/projects/project-missing/workspaces",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
     create_project_response = client.post(
         "/api/v1/projects",
         json={
@@ -501,10 +510,82 @@ def test_managed_device_identity_requires_project_manage_scope_for_project_write
     )
 
     assert create_response.status_code == 200
-    assert list_response.status_code == 200
+    assert commands_response.status_code == 200
+    assert list_response.status_code == 403
+    assert detail_response.status_code == 403
+    assert workspace_read_response.status_code == 403
     assert create_project_response.status_code == 403
     assert workspace_response.status_code == 403
     assert bind_response.status_code == 403
+
+
+def test_managed_device_identity_project_read_scope_allows_project_read_apis(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    project = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": maintainer,
+            "name": "Readable Device Project",
+            "trace_id": "project-read-scope-project",
+        },
+    ).json()
+    workspace = client.post(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        json={
+            "actor": maintainer,
+            "machine_id": "local",
+            "path": str(tmp_path),
+            "allowed_root": str(tmp_path),
+            "trace_id": "project-read-scope-workspace",
+        },
+    ).json()
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "project-read-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "project_read"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "project-read-scope-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "project-read-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    list_response = client.get("/api/v1/projects", headers=key_headers)
+    detail_response = client.get(
+        f"/api/v1/projects/{project['id']}",
+        headers=key_headers,
+    )
+    workspaces_response = client.get(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+    create_project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": maintainer,
+            "name": "Denied Project Write",
+            "trace_id": "project-read-scope-denied-create",
+        },
+        headers=key_headers,
+    )
+
+    assert create_identity_response.status_code == 200
+    assert list_response.status_code == 200
+    assert [item["id"] for item in list_response.json()] == [project["id"]]
+    assert detail_response.status_code == 200
+    assert detail_response.json()["id"] == project["id"]
+    assert workspaces_response.status_code == 200
+    assert [item["id"] for item in workspaces_response.json()] == [workspace["id"]]
+    assert create_project_response.status_code == 403
 
 
 def test_managed_device_identity_project_manage_scope_allows_project_write_apis(
@@ -637,7 +718,7 @@ def test_managed_device_identity_requires_chat_context_manage_scope_for_context_
         "x-agentbridge-device-key": "managed-secret",
     }
     cert_headers = {"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"}
-    list_response = client.get("/api/v1/projects", headers=key_headers)
+    commands_response = client.get("/api/v1/commands", headers=key_headers)
     create_context_response = client.post(
         "/api/v1/chat-contexts",
         json={
@@ -667,7 +748,7 @@ def test_managed_device_identity_requires_chat_context_manage_scope_for_context_
     )
 
     assert create_identity_response.status_code == 200
-    assert list_response.status_code == 200
+    assert commands_response.status_code == 200
     assert create_context_response.status_code == 403
     assert active_project_response.status_code == 403
     assert active_session_response.status_code == 403
@@ -1195,7 +1276,7 @@ def test_managed_device_identity_requires_audit_read_scope_for_audit_event_http_
         "x-agentbridge-device-id": "readonly-audit-device",
         "x-agentbridge-device-key": "managed-secret",
     }
-    regular_http_response = client.get("/api/v1/projects", headers=key_headers)
+    regular_http_response = client.get("/api/v1/commands", headers=key_headers)
     audit_response = client.get("/api/v1/audit", headers=key_headers)
     event_search_response = client.get("/api/v1/events", headers=key_headers)
     event_replay_response = client.get(
@@ -1345,6 +1426,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "policy_manage" in html
     assert "group_role_manage" in html
     assert "chat_context_manage" in html
+    assert "project_read" in html
     assert "project_manage" in html
     assert "session_manage" in html
     assert "session_send" in html
@@ -1778,7 +1860,7 @@ def test_managed_device_identity_requires_bot_gateway_read_scope_for_bot_gateway
         "x-agentbridge-device-id": "readonly-bot-gateway-device",
         "x-agentbridge-device-key": "managed-secret",
     }
-    regular_http_response = client.get("/api/v1/projects", headers=key_headers)
+    regular_http_response = client.get("/api/v1/commands", headers=key_headers)
     deliveries_response = client.get(
         "/api/v1/bot-gateway/deliveries",
         headers=key_headers,
@@ -2011,7 +2093,7 @@ def test_managed_device_identity_requires_group_role_manage_scope_for_role_apis(
         "x-agentbridge-device-id": "readonly-device",
         "x-agentbridge-device-key": "managed-secret",
     }
-    regular_http_response = client.get("/api/v1/projects", headers=key_headers)
+    regular_http_response = client.get("/api/v1/commands", headers=key_headers)
     list_response = client.get(
         f"/api/v1/chat-contexts/{context['id']}/roles",
         headers=key_headers,
@@ -2235,7 +2317,7 @@ def test_managed_device_identity_requires_interaction_read_scope_for_reads(
         "x-agentbridge-device-id": "readonly-interaction-read-device",
         "x-agentbridge-device-key": "managed-secret",
     }
-    regular_http_response = client.get("/api/v1/projects", headers=key_headers)
+    regular_http_response = client.get("/api/v1/commands", headers=key_headers)
     list_response = client.get(
         "/api/v1/interactions",
         params={"session_id": session_id},
@@ -3402,14 +3484,14 @@ def test_managed_device_identity_scope_limits_websocket(tmp_path):
     client = TestClient(create_app(control))
 
     http_response = client.get(
-        "/api/v1/projects",
+        "/api/v1/commands",
         headers={
             "x-agentbridge-device-id": "laptop",
             "x-agentbridge-device-key": "managed-secret",
         },
     )
     http_certificate_response = client.get(
-        "/api/v1/projects",
+        "/api/v1/commands",
         headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
     )
     with client.websocket_connect(
@@ -3696,7 +3778,7 @@ def test_managed_device_identity_requires_terminal_control_scope_for_terminal_ht
         "x-agentbridge-device-id": "readonly-device",
         "x-agentbridge-device-key": "managed-secret",
     }
-    regular_http_response = client.get("/api/v1/projects", headers=key_headers)
+    regular_http_response = client.get("/api/v1/commands", headers=key_headers)
     start_response = client.post(
         f"/api/v1/sessions/{session_id}/terminal/start",
         json={
@@ -3755,7 +3837,7 @@ def test_managed_device_identity_requires_terminal_read_scope_for_terminal_http_
         "x-agentbridge-device-id": "readonly-terminal-device",
         "x-agentbridge-device-key": "managed-secret",
     }
-    regular_http_response = client.get("/api/v1/projects", headers=key_headers)
+    regular_http_response = client.get("/api/v1/commands", headers=key_headers)
     lifecycle_status_response = client.get(
         "/api/v1/terminal/lifecycle-monitor",
         headers=key_headers,

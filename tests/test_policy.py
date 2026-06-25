@@ -326,7 +326,7 @@ def test_managed_device_identity_requires_policy_scopes_for_policy_apis():
         "x-agentbridge-device-id": "readonly-device",
         "x-agentbridge-device-key": "managed-secret",
     }
-    regular_http_response = client.get("/api/v1/projects", headers=key_headers)
+    regular_http_response = client.get("/api/v1/commands", headers=key_headers)
     list_response = client.get("/api/v1/access-policy/rules", headers=key_headers)
     simulate_response = client.post(
         "/api/v1/access-policy/simulate",

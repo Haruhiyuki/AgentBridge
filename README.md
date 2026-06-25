@@ -208,7 +208,7 @@ optional caller-supplied `device_key`. `allowed_scopes` can narrow the key or ma
 certificate fingerprint to one or more scopes: `http_api`, `audit_read`,
 `bot_gateway_read`, `bot_gateway_manage`, `onebot_event_ingest`, `command_parse`,
 `command_execute`, `device_manage`, `policy_read`, `policy_manage`, `group_role_manage`,
-`chat_context_manage`, `project_manage`, `session_manage`, `session_send`,
+`chat_context_manage`, `project_read`, `project_manage`, `session_manage`, `session_send`,
 `session_event_ingest`, `interaction_read`, `interaction_manage`, `terminal_read`,
 `terminal_control`, `session_events_ws`, `rendered_events_ws`, `terminal_ws`, and
 `bot_gateway_ws`;
@@ -223,7 +223,8 @@ Bot Gateway HTTP mutation APIs,
 update, or delete access/approval policies,
 `group_role_manage` to call `/api/v1/chat-contexts/{id}/roles*`,
 `chat_context_manage` to create chat contexts or update their active project/session
-pointers, `project_manage` to create projects, add workspaces, or bind projects to
+pointers, `project_read` to list projects, show project details, or list workspaces,
+`project_manage` to create projects, add workspaces, or bind projects to
 chat spaces, `session_manage` to create or close sessions and acquire or release writer
 leases, `session_send` to enqueue session turns, `session_event_ingest` to ingest
 Terminal Agent session events, `interaction_read` to list or show interactions,

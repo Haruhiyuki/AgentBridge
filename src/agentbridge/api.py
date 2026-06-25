@@ -2219,6 +2219,19 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         and path_segments[5] == "project-bindings"
     ):
         return DeviceIdentityScope.PROJECT_MANAGE
+    if method == "GET" and (
+        path == "/api/v1/projects"
+        or (
+            len(path_segments) == 5
+            and path_segments[:4] == ["", "api", "v1", "projects"]
+        )
+        or (
+            len(path_segments) == 6
+            and path_segments[:4] == ["", "api", "v1", "projects"]
+            and path_segments[5] == "workspaces"
+        )
+    ):
+        return DeviceIdentityScope.PROJECT_READ
     if method == "POST" and path == "/api/v1/sessions":
         return DeviceIdentityScope.SESSION_MANAGE
     if (
