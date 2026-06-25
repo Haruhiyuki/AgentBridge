@@ -405,6 +405,7 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
         allowed_scopes={
             DeviceIdentityScope.DEVICE_MANAGE,
             DeviceIdentityScope.HTTP_API,
+            DeviceIdentityScope.POLICY_MANAGE,
             DeviceIdentityScope.SESSION_EVENTS_WS,
         },
         certificate_fingerprints={"SHA256:AA:BB:CC"},
@@ -439,6 +440,7 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
     assert restored_identity.allowed_scopes == {
         DeviceIdentityScope.DEVICE_MANAGE,
         DeviceIdentityScope.HTTP_API,
+        DeviceIdentityScope.POLICY_MANAGE,
         DeviceIdentityScope.SESSION_EVENTS_WS,
     }
     assert restored_identity.certificate_fingerprints == {"aabbcc"}

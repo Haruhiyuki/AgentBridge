@@ -305,6 +305,110 @@ def test_access_policy_api_manages_and_simulates_rules():
     assert denied_response.json()["decision"]["allowed"] is False
 
 
+def test_managed_device_identity_requires_policy_manage_scope_for_policy_apis():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "policy-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    regular_http_response = client.get("/api/v1/projects", headers=key_headers)
+    list_response = client.get("/api/v1/access-policy/rules", headers=key_headers)
+    simulate_response = client.post(
+        "/api/v1/access-policy/simulate",
+        json={
+            "actor": maintainer,
+            "target_actor": operator,
+            "action": "terminal.control",
+            "resource_type": "session",
+        },
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+    approval_policy_response = client.get(
+        "/api/v1/projects/project-missing/approval-policy",
+        headers=key_headers,
+    )
+
+    assert create_response.status_code == 200
+    assert regular_http_response.status_code == 200
+    assert list_response.status_code == 403
+    assert simulate_response.status_code == 403
+    assert approval_policy_response.status_code == 403
+
+
+def test_managed_device_identity_policy_manage_scope_allows_policy_api_access():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "policy-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "policy_manage"],
+            "trace_id": "policy-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "policy-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    create_rule_response = client.post(
+        "/api/v1/access-policy/rules",
+        json={
+            "actor": maintainer,
+            "effect": "allow",
+            "action": "terminal.control",
+            "resource_type": "session",
+            "roles": ["operator"],
+            "attributes": {"risk": "low"},
+            "trace_id": "policy-manager-rule-create",
+        },
+        headers=headers,
+    )
+    rule_id = create_rule_response.json().get("id")
+    list_response = client.get(
+        "/api/v1/access-policy/rules",
+        params={"enabled": True},
+        headers=headers,
+    )
+    simulate_response = client.post(
+        "/api/v1/access-policy/simulate",
+        json={
+            "actor": maintainer,
+            "target_actor": operator,
+            "action": "terminal.control",
+            "resource_type": "session",
+            "attributes": {"risk": "low"},
+        },
+        headers=headers,
+    )
+
+    assert create_identity_response.status_code == 200
+    assert create_rule_response.status_code == 200
+    assert list_response.status_code == 200
+    assert [rule["id"] for rule in list_response.json()] == [rule_id]
+    assert simulate_response.status_code == 200
+    assert simulate_response.json()["decision"]["allowed"] is True
+
+
 def test_access_policy_admin_ui_serves_editor():
     client = TestClient(create_app())
 

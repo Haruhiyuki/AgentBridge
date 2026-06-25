@@ -500,6 +500,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "auth-device-key" in html
     assert "allowed-scopes" in html
     assert "device_manage" in html
+    assert "policy_manage" in html
     assert "certificate-fingerprints" in html
     assert "generated-key" in html
 

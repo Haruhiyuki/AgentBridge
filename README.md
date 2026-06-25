@@ -206,9 +206,11 @@ For persisted device identities, create or rotate a key through
 `POST /api/v1/device-identities` with `device_id`, optional `display_name`, and an
 optional caller-supplied `device_key`. `allowed_scopes` can narrow the key or managed
 certificate fingerprint to one or more scopes: `http_api`, `device_manage`,
-`session_events_ws`, `rendered_events_ws`, `terminal_ws`, and `bot_gateway_ws`; omitting
-it grants all current scopes. Managed device credentials need `device_manage` to call
-`/api/v1/device-identities` and its child routes. `certificate_fingerprints` can bind one or more
+`policy_manage`, `session_events_ws`, `rendered_events_ws`, `terminal_ws`, and
+`bot_gateway_ws`; omitting it grants all current scopes. Managed device credentials
+need `device_manage` to call `/api/v1/device-identities` and its child routes, and
+`policy_manage` to call `/api/v1/access-policy*` or `*/approval-policy` routes.
+`certificate_fingerprints` can bind one or more
 proxy-verified client certificate fingerprints to the same device identity. If a new
 identity has no certificate fingerprints and `device_key` is omitted, the server returns
 a generated key once in the creation response. If certificate fingerprints are provided,

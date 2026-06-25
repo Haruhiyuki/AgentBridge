@@ -2182,6 +2182,10 @@ def http_api_request_authorized(
 
 def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
     path = request.url.path.rstrip("/")
+    if path == "/api/v1/access-policy" or path.startswith("/api/v1/access-policy/"):
+        return DeviceIdentityScope.POLICY_MANAGE
+    if path.endswith("/approval-policy"):
+        return DeviceIdentityScope.POLICY_MANAGE
     if path == "/api/v1/device-identities" or path.startswith(
         "/api/v1/device-identities/"
     ):

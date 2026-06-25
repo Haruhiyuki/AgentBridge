@@ -3436,6 +3436,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
     const defaultScopes = [
       "http_api",
       "device_manage",
+      "policy_manage",
       "session_events_ws",
       "rendered_events_ws",
       "terminal_ws",
