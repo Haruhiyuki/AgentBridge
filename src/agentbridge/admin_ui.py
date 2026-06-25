@@ -687,6 +687,8 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
     <section>
       <div class="toolbar">
         <button id="audit-refresh" type="button">Refresh Audit</button>
+        <button id="audit-export-json" type="button">Export JSON</button>
+        <button id="audit-export-csv" type="button">Export CSV</button>
         <label class="compact">
           Action
           <input id="audit-action" autocomplete="off" placeholder="session.created">
@@ -838,6 +840,27 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
       return suffix ? `?${suffix}` : "";
     }
 
+    function auditParams() {
+      return paramsFrom([
+        ["action", "audit-action"],
+        ["actor_id", "audit-actor"],
+        ["session_id", "audit-session"],
+        ["q", "audit-query"],
+        ["limit", "audit-limit"],
+      ]);
+    }
+
+    function auditExportUrl(format) {
+      const params = new URLSearchParams(auditParams());
+      params.set("format", format);
+      return `/api/v1/audit/export?${params.toString()}`;
+    }
+
+    function downloadAudit(format) {
+      window.location.assign(auditExportUrl(format));
+      setText("audit-status", `Exporting ${format.toUpperCase()}`);
+    }
+
     function renderAudit(records) {
       const rows = records.map((record) => {
         const tr = document.createElement("tr");
@@ -981,13 +1004,7 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
 
     async function refreshAudit() {
       setText("audit-status", "Loading");
-      const records = await requestJson(`/api/v1/audit${paramsFrom([
-        ["action", "audit-action"],
-        ["actor_id", "audit-actor"],
-        ["session_id", "audit-session"],
-        ["q", "audit-query"],
-        ["limit", "audit-limit"],
-      ])}`);
+      const records = await requestJson(`/api/v1/audit${auditParams()}`);
       renderAudit(records);
     }
 
@@ -1031,6 +1048,8 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
     }
 
     $("audit-refresh").addEventListener("click", () => run(refreshAudit));
+    $("audit-export-json").addEventListener("click", () => run(() => downloadAudit("json")));
+    $("audit-export-csv").addEventListener("click", () => run(() => downloadAudit("csv")));
     $("event-refresh").addEventListener("click", () => run(refreshEvents));
     $("event-search").addEventListener("click", () => run(searchEvents));
     $("event-live-connect").addEventListener("click", () => run(connectEventsLive));

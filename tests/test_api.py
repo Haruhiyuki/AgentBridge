@@ -1535,6 +1535,7 @@ def test_managed_device_identity_requires_audit_read_scope_for_audit_event_http_
     }
     regular_http_response = client.get("/api/v1/commands", headers=key_headers)
     audit_response = client.get("/api/v1/audit", headers=key_headers)
+    audit_export_response = client.get("/api/v1/audit/export", headers=key_headers)
     event_search_response = client.get("/api/v1/events", headers=key_headers)
     event_replay_response = client.get(
         f"/api/v1/sessions/{session_id}/events",
@@ -1549,6 +1550,7 @@ def test_managed_device_identity_requires_audit_read_scope_for_audit_event_http_
     assert create_response.status_code == 200
     assert regular_http_response.status_code == 200
     assert audit_response.status_code == 403
+    assert audit_export_response.status_code == 403
     assert event_search_response.status_code == 403
     assert event_replay_response.status_code == 403
     assert rendered_response.status_code == 403
@@ -1592,6 +1594,11 @@ def test_managed_device_identity_audit_read_scope_allows_audit_event_http_reads(
         "x-agentbridge-device-key": "managed-secret",
     }
     audit_response = client.get("/api/v1/audit", headers=headers)
+    audit_export_response = client.get(
+        "/api/v1/audit/export",
+        params={"format": "csv"},
+        headers=headers,
+    )
     event_search_response = client.get(
         "/api/v1/events",
         params={"trace_id": "audit-read-manager-event"},
@@ -1609,6 +1616,8 @@ def test_managed_device_identity_audit_read_scope_allows_audit_event_http_reads(
     assert event_response.status_code == 200
     assert create_response.status_code == 200
     assert audit_response.status_code == 200
+    assert audit_export_response.status_code == 200
+    assert audit_export_response.headers["content-type"].startswith("text/csv")
     assert event_search_response.status_code == 200
     assert [event["id"] for event in event_search_response.json()] == [
         event_response.json()["id"]
@@ -1741,10 +1750,14 @@ def test_audit_events_admin_ui_serves_dashboard():
     html = response.text
     assert "AgentBridge Audit & Events" in html
     assert "/api/v1/audit" in html
+    assert "/api/v1/audit/export" in html
     assert "/api/v1/events" in html
     assert "/api/v1/sessions/${encodeURIComponent(sessionId)}/events" in html
     assert "/api/v1/sessions/${encodeURIComponent(sessionId)}/events/ws" in html
     assert "async function refreshAudit()" in html
+    assert "function downloadAudit(format)" in html
+    assert "audit-export-json" in html
+    assert "audit-export-csv" in html
     assert "async function refreshEvents()" in html
     assert "async function searchEvents()" in html
     assert "event-search" in html
@@ -2408,6 +2421,26 @@ def test_audit_api_filters_and_limits_records(tmp_path):
             "limit": 1,
         },
     )
+    export_json_response = client.get(
+        "/api/v1/audit/export",
+        params={
+            "action": "session.created",
+            "actor_id": "admin-ui",
+            "session_id": session["id"],
+            "limit": 1,
+            "format": "json",
+        },
+    )
+    export_csv_response = client.get(
+        "/api/v1/audit/export",
+        params={
+            "action": "session.created",
+            "actor_id": "admin-ui",
+            "session_id": session["id"],
+            "limit": 1,
+            "format": "csv",
+        },
+    )
     missing_response = client.get(
         "/api/v1/audit",
         params={"action": "session.created", "actor_id": "other"},
@@ -2428,6 +2461,19 @@ def test_audit_api_filters_and_limits_records(tmp_path):
     assert audit_event["actor_id"] == "admin-ui"
     assert audit_event["project_id"] == project["id"]
     assert audit_event["session_id"] == session["id"]
+    assert export_json_response.status_code == 200
+    assert export_json_response.headers["content-disposition"].endswith(
+        'filename="agentbridge-audit.json"'
+    )
+    assert export_json_response.json()["count"] == 1
+    assert export_json_response.json()["records"][0]["id"] == audit_event["id"]
+    assert export_csv_response.status_code == 200
+    assert export_csv_response.headers["content-type"].startswith("text/csv")
+    assert export_csv_response.headers["content-disposition"].endswith(
+        'filename="agentbridge-audit.csv"'
+    )
+    assert "session.created" in export_csv_response.text
+    assert session["id"] in export_csv_response.text
     assert payload_response.status_code == 200
     assert [event["details"]["workspace_id"] for event in payload_response.json()] == [
         workspace["id"]

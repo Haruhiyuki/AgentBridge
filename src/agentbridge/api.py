@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import hmac
+import io
 import json
 import os
 from contextlib import asynccontextmanager
@@ -11,7 +13,7 @@ from time import monotonic
 
 import uvicorn
 from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from agentbridge.admin_ui import (
@@ -42,6 +44,7 @@ from agentbridge.domain import (
     Actor,
     AgentBridgeError,
     AgentType,
+    AuditEvent,
     BotDeliveryResultAction,
     BotDeliveryStatus,
     DeviceIdentity,
@@ -1736,7 +1739,8 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         q: str | None = None,
         limit: int = 100,
     ):
-        events = control.repository.list_audit_events(
+        events = list_audit_events_for_export(
+            control,
             actor_id=actor_id,
             action=action,
             project_id=project_id,
@@ -1748,7 +1752,131 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         return [event.model_dump(mode="json") for event in events]
 
+    @app.get("/api/v1/audit/export")
+    def export_audit(
+        control: ControlPlane = Depends(get_control),
+        actor_id: str | None = None,
+        action: str | None = None,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        interaction_id: str | None = None,
+        trace_id: str | None = None,
+        q: str | None = None,
+        limit: int = 100,
+        format: str = "json",
+    ):
+        events = list_audit_events_for_export(
+            control,
+            actor_id=actor_id,
+            action=action,
+            project_id=project_id,
+            session_id=session_id,
+            interaction_id=interaction_id,
+            trace_id=trace_id,
+            payload_query=q,
+            limit=limit,
+        )
+        normalized_format = format.strip().lower()
+        if normalized_format == "json":
+            return JSONResponse(
+                content={
+                    "format": "json",
+                    "count": len(events),
+                    "records": [event.model_dump(mode="json") for event in events],
+                },
+                headers={
+                    "content-disposition": 'attachment; filename="agentbridge-audit.json"'
+                },
+            )
+        if normalized_format == "csv":
+            return Response(
+                content=audit_events_to_csv(events),
+                media_type="text/csv; charset=utf-8",
+                headers={
+                    "content-disposition": 'attachment; filename="agentbridge-audit.csv"'
+                },
+            )
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "Unsupported audit export format.",
+            next_step="Use format=json or format=csv.",
+            status_code=400,
+        )
+
     return app
+
+
+AUDIT_EXPORT_COLUMNS = [
+    "id",
+    "created_at",
+    "action",
+    "actor_id",
+    "outcome",
+    "trace_id",
+    "chat_context_id",
+    "project_id",
+    "session_id",
+    "interaction_id",
+    "previous_hash",
+    "entry_hash",
+    "details",
+]
+
+
+def list_audit_events_for_export(
+    control: ControlPlane,
+    *,
+    actor_id: str | None,
+    action: str | None,
+    project_id: str | None,
+    session_id: str | None,
+    interaction_id: str | None,
+    trace_id: str | None,
+    payload_query: str | None,
+    limit: int,
+) -> list[AuditEvent]:
+    return control.repository.list_audit_events(
+        actor_id=actor_id,
+        action=action,
+        project_id=project_id,
+        session_id=session_id,
+        interaction_id=interaction_id,
+        trace_id=trace_id,
+        payload_query=payload_query,
+        limit=limit,
+    )
+
+
+def audit_event_export_row(event: AuditEvent) -> dict[str, str]:
+    data = event.model_dump(mode="json")
+    return {
+        "id": data["id"],
+        "created_at": data["created_at"],
+        "action": data["action"],
+        "actor_id": data["actor_id"],
+        "outcome": data["outcome"],
+        "trace_id": data["trace_id"],
+        "chat_context_id": data.get("chat_context_id") or "",
+        "project_id": data.get("project_id") or "",
+        "session_id": data.get("session_id") or "",
+        "interaction_id": data.get("interaction_id") or "",
+        "previous_hash": data.get("previous_hash") or "",
+        "entry_hash": data["entry_hash"],
+        "details": json.dumps(
+            data.get("details") or {},
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+    }
+
+
+def audit_events_to_csv(events: list[AuditEvent]) -> str:
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=AUDIT_EXPORT_COLUMNS)
+    writer.writeheader()
+    for event in events:
+        writer.writerow(audit_event_export_row(event))
+    return output.getvalue()
 
 
 def ensure_chat_context_id(payload: CommandRequest, control: ControlPlane) -> str:
@@ -2464,7 +2592,11 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         )
     ):
         return DeviceIdentityScope.INTERACTION_READ
-    if method == "GET" and path in {"/api/v1/audit", "/api/v1/events"}:
+    if method == "GET" and path in {
+        "/api/v1/audit",
+        "/api/v1/audit/export",
+        "/api/v1/events",
+    }:
         return DeviceIdentityScope.AUDIT_READ
     if (
         method == "GET"

@@ -215,7 +215,7 @@ certificate fingerprint to one or more scopes: `http_api`, `audit_read`,
 `session_events_ws`, `rendered_events_ws`, `terminal_ws`, and
 `bot_gateway_ws`;
 omitting it grants all current scopes.
-Managed device credentials need `audit_read` to call audit and event history HTTP read APIs,
+Managed device credentials need `audit_read` to call audit, audit export, and event history HTTP read APIs,
 `bot_gateway_read` to call Bot Gateway HTTP read APIs, `bot_gateway_manage` to call
 Bot Gateway HTTP mutation APIs,
 `onebot_event_ingest` to receive OneBot inbound events, `command_parse` to call
@@ -269,6 +269,8 @@ Audit records can be queried through `GET /api/v1/audit` with optional `actor_id
 `action`, `project_id`, `session_id`, `interaction_id`, `trace_id`, `q`, and
 `limit` filters. `q` performs a case-insensitive contains match over audit
 `details`. Results are bounded and returned newest first for operational review.
+The same filters can be exported through `GET /api/v1/audit/export?format=json`
+or `format=csv`.
 
 Semantic events can be searched across streams through `GET /api/v1/events` with
 optional `project_id`, `session_id`, `turn_id`, `interaction_id`, `event_type`,
@@ -513,8 +515,8 @@ the same REST APIs used by external clients. The interaction
 page lists and filters questions/approvals, creates new interactions, answers questions,
 votes on approvals, and cancels pending items. The audit/event page filters audit
 records, searches semantic events across streams, supports `q` text search over audit
-details and event payloads, replays session semantic events, and can live-tail a selected
-session's event stream over WebSocket.
+details and event payloads, exports filtered audit records as JSON or CSV, replays
+session semantic events, and can live-tail a selected session's event stream over WebSocket.
 The terminal lifecycle page shows tracked sessions, exit/loss counts, automatic restart
 attempts, command allowlist patterns, policy blocks, backend supervision state, and can
 trigger a bounded run-once scan.
