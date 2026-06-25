@@ -16,6 +16,8 @@ from agentbridge.domain import (
     ErrorCode,
     InteractionStatus,
     LeaseOwnerType,
+    PolicyScope,
+    RiskLevel,
     Visibility,
     WorkspaceType,
 )
@@ -44,6 +46,8 @@ COMMAND_ALIASES = {
     "授权": "grant",
     "授予": "grant",
     "撤销": "revoke",
+    "策略": "policy",
+    "设置": "set",
     "健康": "health",
     "上下文": "context",
 }
@@ -71,6 +75,7 @@ KNOWN_ROOTS = {
     "control",
     "terminal",
     "role",
+    "policy",
     "settings",
     "verbose",
     "model",
@@ -202,6 +207,8 @@ class CommandService:
             return self._parse_control(tokens)
         if root == "role":
             return self._parse_role(tokens)
+        if root == "policy":
+            return self._parse_policy(tokens)
         if root == "answer":
             return self._parse_answer(tokens)
         if root == "approve":
@@ -345,6 +352,29 @@ class CommandService:
             next_step="可用子命令：list、grant、revoke。",
         )
 
+    def _parse_policy(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
+        if not tokens:
+            return "policy.show", {}
+        action = self._canonical_token(tokens[0])
+        positional, options = parse_options(tokens[1:])
+        project_token = options.get("project") or options.get("p")
+        if action == "show":
+            return "policy.show", {"project": project_token}
+        if action == "set":
+            if len(positional) < 2:
+                raise missing_argument("policy set", "<risk-level> <quorum>")
+            risk_level = risk_level_from_policy_key(positional[0])
+            return "policy.set", {
+                "project": project_token,
+                "risk_level": risk_level.value,
+                "quorum": parse_required_int("policy set", positional[1]),
+            }
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_UNKNOWN,
+            f"未知 policy 子命令：{action}",
+            next_step="可用子命令：show、set。",
+        )
+
     def _parse_answer(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
         positional, options = parse_options(tokens)
         if not positional:
@@ -412,7 +442,7 @@ class CommandService:
             return self._result(
                 invocation,
                 "AgentBridge commands",
-                "可用命令：project、session、ask/send、control、role、approvals、health。",
+                "可用命令：project、session、ask/send、control、role、policy、approvals、health。",
             )
         if command == "health":
             return self._result(invocation, "Health", "Control Plane 正常。", self.control.health())
@@ -658,6 +688,45 @@ class CommandService:
                     "binding": binding.model_dump(mode="json") if binding else None,
                 },
             )
+        if command == "policy.show":
+            scope_type, scope_id = self._policy_scope(invocation)
+            state = self.control.get_approval_policy_state(
+                actor=invocation.actor,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                chat_context_id=invocation.chat_context_id,
+            )
+            return self._result(
+                invocation,
+                "Approval Policy",
+                f"{scope_type.value}:{scope_id}",
+                {
+                    "scope_type": scope_type.value,
+                    "scope_id": scope_id,
+                    "policy": state,
+                },
+            )
+        if command == "policy.set":
+            scope_type, scope_id = self._policy_scope(invocation)
+            override = self.control.update_approval_policy_quorum(
+                actor=invocation.actor,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                risk_level=RiskLevel(str(args["risk_level"])),
+                quorum=int(args["quorum"]),
+                trace_id=invocation.trace_id,
+                chat_context_id=invocation.chat_context_id,
+            )
+            return self._result(
+                invocation,
+                "Approval Policy Updated",
+                f"{scope_type.value}:{scope_id} quorum 已更新。",
+                {
+                    "scope_type": scope_type.value,
+                    "scope_id": scope_id,
+                    "override": override.model_dump(mode="json"),
+                },
+            )
         if command == "interaction.list":
             interactions = self.control.list_interactions(
                 actor=invocation.actor,
@@ -868,6 +937,16 @@ class CommandService:
             next_step="请先执行 /agent project use <project>，或添加 --project <project>。",
         )
 
+    def _policy_scope(self, invocation: CommandInvocation) -> tuple[PolicyScope, str]:
+        project_token = invocation.args.get("project")
+        if project_token:
+            project = self.control.repository.resolve_project(
+                str(project_token),
+                invocation.chat_context_id,
+            )
+            return PolicyScope.PROJECT, project.id
+        return PolicyScope.CHAT_CONTEXT, invocation.chat_context_id
+
     def _resolve_session_arg(self, invocation: CommandInvocation) -> AgentSession:
         token = invocation.args.get("session")
         context = self.control.repository.get_chat_context(invocation.chat_context_id)
@@ -961,6 +1040,31 @@ def parse_optional_int(value: object) -> int | None:
             ErrorCode.COMMAND_ARGUMENT_INVALID,
             f"需要整数参数，收到：{value}",
             next_step="请提供数字参数。",
+        ) from exc
+
+
+def parse_required_int(command: str, value: object) -> int:
+    parsed = parse_optional_int(value)
+    if parsed is None:
+        raise missing_argument(command, "<integer>")
+    return parsed
+
+
+def risk_level_from_policy_key(value: str) -> RiskLevel:
+    token = value.strip().lower()
+    for prefix in ("approval.", "approvals."):
+        if token.startswith(prefix):
+            token = token[len(prefix) :]
+    for suffix in (".quorum", "_quorum", "-quorum"):
+        if token.endswith(suffix):
+            token = token[: -len(suffix)]
+    try:
+        return RiskLevel(token)
+    except ValueError as exc:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            f"未知审批风险等级：{value}",
+            next_step="请使用 low、medium、high 或 critical。",
         ) from exc
 
 

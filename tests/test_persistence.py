@@ -9,6 +9,7 @@ from agentbridge.domain import (
     Actor,
     InteractionType,
     LeaseOwnerType,
+    PolicyScope,
     RiskLevel,
     SemanticEventSource,
 )
@@ -207,3 +208,60 @@ def test_interaction_cancellation_survives_repository_restart(tmp_path):
         "dangerous_permission_required"
     ] is True
     assert second_repo.get_interaction(interaction.id).answer == "superseded"
+
+
+def test_approval_policy_overrides_survive_repository_restart(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'approval-policy.db'}"
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    first_control = ControlPlane(repository=first_repo)
+    project = first_control.create_project(
+        actor=maintainer,
+        name="Backend",
+        trace_id="approval-policy-project",
+    )
+    workspace = first_control.add_workspace(
+        actor=maintainer,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="approval-policy-workspace",
+    )
+    first_control.set_approval_policy_override(
+        actor=maintainer,
+        scope_type=PolicyScope.PROJECT,
+        scope_id=project.id,
+        quorum_by_risk={RiskLevel.CRITICAL: 4},
+        trace_id="approval-policy-set",
+    )
+
+    second_repo = SQLAlchemyRepository(database_url)
+    second_control = ControlPlane(repository=second_repo)
+    restored_override = second_repo.get_approval_policy_override(
+        scope_type=PolicyScope.PROJECT,
+        scope_id=project.id,
+    )
+    session = second_control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Policy Restore",
+        agent_type=project.default_agent,
+        visibility="group",
+        trace_id="approval-policy-session",
+    )
+    interaction = second_control.create_interaction(
+        actor=maintainer,
+        session_id=session.id,
+        interaction_type=InteractionType.APPROVAL,
+        prompt="Use restored policy?",
+        risk_level=RiskLevel.CRITICAL,
+        trace_id="approval-policy-interaction",
+    )
+
+    assert restored_override is not None
+    assert restored_override.quorum_by_risk == {RiskLevel.CRITICAL: 4}
+    assert interaction.required_votes == 4
+    assert interaction.policy_snapshot["applied_overrides"][0]["scope_id"] == project.id

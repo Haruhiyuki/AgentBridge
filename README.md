@@ -25,6 +25,7 @@ This repository currently contains the first executable backend slice:
 - Interaction and approval flow APIs with `/agent answer`, `/agent approve`, `/agent deny`, and `/agent approvals`.
 - Interaction expiration and cancellation lifecycle with audit and semantic events.
 - Risk-aware approval policy with configurable quorum and dangerous approval roles.
+- Project/chat-context approval quorum overrides through REST and `/agent policy`.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - REST API routes aligned with the design document's service interface.
 
@@ -201,6 +202,17 @@ export AGENTBRIDGE_APPROVAL_QUORUMS="high=2,critical=3"
 ```
 
 High and critical approvals require a user with `dangerous_approver` or `admin`; normal `approver` users can approve low and medium requests.
+
+Maintainers can override approval quorum per current chat context or project:
+
+```text
+/agent policy show
+/agent policy set critical 3
+/agent policy show --project backend
+/agent policy set high 2 --project backend
+```
+
+The same capability is available through `PUT /api/v1/chat-contexts/<chat-context-id>/approval-policy` and `PUT /api/v1/projects/<project-id>/approval-policy` with `quorum_by_risk` values such as `{"critical":3}`. Chat-context overrides take precedence over project overrides; explicit `required_votes` on a single interaction still wins for that interaction.
 
 Users can inspect and resolve them through commands:
 

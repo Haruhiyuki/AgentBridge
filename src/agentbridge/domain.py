@@ -159,6 +159,11 @@ class BotDeliveryStatus(StrEnum):
     RETRYING = "retrying"
 
 
+class PolicyScope(StrEnum):
+    PROJECT = "project"
+    CHAT_CONTEXT = "chat_context"
+
+
 class SemanticEventSource(StrEnum):
     CONTROL_PLANE = "control_plane"
     TERMINAL_AGENT = "terminal_agent"
@@ -247,6 +252,30 @@ class GroupRoleBinding(BaseModel):
     granted_by: str
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ApprovalPolicyOverride(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    scope_type: PolicyScope
+    scope_id: str
+    quorum_by_risk: dict[RiskLevel, int] = Field(default_factory=dict)
+    updated_by: str
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("quorum_by_risk")
+    @classmethod
+    def validate_quorum_by_risk(
+        cls, value: dict[RiskLevel, int]
+    ) -> dict[RiskLevel, int]:
+        for risk_level, quorum in value.items():
+            if not isinstance(risk_level, RiskLevel):
+                raise ValueError("quorum risk keys must be valid risk levels")
+            if quorum < 1:
+                raise ValueError("quorum must be >= 1")
+        return value
 
 
 class AgentSession(BaseModel):

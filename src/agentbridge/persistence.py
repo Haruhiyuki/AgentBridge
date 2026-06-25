@@ -20,6 +20,7 @@ from sqlalchemy.engine import Engine
 
 from agentbridge.domain import (
     AgentSession,
+    ApprovalPolicyOverride,
     AuditEvent,
     BotDeliveryRecord,
     ChatContext,
@@ -92,6 +93,16 @@ group_role_bindings_table = Table(
     Column("actor_id", String(255), nullable=False, index=True),
     Column("payload", JSON, nullable=False),
     UniqueConstraint("chat_context_id", "actor_id", name="uq_group_role_binding_actor"),
+)
+
+approval_policy_overrides_table = Table(
+    "approval_policy_overrides",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("scope_type", String(64), nullable=False, index=True),
+    Column("scope_id", String(64), nullable=False, index=True),
+    Column("payload", JSON, nullable=False),
+    UniqueConstraint("scope_type", "scope_id", name="uq_approval_policy_scope"),
 )
 
 sessions_table = Table(
@@ -203,6 +214,7 @@ class SQLAlchemyRepository(InMemoryRepository):
         "get_or_create_chat_context",
         "grant_group_roles",
         "revoke_group_roles",
+        "upsert_approval_policy_override",
         "bind_project",
         "update_active_project",
         "update_active_session",
@@ -263,6 +275,14 @@ class SQLAlchemyRepository(InMemoryRepository):
                 (binding.chat_context_id, binding.actor_id): binding
                 for binding in self._load_mapping(
                     connection, group_role_bindings_table, GroupRoleBinding
+                ).values()
+            }
+            self.approval_policy_overrides = {
+                (override.scope_type, override.scope_id): override
+                for override in self._load_mapping(
+                    connection,
+                    approval_policy_overrides_table,
+                    ApprovalPolicyOverride,
                 ).values()
             }
             self.chat_contexts = self._load_mapping(
@@ -346,6 +366,7 @@ class SQLAlchemyRepository(InMemoryRepository):
                 interactions_table,
                 turns_table,
                 sessions_table,
+                approval_policy_overrides_table,
                 group_role_bindings_table,
                 project_bindings_table,
                 chat_contexts_table,
@@ -420,6 +441,19 @@ class SQLAlchemyRepository(InMemoryRepository):
                         "payload": binding.model_dump(mode="json"),
                     }
                     for binding in self.group_role_bindings.values()
+                ],
+            )
+            self._insert_many(
+                connection,
+                approval_policy_overrides_table,
+                [
+                    {
+                        "id": override.id,
+                        "scope_type": override.scope_type.value,
+                        "scope_id": override.scope_id,
+                        "payload": override.model_dump(mode="json"),
+                    }
+                    for override in self.approval_policy_overrides.values()
                 ],
             )
             self._insert_many(

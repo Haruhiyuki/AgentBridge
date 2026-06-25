@@ -83,6 +83,10 @@ Implemented in this slice:
 - `AGENTBRIDGE_APPROVAL_QUORUMS` can override default risk quorum.
 - High and critical approvals require `approval.dangerous`, exposed through the `dangerous_approver` role.
 - Approval interactions store requester, risk level, required quorum, and policy snapshot.
+- Project and chat-context scoped approval quorum overrides with `chat_context > project > global` precedence.
+- Approval policy management REST APIs through `GET/PUT /api/v1/projects/{id}/approval-policy` and `GET/PUT /api/v1/chat-contexts/{id}/approval-policy`.
+- `/agent policy show` and `/agent policy set <risk> <quorum>` for group/project approval quorum management.
+- Alembic migration `0005_approval_policy_overrides` persists approval policy overrides.
 - Explicit chat-context role bindings for group users.
 - Effective actor roles now merge request/default roles with persisted group role bindings before permission checks.
 - `/agent role list/grant/revoke` commands for maintainers/admins.
@@ -97,7 +101,7 @@ Not implemented yet:
 - Richer OneBot renderer/action adapter and native NoneBot lifecycle registration helpers.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
-- ABAC policy editor and project/group-level approval rule management.
+- General ABAC policy editor for action/resource/attribute rules beyond approval quorum overrides.
 - Authenticated Terminal Agent WebSocket command transport and production Bot Gateway push fan-out beyond the current session event streams.
 - Rich platform-specific renderer delivery state, message editing, and button/card support.
 - Native action/callback support for platforms that expose buttons or interactions.
@@ -127,6 +131,7 @@ Not implemented yet:
 - Interaction commands now route through the same command parser and audit chain as project/session commands. Approval voting is permission-gated by `approval.vote`; answering questions is gated by `session.send`.
 - Interaction expiry is a terminal state and never auto-approves. Reads and interaction actions opportunistically advance due interactions to `expired` so pending lists do not show stale approval requests.
 - Approval policy snapshots are copied onto each approval interaction so later policy changes do not rewrite historical approval requirements.
+- Approval quorum overrides are intentionally scoped and snapshotted at interaction creation. Chat-context overrides win over project overrides, and explicit per-interaction `required_votes` remains the strongest override.
 - OneBot inbound support currently executes text commands. The optional NoneBot wrapper can also map callback/action payloads that carry a command string through the same command execution path.
 - Group role bindings are scoped to a chat context and actor ID. This keeps OneBot user permissions local to the group/private context while still allowing command/API callers to carry bootstrap roles.
 - WebSocket session streams are read-side transports over immutable semantic events. They use `after_seq` cursors for replay/reconnect and do not mutate Bot delivery records.
@@ -146,7 +151,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 ## Next Development Backlog
 
 1. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
-2. Expand policy engine to ABAC policy rules and project/group-level approval policy management.
+2. Expand policy engine to general ABAC action/resource/attribute rules and policy simulation.
 3. Add authenticated WebSocket client contracts for Terminal Agent command transport and Bot Gateway subscriber fan-out.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.
 5. Add richer platform delivery state for edits/deletes/acknowledgements.

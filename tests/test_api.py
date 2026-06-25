@@ -560,6 +560,97 @@ def test_approval_quorum_can_be_configured_from_environment(tmp_path, monkeypatc
     assert approval_response.json()["policy_snapshot"]["required_votes"] == 3
 
 
+def test_approval_policy_overrides_apply_by_project_and_chat_context(tmp_path):
+    client = TestClient(create_app())
+    chat = {
+        "bot_instance_id": "bot-test",
+        "platform": "onebot.v11",
+        "chat_space_id": "group-policy-api",
+    }
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+
+    project_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+            "actor": actor,
+            "chat": chat,
+            "idempotency_key": "policy-api-project",
+        },
+    )
+    session_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": "/agent session new Policy API",
+            "actor": actor,
+            "chat": chat,
+            "idempotency_key": "policy-api-session",
+        },
+    )
+    context_response = client.post("/api/v1/chat-contexts", json=chat)
+    project_id = project_response.json()["data"]["project_id"]
+    session_id = session_response.json()["data"]["session_id"]
+    chat_context_id = context_response.json()["id"]
+
+    project_policy = client.put(
+        f"/api/v1/projects/{project_id}/approval-policy",
+        json={
+            "actor": actor,
+            "quorum_by_risk": {"critical": 3},
+            "trace_id": "policy-api-project-set",
+        },
+    )
+    critical_approval = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": actor,
+            "type": "approval",
+            "risk_level": "critical",
+            "prompt": "Project policy critical quorum?",
+            "trace_id": "policy-api-critical",
+        },
+    )
+
+    assert project_policy.status_code == 200
+    assert project_policy.json()["quorum_by_risk"] == {"critical": 3}
+    assert critical_approval.status_code == 200
+    assert critical_approval.json()["required_votes"] == 3
+    assert critical_approval.json()["policy_snapshot"]["applied_overrides"][0][
+        "scope_type"
+    ] == "project"
+
+    chat_policy = client.put(
+        f"/api/v1/chat-contexts/{chat_context_id}/approval-policy",
+        json={
+            "actor": actor,
+            "quorum_by_risk": {"high": 2},
+            "trace_id": "policy-api-chat-set",
+        },
+    )
+    policy_state = client.get(f"/api/v1/chat-contexts/{chat_context_id}/approval-policy")
+    high_approval = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": actor,
+            "type": "approval",
+            "risk_level": "high",
+            "prompt": "Chat policy high quorum?",
+            "chat_context_id": chat_context_id,
+            "trace_id": "policy-api-high",
+        },
+    )
+
+    assert chat_policy.status_code == 200
+    assert policy_state.status_code == 200
+    assert policy_state.json()["effective_quorum_by_risk"]["high"] == 2
+    assert high_approval.status_code == 200
+    assert high_approval.json()["required_votes"] == 2
+    assert [
+        override["scope_type"]
+        for override in high_approval.json()["policy_snapshot"]["applied_overrides"]
+    ] == ["project", "chat_context"]
+
+
 def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
     client = TestClient(create_app())
     chat = {

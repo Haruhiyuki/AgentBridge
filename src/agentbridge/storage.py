@@ -13,6 +13,7 @@ from agentbridge.domain import (
     AgentBridgeError,
     AgentSession,
     AgentType,
+    ApprovalPolicyOverride,
     AuditEvent,
     AuditOutcome,
     BotDeliveryRecord,
@@ -25,6 +26,7 @@ from agentbridge.domain import (
     InteractionStatus,
     InteractionType,
     LeaseOwnerType,
+    PolicyScope,
     Project,
     ProjectBinding,
     ProjectStatus,
@@ -69,6 +71,9 @@ class InMemoryRepository:
         self.workspaces: dict[str, Workspace] = {}
         self.bindings: dict[str, ProjectBinding] = {}
         self.group_role_bindings: dict[tuple[str, str], GroupRoleBinding] = {}
+        self.approval_policy_overrides: dict[
+            tuple[PolicyScope, str], ApprovalPolicyOverride
+        ] = {}
         self.chat_contexts: dict[str, ChatContext] = {}
         self.sessions: dict[str, AgentSession] = {}
         self.turns: dict[str, Turn] = {}
@@ -345,6 +350,82 @@ class InMemoryRepository:
             if not binding:
                 return actor
             return actor.model_copy(update={"roles": set(actor.roles).union(binding.roles)})
+
+    def upsert_approval_policy_override(
+        self,
+        *,
+        scope_type: PolicyScope,
+        scope_id: str,
+        quorum_by_risk: dict[RiskLevel, int],
+        updated_by: str,
+    ) -> ApprovalPolicyOverride:
+        with self._lock:
+            self._require_policy_scope(scope_type, scope_id)
+            key = (scope_type, scope_id)
+            existing = self.approval_policy_overrides.get(key)
+            now = utc_now()
+            if existing:
+                override = existing.model_copy(
+                    update={
+                        "quorum_by_risk": dict(quorum_by_risk),
+                        "updated_by": updated_by,
+                        "updated_at": now,
+                    }
+                )
+            else:
+                override = ApprovalPolicyOverride(
+                    id=new_id("apol"),
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                    quorum_by_risk=dict(quorum_by_risk),
+                    updated_by=updated_by,
+                    created_at=now,
+                    updated_at=now,
+                )
+            self.approval_policy_overrides[key] = override
+            return override
+
+    def get_approval_policy_override(
+        self,
+        *,
+        scope_type: PolicyScope,
+        scope_id: str,
+    ) -> ApprovalPolicyOverride | None:
+        with self._lock:
+            self._require_policy_scope(scope_type, scope_id)
+            return self.approval_policy_overrides.get((scope_type, scope_id))
+
+    def list_approval_policy_overrides(
+        self,
+        *,
+        scope_type: PolicyScope | None = None,
+        scope_id: str | None = None,
+    ) -> list[ApprovalPolicyOverride]:
+        with self._lock:
+            overrides = list(self.approval_policy_overrides.values())
+            if scope_type:
+                overrides = [
+                    override for override in overrides if override.scope_type == scope_type
+                ]
+            if scope_id:
+                overrides = [override for override in overrides if override.scope_id == scope_id]
+            return sorted(
+                overrides,
+                key=lambda override: (override.scope_type.value, override.scope_id),
+            )
+
+    def _require_policy_scope(self, scope_type: PolicyScope, scope_id: str) -> None:
+        if scope_type == PolicyScope.PROJECT:
+            self.get_project(scope_id)
+            return
+        if scope_type == PolicyScope.CHAT_CONTEXT:
+            self.get_chat_context(scope_id)
+            return
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            f"不支持的策略作用域：{scope_type.value}",
+            next_step="请使用 project 或 chat_context 策略作用域。",
+        )
 
     def bind_project(
         self,

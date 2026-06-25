@@ -29,6 +29,7 @@ from agentbridge.domain import (
     InteractionStatus,
     InteractionType,
     LeaseOwnerType,
+    PolicyScope,
     RiskLevel,
     SemanticEventSource,
     Visibility,
@@ -292,6 +293,14 @@ class GroupRoleChangeRequest(BaseModel):
     trace_id: str = "api"
 
 
+class ApprovalPolicyOverrideRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    quorum_by_risk: dict[RiskLevel, int]
+    trace_id: str = "api"
+
+
 def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     control = control_plane or ControlPlane(
         repository=create_repository_from_env(),
@@ -493,6 +502,62 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             trace_id=payload.trace_id,
         )
         return binding.model_dump(mode="json") if binding else None
+
+    @app.get("/api/v1/projects/{project_id}/approval-policy")
+    def get_project_approval_policy(
+        project_id: str,
+        control: ControlPlane = Depends(get_control),
+    ):
+        actor = Actor(id="api", roles={"admin"})
+        return control.get_approval_policy_state(
+            actor=actor,
+            scope_type=PolicyScope.PROJECT,
+            scope_id=project_id,
+        )
+
+    @app.put("/api/v1/projects/{project_id}/approval-policy")
+    def update_project_approval_policy(
+        project_id: str,
+        payload: ApprovalPolicyOverrideRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        override = control.set_approval_policy_override(
+            actor=payload.actor.to_actor(),
+            scope_type=PolicyScope.PROJECT,
+            scope_id=project_id,
+            quorum_by_risk=payload.quorum_by_risk,
+            trace_id=payload.trace_id,
+        )
+        return override.model_dump(mode="json")
+
+    @app.get("/api/v1/chat-contexts/{chat_context_id}/approval-policy")
+    def get_chat_context_approval_policy(
+        chat_context_id: str,
+        control: ControlPlane = Depends(get_control),
+    ):
+        actor = Actor(id="api", roles={"admin"})
+        return control.get_approval_policy_state(
+            actor=actor,
+            scope_type=PolicyScope.CHAT_CONTEXT,
+            scope_id=chat_context_id,
+            chat_context_id=chat_context_id,
+        )
+
+    @app.put("/api/v1/chat-contexts/{chat_context_id}/approval-policy")
+    def update_chat_context_approval_policy(
+        chat_context_id: str,
+        payload: ApprovalPolicyOverrideRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        override = control.set_approval_policy_override(
+            actor=payload.actor.to_actor(),
+            scope_type=PolicyScope.CHAT_CONTEXT,
+            scope_id=chat_context_id,
+            quorum_by_risk=payload.quorum_by_risk,
+            trace_id=payload.trace_id,
+            chat_context_id=chat_context_id,
+        )
+        return override.model_dump(mode="json")
 
     @app.get("/api/v1/sessions")
     def list_sessions(
@@ -872,6 +937,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
                 "ask/send",
                 "control status/takeover/release",
                 "role list/grant/revoke",
+                "policy show/set",
                 "approvals/approval show/approval cancel/approve/deny/answer",
             ]
         }

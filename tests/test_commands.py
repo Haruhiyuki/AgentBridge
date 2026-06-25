@@ -11,6 +11,7 @@ from agentbridge.domain import (
     InteractionStatus,
     InteractionType,
     LeaseOwnerType,
+    RiskLevel,
     SemanticEventSource,
 )
 
@@ -537,3 +538,53 @@ def test_session_event_stream_is_ordered_replayable_and_idempotent(tmp_path):
         "turn.queued",
         "assistant.delta",
     ]
+
+
+def test_policy_commands_manage_chat_context_approval_quorum(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+
+    execute(
+        commands,
+        f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+        maintainer,
+        context.id,
+        "policy-command-project",
+    )
+    session_result = execute(
+        commands,
+        "/agent session new Policy Commands",
+        maintainer,
+        context.id,
+        "policy-command-session",
+    )
+    set_result = execute(
+        commands,
+        "/agent policy set approval.critical.quorum 3",
+        maintainer,
+        context.id,
+        "policy-command-set",
+    )
+    show_result = execute(
+        commands,
+        "/agent policy show",
+        maintainer,
+        context.id,
+        "policy-command-show",
+    )
+    interaction = control.create_interaction(
+        actor=maintainer,
+        session_id=str(session_result.data["session_id"]),
+        interaction_type=InteractionType.APPROVAL,
+        prompt="Use command policy?",
+        risk_level=RiskLevel.CRITICAL,
+        trace_id="policy-command-approval",
+        chat_context_id=context.id,
+    )
+
+    assert set_result.canonical_command == "policy.set"
+    assert set_result.data["override"]["quorum_by_risk"] == {"critical": 3}
+    assert show_result.data["policy"]["effective_quorum_by_risk"]["critical"] == 3
+    assert interaction.required_votes == 3

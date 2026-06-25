@@ -7,6 +7,7 @@ from agentbridge.domain import (
     AgentBridgeError,
     AgentSession,
     AgentType,
+    ApprovalPolicyOverride,
     AuditEvent,
     AuditOutcome,
     ChatContext,
@@ -16,6 +17,7 @@ from agentbridge.domain import (
     InteractionStatus,
     InteractionType,
     LeaseOwnerType,
+    PolicyScope,
     Project,
     RiskLevel,
     SemanticEvent,
@@ -510,10 +512,15 @@ class ControlPlane:
                 "Interaction prompt 不能为空。",
                 next_step="请提供需要用户处理的问题或审批说明。",
             )
+        session = self.repository.get_session(session_id)
+        approval_policy, applied_overrides = self._effective_approval_policy(
+            project_id=session.project_id,
+            chat_context_id=chat_context_id,
+        )
         computed_votes = (
             required_votes
             if required_votes is not None
-            else self.approval_policy.quorum_for(risk_level)
+            else approval_policy.quorum_for(risk_level)
         )
         if computed_votes < 1:
             raise AgentBridgeError(
@@ -521,7 +528,10 @@ class ControlPlane:
                 "required_votes 必须大于等于 1。",
                 next_step="请提供至少 1 个所需票数。",
             )
-        policy_snapshot = self.approval_policy.snapshot_for(risk_level)
+        policy_snapshot = approval_policy.snapshot_for(risk_level)
+        policy_snapshot["applied_overrides"] = [
+            override.model_dump(mode="json") for override in applied_overrides
+        ]
         policy_snapshot["requested_votes"] = required_votes
         interaction = self.repository.create_interaction(
             session_id=session_id,
@@ -535,7 +545,6 @@ class ControlPlane:
             requested_by=effective_actor.id,
             policy_snapshot=policy_snapshot,
         )
-        session = self.repository.get_session(session_id)
         event_type = (
             "approval.requested"
             if interaction_type == InteractionType.APPROVAL
@@ -920,6 +929,192 @@ class ControlPlane:
         effective_actor = self.effective_actor(actor, chat_context_id)
         self.policy.require(effective_actor, Permission.GROUP_ROLE_MANAGE)
         return self.repository.list_group_role_bindings(chat_context_id)
+
+    def get_approval_policy_state(
+        self,
+        *,
+        actor: Actor,
+        scope_type: PolicyScope,
+        scope_id: str,
+        chat_context_id: str | None = None,
+    ) -> dict[str, object]:
+        effective_actor = self.effective_actor(
+            actor,
+            chat_context_id or (scope_id if scope_type == PolicyScope.CHAT_CONTEXT else None),
+        )
+        self.policy.require(effective_actor, Permission.POLICY_MANAGE)
+        override = self.repository.get_approval_policy_override(
+            scope_type=scope_type,
+            scope_id=scope_id,
+        )
+        policy, applied_overrides = self._effective_approval_policy_for_scope(
+            scope_type=scope_type,
+            scope_id=scope_id,
+        )
+        return {
+            "scope_type": scope_type.value,
+            "scope_id": scope_id,
+            "override": override.model_dump(mode="json") if override else None,
+            "effective_quorum_by_risk": {
+                risk_level.value: policy.quorum_for(risk_level) for risk_level in RiskLevel
+            },
+            "applied_overrides": [
+                item.model_dump(mode="json") for item in applied_overrides
+            ],
+        }
+
+    def set_approval_policy_override(
+        self,
+        *,
+        actor: Actor,
+        scope_type: PolicyScope,
+        scope_id: str,
+        quorum_by_risk: dict[RiskLevel, int],
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> ApprovalPolicyOverride:
+        effective_actor = self.effective_actor(
+            actor,
+            chat_context_id or (scope_id if scope_type == PolicyScope.CHAT_CONTEXT else None),
+        )
+        self.policy.require(effective_actor, Permission.POLICY_MANAGE)
+        normalized_quorum = self._validated_quorum_by_risk(quorum_by_risk)
+        override = self.repository.upsert_approval_policy_override(
+            scope_type=scope_type,
+            scope_id=scope_id,
+            quorum_by_risk=normalized_quorum,
+            updated_by=effective_actor.id,
+        )
+        project_id = scope_id if scope_type == PolicyScope.PROJECT else None
+        self.audit(
+            action="approval.policy_updated",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id
+            or (scope_id if scope_type == PolicyScope.CHAT_CONTEXT else None),
+            project_id=project_id,
+            details={
+                "scope_type": scope_type.value,
+                "scope_id": scope_id,
+                "quorum_by_risk": {
+                    risk.value: quorum for risk, quorum in normalized_quorum.items()
+                },
+            },
+        )
+        self.emit_event(
+            event_type="approval.policy_updated",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=project_id,
+            payload={
+                "scope_type": scope_type.value,
+                "scope_id": scope_id,
+                "quorum_by_risk": {
+                    risk.value: quorum for risk, quorum in normalized_quorum.items()
+                },
+                "updated_by": effective_actor.id,
+            },
+        )
+        return override
+
+    def update_approval_policy_quorum(
+        self,
+        *,
+        actor: Actor,
+        scope_type: PolicyScope,
+        scope_id: str,
+        risk_level: RiskLevel,
+        quorum: int,
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> ApprovalPolicyOverride:
+        existing = self.repository.get_approval_policy_override(
+            scope_type=scope_type,
+            scope_id=scope_id,
+        )
+        quorum_by_risk = dict(existing.quorum_by_risk) if existing else {}
+        quorum_by_risk[risk_level] = quorum
+        return self.set_approval_policy_override(
+            actor=actor,
+            scope_type=scope_type,
+            scope_id=scope_id,
+            quorum_by_risk=quorum_by_risk,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+        )
+
+    def _effective_approval_policy(
+        self,
+        *,
+        project_id: str,
+        chat_context_id: str | None,
+    ) -> tuple[ApprovalPolicy, list[ApprovalPolicyOverride]]:
+        quorum_by_risk = dict(self.approval_policy.quorum_by_risk)
+        applied_overrides: list[ApprovalPolicyOverride] = []
+        project_override = self.repository.get_approval_policy_override(
+            scope_type=PolicyScope.PROJECT,
+            scope_id=project_id,
+        )
+        if project_override:
+            quorum_by_risk.update(project_override.quorum_by_risk)
+            applied_overrides.append(project_override)
+        if chat_context_id:
+            chat_override = self.repository.get_approval_policy_override(
+                scope_type=PolicyScope.CHAT_CONTEXT,
+                scope_id=chat_context_id,
+            )
+            if chat_override:
+                quorum_by_risk.update(chat_override.quorum_by_risk)
+                applied_overrides.append(chat_override)
+        return ApprovalPolicy(quorum_by_risk=quorum_by_risk), applied_overrides
+
+    def _effective_approval_policy_for_scope(
+        self,
+        *,
+        scope_type: PolicyScope,
+        scope_id: str,
+    ) -> tuple[ApprovalPolicy, list[ApprovalPolicyOverride]]:
+        if scope_type == PolicyScope.PROJECT:
+            return self._effective_approval_policy(project_id=scope_id, chat_context_id=None)
+        context = self.repository.get_chat_context(scope_id)
+        project_id = context.active_project_id
+        if project_id is None:
+            quorum_by_risk = dict(self.approval_policy.quorum_by_risk)
+            override = self.repository.get_approval_policy_override(
+                scope_type=PolicyScope.CHAT_CONTEXT,
+                scope_id=scope_id,
+            )
+            applied = []
+            if override:
+                quorum_by_risk.update(override.quorum_by_risk)
+                applied.append(override)
+            return ApprovalPolicy(quorum_by_risk=quorum_by_risk), applied
+        return self._effective_approval_policy(
+            project_id=project_id,
+            chat_context_id=scope_id,
+        )
+
+    def _validated_quorum_by_risk(
+        self, quorum_by_risk: dict[RiskLevel, int]
+    ) -> dict[RiskLevel, int]:
+        normalized: dict[RiskLevel, int] = {}
+        for risk_level, quorum in quorum_by_risk.items():
+            risk = RiskLevel(risk_level)
+            if int(quorum) < 1:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "审批 quorum 必须大于等于 1。",
+                    next_step="请提供至少 1 个所需票数。",
+                )
+            normalized[risk] = int(quorum)
+        if not normalized:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "审批策略不能为空。",
+                next_step="请至少设置一个风险等级的 quorum。",
+            )
+        return normalized
 
     def _validated_group_roles(self, roles: set[str]) -> set[str]:
         normalized = {role.strip() for role in roles if role.strip()}
