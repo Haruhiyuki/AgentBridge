@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 
 from alembic.config import Config
@@ -271,6 +272,22 @@ def test_sqlalchemy_repository_lists_filtered_audit_events(tmp_path):
     assert newest[0].session_id == second_session.id
     assert newest[0].trace_id == "audit-session-two"
 
+    windowed = restored.list_audit_events(
+        action="session.created",
+        session_id=second_session.id,
+        created_from=newest[0].created_at - timedelta(minutes=1),
+        created_to=newest[0].created_at + timedelta(minutes=1),
+    )
+    assert [event.session_id for event in windowed] == [second_session.id]
+    assert (
+        restored.list_audit_events(
+            action="session.created",
+            session_id=second_session.id,
+            created_from=newest[0].created_at + timedelta(days=1),
+        )
+        == []
+    )
+
     session_filtered = restored.list_audit_events(
         action="session.created",
         actor_id="usr_audit",
@@ -380,6 +397,21 @@ def test_sqlalchemy_repository_lists_filtered_semantic_events(tmp_path):
         payload_query="second",
     )
     assert [event.id for event in payload_filtered] == [second_event.id]
+    windowed = restored.list_semantic_events(
+        session_id=second_session.id,
+        event_type="assistant.delta",
+        created_from=second_event.created_at - timedelta(minutes=1),
+        created_to=second_event.created_at + timedelta(minutes=1),
+    )
+    assert [event.id for event in windowed] == [second_event.id]
+    assert (
+        restored.list_semantic_events(
+            session_id=second_session.id,
+            event_type="assistant.delta",
+            created_from=second_event.created_at + timedelta(days=1),
+        )
+        == []
+    )
     assert (
         restored.list_semantic_events(
             project_id=project.id,

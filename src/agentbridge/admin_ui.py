@@ -716,6 +716,14 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
           <input id="audit-query" autocomplete="off" placeholder="details text">
         </label>
         <label class="compact">
+          From
+          <input id="audit-created-from" type="datetime-local">
+        </label>
+        <label class="compact">
+          To
+          <input id="audit-created-to" type="datetime-local">
+        </label>
+        <label class="compact">
           Limit
           <input id="audit-limit" type="number" value="100" min="1" max="500">
         </label>
@@ -780,6 +788,14 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
         <label class="compact">
           Query
           <input id="event-query" autocomplete="off" placeholder="payload text">
+        </label>
+        <label class="compact">
+          From
+          <input id="event-created-from" type="datetime-local">
+        </label>
+        <label class="compact">
+          To
+          <input id="event-created-to" type="datetime-local">
         </label>
         <label class="compact">
           After Seq
@@ -856,6 +872,8 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
         ["actor_id", "audit-actor"],
         ["session_id", "audit-session"],
         ["q", "audit-query"],
+        ["created_from", "audit-created-from"],
+        ["created_to", "audit-created-to"],
         ["limit", "audit-limit"],
       ]);
     }
@@ -1042,6 +1060,8 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
         ["turn_id", "event-turn"],
         ["interaction_id", "event-interaction"],
         ["q", "event-query"],
+        ["created_from", "event-created-from"],
+        ["created_to", "event-created-to"],
         ["limit", "event-limit"],
       ])}`);
       renderEvents(events);

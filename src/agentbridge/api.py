@@ -1351,6 +1351,8 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         source: SemanticEventSource | None = None,
         trace_id: str | None = None,
         q: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
         limit: int = 100,
     ):
         if session_id is not None:
@@ -1366,6 +1368,8 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             source=source,
             trace_id=trace_id,
             payload_query=q,
+            created_from=created_from,
+            created_to=created_to,
             limit=limit,
         )
         return [event.model_dump(mode="json") for event in events]
@@ -1381,6 +1385,8 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         source: SemanticEventSource | None = None,
         trace_id: str | None = None,
         q: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
         limit: int = 100,
     ):
         if session_id is not None:
@@ -1396,6 +1402,8 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             source=source,
             trace_id=trace_id,
             payload_query=q,
+            created_from=created_from,
+            created_to=created_to,
             limit=limit,
         )
         renderer = OneBotV11TextRenderer()
@@ -1974,6 +1982,8 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         interaction_id: str | None = None,
         trace_id: str | None = None,
         q: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
         limit: int = 100,
     ):
         events = list_audit_events_for_export(
@@ -1985,6 +1995,8 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             interaction_id=interaction_id,
             trace_id=trace_id,
             payload_query=q,
+            created_from=created_from,
+            created_to=created_to,
             limit=limit,
         )
         return [event.model_dump(mode="json") for event in events]
@@ -1999,6 +2011,8 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         interaction_id: str | None = None,
         trace_id: str | None = None,
         q: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
         limit: int = 100,
         format: str = "json",
     ):
@@ -2010,6 +2024,8 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             interaction_id=interaction_id,
             trace_id=trace_id,
             q=q,
+            created_from=created_from,
+            created_to=created_to,
             limit=limit,
         )
         events = list_audit_events_for_export(
@@ -2021,6 +2037,8 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             interaction_id=interaction_id,
             trace_id=trace_id,
             payload_query=q,
+            created_from=created_from,
+            created_to=created_to,
             limit=limit,
         )
         normalized_format = format.strip().lower()
@@ -2088,6 +2106,8 @@ def audit_export_filter_payload(
     interaction_id: str | None,
     trace_id: str | None,
     q: str | None,
+    created_from: datetime | None,
+    created_to: datetime | None,
     limit: int,
 ) -> dict[str, object]:
     return {
@@ -2098,6 +2118,8 @@ def audit_export_filter_payload(
         "interaction_id": interaction_id,
         "trace_id": trace_id,
         "q": q,
+        "created_from": created_from.isoformat() if created_from else None,
+        "created_to": created_to.isoformat() if created_to else None,
         "limit": limit,
     }
 
@@ -2112,6 +2134,8 @@ def list_audit_events_for_export(
     interaction_id: str | None,
     trace_id: str | None,
     payload_query: str | None,
+    created_from: datetime | None,
+    created_to: datetime | None,
     limit: int,
 ) -> list[AuditEvent]:
     return control.repository.list_audit_events(
@@ -2122,6 +2146,8 @@ def list_audit_events_for_export(
         interaction_id=interaction_id,
         trace_id=trace_id,
         payload_query=payload_query,
+        created_from=created_from,
+        created_to=created_to,
         limit=limit,
     )
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any, ClassVar
 
 from sqlalchemy import (
@@ -37,7 +38,11 @@ from agentbridge.domain import (
     Workspace,
     WriterLease,
 )
-from agentbridge.storage import InMemoryRepository, payload_contains_query
+from agentbridge.storage import (
+    InMemoryRepository,
+    created_at_in_range,
+    payload_contains_query,
+)
 
 metadata = MetaData()
 
@@ -425,6 +430,8 @@ class SQLAlchemyRepository(InMemoryRepository):
         interaction_id: str | None = None,
         trace_id: str | None = None,
         payload_query: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
         limit: int = 100,
     ) -> list[AuditEvent]:
         max_results = self._clamp_audit_limit(limit)
@@ -444,6 +451,11 @@ class SQLAlchemyRepository(InMemoryRepository):
                     and (interaction_id is None or event.interaction_id == interaction_id)
                     and (trace_id is None or event.trace_id == trace_id)
                     and payload_contains_query(event.details, payload_query)
+                    and created_at_in_range(
+                        event.created_at,
+                        created_from=created_from,
+                        created_to=created_to,
+                    )
                 ):
                     events.append(event)
                     if len(events) >= max_results:
@@ -461,6 +473,8 @@ class SQLAlchemyRepository(InMemoryRepository):
         source: SemanticEventSource | None = None,
         trace_id: str | None = None,
         payload_query: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
         limit: int = 100,
     ) -> list[SemanticEvent]:
         max_results = self._clamp_event_search_limit(limit)
@@ -486,7 +500,14 @@ class SQLAlchemyRepository(InMemoryRepository):
         with self._lock, self.engine.connect() as connection:
             for row in connection.execute(stmt):
                 event = SemanticEvent.model_validate(row.payload)
-                if payload_contains_query(event.payload, payload_query):
+                if payload_contains_query(
+                    event.payload,
+                    payload_query,
+                ) and created_at_in_range(
+                    event.created_at,
+                    created_from=created_from,
+                    created_to=created_to,
+                ):
                     events.append(event)
                     if len(events) >= max_results:
                         break

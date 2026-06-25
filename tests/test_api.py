@@ -2759,7 +2759,11 @@ def test_audit_events_admin_ui_serves_dashboard():
     assert "event-source" in html
     assert "event-trace" in html
     assert "audit-query" in html
+    assert "audit-created-from" in html
+    assert "audit-created-to" in html
     assert "event-query" in html
+    assert "event-created-from" in html
+    assert "event-created-to" in html
     assert "event-live-connect" in html
     assert "function connectEventsLive()" in html
 
@@ -3466,6 +3470,49 @@ def test_audit_api_filters_and_limits_records(tmp_path, monkeypatch):
     assert audit_event["actor_id"] == "admin-ui"
     assert audit_event["project_id"] == project["id"]
     assert audit_event["session_id"] == session["id"]
+    audit_created_at = datetime.fromisoformat(
+        audit_event["created_at"].replace("Z", "+00:00")
+    )
+    audit_window_from = (audit_created_at - timedelta(minutes=1)).isoformat()
+    audit_window_to = (audit_created_at + timedelta(minutes=1)).isoformat()
+    audit_future_from = (audit_created_at + timedelta(days=1)).isoformat()
+    audit_window_response = client.get(
+        "/api/v1/audit",
+        params={
+            "action": "session.created",
+            "session_id": session["id"],
+            "created_from": audit_window_from,
+            "created_to": audit_window_to,
+        },
+    )
+    audit_future_response = client.get(
+        "/api/v1/audit",
+        params={
+            "action": "session.created",
+            "session_id": session["id"],
+            "created_from": audit_future_from,
+        },
+    )
+    export_archive_window_response = client.get(
+        "/api/v1/audit/export",
+        params={
+            "action": "session.created",
+            "session_id": session["id"],
+            "created_from": audit_window_from,
+            "created_to": audit_window_to,
+            "format": "archive",
+        },
+    )
+    assert audit_window_response.status_code == 200
+    assert [event["id"] for event in audit_window_response.json()] == [
+        audit_event["id"]
+    ]
+    assert audit_future_response.status_code == 200
+    assert audit_future_response.json() == []
+    assert export_archive_window_response.status_code == 200
+    archive_filters = export_archive_window_response.json()["archive"]["filters"]
+    assert archive_filters["created_from"] == audit_window_from
+    assert archive_filters["created_to"] == audit_window_to
     assert export_json_response.status_code == 200
     assert export_json_response.headers["content-disposition"].endswith(
         'filename="agentbridge-audit.json"'
@@ -5208,6 +5255,38 @@ def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
         "/api/v1/events",
         params={"session_id": session_id, "q": "missing-payload"},
     )
+    second_created_at = datetime.fromisoformat(
+        second.json()["created_at"].replace("Z", "+00:00")
+    )
+    event_window_from = (second_created_at - timedelta(minutes=1)).isoformat()
+    event_window_to = (second_created_at + timedelta(minutes=1)).isoformat()
+    event_future_from = (second_created_at + timedelta(days=1)).isoformat()
+    time_response = client.get(
+        "/api/v1/events",
+        params={
+            "session_id": session_id,
+            "event_type": "assistant.delta",
+            "created_from": event_window_from,
+            "created_to": event_window_to,
+        },
+    )
+    time_missing_response = client.get(
+        "/api/v1/events",
+        params={
+            "session_id": session_id,
+            "event_type": "assistant.delta",
+            "created_from": event_future_from,
+        },
+    )
+    rendered_time_response = client.get(
+        "/api/v1/events/rendered",
+        params={
+            "session_id": session_id,
+            "q": "newest",
+            "created_from": event_window_from,
+            "created_to": event_window_to,
+        },
+    )
     project_response = client.get(
         "/api/v1/events",
         params={
@@ -5225,6 +5304,17 @@ def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
     assert [event["id"] for event in payload_response.json()] == [second.json()["id"]]
     assert payload_missing_response.status_code == 200
     assert payload_missing_response.json() == []
+    assert time_response.status_code == 200
+    assert [event["id"] for event in time_response.json()] == [
+        second.json()["id"],
+        first.json()["id"],
+    ]
+    assert time_missing_response.status_code == 200
+    assert time_missing_response.json() == []
+    assert rendered_time_response.status_code == 200
+    assert [item["event_id"] for item in rendered_time_response.json()] == [
+        second.json()["id"]
+    ]
     assert project_response.status_code == 200
     assert [event["session_id"] for event in project_response.json()] == [session_id]
 

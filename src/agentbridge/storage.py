@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from uuid import uuid4
@@ -85,6 +85,26 @@ def payload_contains_query(payload: object, query: str | None) -> bool:
     except TypeError:
         serialized = str(payload)
     return normalized_query in serialized.casefold()
+
+
+def created_at_in_range(
+    created_at: datetime,
+    *,
+    created_from: datetime | None,
+    created_to: datetime | None,
+) -> bool:
+    value = aware_utc(created_at)
+    if created_from is not None and value < aware_utc(created_from):
+        return False
+    if created_to is not None and value > aware_utc(created_to):
+        return False
+    return True
+
+
+def aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 class InMemoryRepository:
@@ -1897,6 +1917,8 @@ class InMemoryRepository:
         interaction_id: str | None = None,
         trace_id: str | None = None,
         payload_query: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
         limit: int = 100,
     ) -> list[AuditEvent]:
         max_results = self._clamp_audit_limit(limit)
@@ -1911,6 +1933,11 @@ class InMemoryRepository:
                     and (interaction_id is None or event.interaction_id == interaction_id)
                     and (trace_id is None or event.trace_id == trace_id)
                     and payload_contains_query(event.details, payload_query)
+                    and created_at_in_range(
+                        event.created_at,
+                        created_from=created_from,
+                        created_to=created_to,
+                    )
                 ):
                     events.append(event)
                     if len(events) >= max_results:
@@ -1989,6 +2016,8 @@ class InMemoryRepository:
         source: SemanticEventSource | None = None,
         trace_id: str | None = None,
         payload_query: str | None = None,
+        created_from: datetime | None = None,
+        created_to: datetime | None = None,
         limit: int = 100,
     ) -> list[SemanticEvent]:
         max_results = self._clamp_event_search_limit(limit)
@@ -2004,6 +2033,11 @@ class InMemoryRepository:
                     and (source is None or event.source == source)
                     and (trace_id is None or event.trace_id == trace_id)
                     and payload_contains_query(event.payload, payload_query)
+                    and created_at_in_range(
+                        event.created_at,
+                        created_from=created_from,
+                        created_to=created_to,
+                    )
                 ):
                     events.append(event)
                     if len(events) >= max_results:
