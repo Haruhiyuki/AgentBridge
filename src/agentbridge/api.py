@@ -2200,6 +2200,22 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         and path_segments[5] == "project-bindings"
     ):
         return DeviceIdentityScope.PROJECT_MANAGE
+    if method == "POST" and path == "/api/v1/sessions":
+        return DeviceIdentityScope.SESSION_MANAGE
+    if (
+        method == "POST"
+        and len(path_segments) >= 6
+        and path_segments[:4] == ["", "api", "v1", "sessions"]
+        and (
+            path_segments[5] == "close"
+            or (
+                len(path_segments) >= 7
+                and path_segments[5] == "lease"
+                and path_segments[6] in {"acquire", "release"}
+            )
+        )
+    ):
+        return DeviceIdentityScope.SESSION_MANAGE
     if path == "/api/v1/terminal/lifecycle-monitor/run-once":
         return DeviceIdentityScope.TERMINAL_CONTROL
     if (

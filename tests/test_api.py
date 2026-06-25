@@ -579,6 +579,187 @@ def test_managed_device_identity_project_manage_scope_allows_project_write_apis(
     assert bind_response.json() == {"status": "ok"}
 
 
+def test_managed_device_identity_requires_session_manage_scope_for_session_writes(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+
+    project = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": maintainer,
+            "name": "Readonly Session Project",
+            "trace_id": "session-scope-project",
+        },
+    ).json()
+    workspace = client.post(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        json={
+            "actor": maintainer,
+            "machine_id": "local",
+            "path": str(tmp_path),
+            "allowed_root": str(tmp_path),
+            "trace_id": "session-scope-workspace",
+        },
+    ).json()
+    existing_session = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": maintainer,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Existing Session",
+            "trace_id": "session-scope-existing-session",
+        },
+    ).json()
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "session-scope-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    list_response = client.get(
+        "/api/v1/sessions",
+        params={"project_id": project["id"]},
+        headers=key_headers,
+    )
+    create_session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": maintainer,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Denied Session",
+            "trace_id": "session-scope-denied-create",
+        },
+        headers=key_headers,
+    )
+    close_response = client.post(
+        f"/api/v1/sessions/{existing_session['id']}/close",
+        json=maintainer,
+        headers=key_headers,
+    )
+    lease_response = client.post(
+        f"/api/v1/sessions/{existing_session['id']}/lease/acquire",
+        json={
+            "actor": maintainer,
+            "owner_type": "web_admin",
+            "owner_id": "usr_maintainer",
+            "trace_id": "session-scope-denied-lease",
+        },
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert create_identity_response.status_code == 200
+    assert list_response.status_code == 200
+    assert [session["id"] for session in list_response.json()] == [
+        existing_session["id"]
+    ]
+    assert create_session_response.status_code == 403
+    assert close_response.status_code == 403
+    assert lease_response.status_code == 403
+
+
+def test_managed_device_identity_session_manage_scope_allows_session_write_apis(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+
+    project = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": maintainer,
+            "name": "Managed Session Project",
+            "trace_id": "session-manager-project",
+        },
+    ).json()
+    workspace = client.post(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        json={
+            "actor": maintainer,
+            "machine_id": "local",
+            "path": str(tmp_path),
+            "allowed_root": str(tmp_path),
+            "trace_id": "session-manager-workspace",
+        },
+    ).json()
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "session-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "session_manage"],
+            "trace_id": "session-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "session-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    create_session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": maintainer,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Managed Device Session",
+            "trace_id": "session-manager-create-session",
+        },
+        headers=headers,
+    )
+    session_id = create_session_response.json().get("id")
+    lease_response = client.post(
+        f"/api/v1/sessions/{session_id}/lease/acquire",
+        json={
+            "actor": maintainer,
+            "owner_type": "web_admin",
+            "owner_id": "usr_maintainer",
+            "trace_id": "session-manager-lease",
+        },
+        headers=headers,
+    )
+    release_response = client.post(
+        f"/api/v1/sessions/{session_id}/lease/release",
+        json={
+            "actor": maintainer,
+            "epoch": lease_response.json().get("epoch"),
+            "trace_id": "session-manager-release",
+        },
+        headers=headers,
+    )
+    close_response = client.post(
+        f"/api/v1/sessions/{session_id}/close",
+        json=maintainer,
+        headers=headers,
+    )
+
+    assert create_identity_response.status_code == 200
+    assert create_session_response.status_code == 200
+    assert create_session_response.json()["name"] == "Managed Device Session"
+    assert lease_response.status_code == 200
+    assert lease_response.json()["owner_id"] == "usr_maintainer"
+    assert release_response.status_code == 200
+    assert release_response.json()["next_epoch"] == lease_response.json()["epoch"] + 1
+    assert close_response.status_code == 200
+    assert close_response.json()["status"] == "closed"
+
+
 def test_project_session_admin_ui_serves_dashboard():
     client = TestClient(create_app())
 
@@ -633,6 +814,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "policy_manage" in html
     assert "group_role_manage" in html
     assert "project_manage" in html
+    assert "session_manage" in html
     assert "terminal_control" in html
     assert "certificate-fingerprints" in html
     assert "generated-key" in html
@@ -2391,7 +2573,7 @@ def test_managed_device_identity_terminal_control_scope_allows_terminal_http_api
             "actor": admin,
             "device_id": "terminal-device",
             "device_key": "managed-secret",
-            "allowed_scopes": ["http_api", "terminal_control"],
+            "allowed_scopes": ["http_api", "session_manage", "terminal_control"],
             "trace_id": "terminal-control-manager-device-create",
         },
     )
