@@ -23,6 +23,8 @@ from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, LeaseOwnerType, Visibility
 from agentbridge.pty_host import (
     PtyHostServer,
+    PtyHostSupervisor,
+    PtyHostSupervisorConfig,
     PtyHostTerminalBackend,
 )
 from agentbridge.pty_host import (
@@ -860,6 +862,46 @@ def test_pty_host_token_file_missing_fails_closed(tmp_path):
         with pytest.raises(AgentBridgeError) as exc_info:
             client.health()
         assert exc_info.value.code == ErrorCode.PERMISSION_DENIED
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_pty_host_supervisor_preserves_active_socket_on_auth_failure(tmp_path):
+    socket_path = Path(f"/tmp/agentbridge-pty-host-{uuid4().hex}.sock")
+    server = PtyHostServer(
+        socket_path=socket_path,
+        auth_token="server-token",
+        backend=PtyTerminalBackend(),
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        supervisor = PtyHostSupervisor(
+            PtyHostSupervisorConfig(
+                socket_path=socket_path,
+                auth_token="wrong-token",
+                startup_timeout_seconds=0.2,
+                poll_interval_seconds=0.01,
+            )
+        )
+
+        with pytest.raises(AgentBridgeError) as exc_info:
+            supervisor.ensure_running()
+
+        assert exc_info.value.code == ErrorCode.PERMISSION_DENIED
+        assert socket_path.exists()
+        assert supervisor.start_count == 0
+        assert supervisor.restart_count == 0
+        assert supervisor.last_error == "PTY Host 已运行但 token 无效。"
+        assert (
+            PtyHostTerminalBackend(
+                socket_path=socket_path,
+                auth_token="server-token",
+            ).health()["status"]
+            == "ok"
+        )
     finally:
         server.shutdown()
         server.server_close()

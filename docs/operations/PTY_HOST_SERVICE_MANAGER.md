@@ -18,6 +18,9 @@ operators a standard place to inspect logs and restart policy.
   `AGENTBRIDGE_TERMINAL_PTY_HOST_AUTO_START=false` and
   `AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_ENABLED=false` unless you intentionally want the
   API/daemon process to act as a fallback supervisor.
+- If a client health check reaches the host but fails with `PERMISSION_DENIED`, treat it as
+  a token mismatch. Auto-start/watchdog supervision preserves the active socket in that
+  case; fix or rotate the shared token file instead of starting another host.
 - Enable `AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=true` only after deciding that command
   restart is acceptable for your native CLI workflow, and set
   `AGENTBRIDGE_TERMINAL_AUTO_RESTART_COMMAND_ALLOWLIST` to the shell-style command

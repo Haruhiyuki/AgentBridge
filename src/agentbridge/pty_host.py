@@ -219,9 +219,11 @@ class PtyHostSupervisor:
 
     def ensure_running(self) -> bool:
         with self._lock:
-            if self.is_healthy():
+            healthy, health_error = self._check_health()
+            if healthy:
                 self.last_error = None
                 return False
+            self._raise_if_auth_failed(health_error)
             previous_process = self.process
             self._remove_stale_socket()
             self.process = subprocess.Popen(
@@ -238,9 +240,11 @@ class PtyHostSupervisor:
                 self.restart_count += 1
             deadline = time.monotonic() + self.config.startup_timeout_seconds
             while time.monotonic() < deadline:
-                if self.is_healthy():
+                healthy, health_error = self._check_health()
+                if healthy:
                     self.last_error = None
                     return True
+                self._raise_if_auth_failed(health_error)
                 if self.process.poll() is not None:
                     break
                 time.sleep(max(self.config.poll_interval_seconds, 0.01))
@@ -301,6 +305,10 @@ class PtyHostSupervisor:
         }
 
     def is_healthy(self) -> bool:
+        healthy, _error = self._check_health()
+        return healthy
+
+    def _check_health(self) -> tuple[bool, AgentBridgeError | None]:
         try:
             client = PtyHostTerminalBackend(
                 socket_path=self.config.socket_path,
@@ -308,9 +316,26 @@ class PtyHostSupervisor:
                 auth_token_file=self.config.auth_token_file,
                 timeout_seconds=min(self.config.startup_timeout_seconds, 1.0),
             )
-            return client.health().get("status") == "ok"
-        except AgentBridgeError:
-            return False
+            return client.health().get("status") == "ok", None
+        except AgentBridgeError as exc:
+            return False, exc
+
+    def _raise_if_auth_failed(self, exc: AgentBridgeError | None) -> None:
+        if exc is None or exc.code != ErrorCode.PERMISSION_DENIED:
+            return
+        error = AgentBridgeError(
+            ErrorCode.PERMISSION_DENIED,
+            "PTY Host 已运行但 token 无效。",
+            next_step=(
+                "请检查 AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN 或 "
+                "AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE 是否与正在运行的 "
+                "agentbridge-pty-host 一致；当前不会清理该 socket。"
+            ),
+            status_code=403,
+            details={"socket_path": str(self.config.socket_path.expanduser())},
+        )
+        self.last_error = error.message
+        raise error from exc
 
     def _watchdog_loop(self) -> None:
         while not self._watchdog_stop_event.is_set():
