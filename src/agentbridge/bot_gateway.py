@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Protocol
 from uuid import uuid4
 
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import BotDeliveryRecord, BotDeliveryStatus, BotPlatform, ChatContext
+from agentbridge.domain import (
+    AgentBridgeError,
+    BotDeliveryRecord,
+    BotDeliveryStatus,
+    BotPlatform,
+    ChatContext,
+    utc_now,
+)
 from agentbridge.renderer import OneBotV11TextRenderer, RenderDocument, document_from_event
 
 
@@ -53,10 +61,14 @@ class BotGatewayService:
         control: ControlPlane,
         transport: BotTransport | None = None,
         renderer: OneBotV11TextRenderer | None = None,
+        retry_base_seconds: int = 30,
+        retry_max_seconds: int = 300,
     ) -> None:
         self.control = control
         self.transport = transport or InMemoryBotTransport()
         self.renderer = renderer or OneBotV11TextRenderer()
+        self.retry_base_seconds = retry_base_seconds
+        self.retry_max_seconds = retry_max_seconds
 
     def deliver_session_events(
         self,
@@ -104,33 +116,171 @@ class BotGatewayService:
             idempotency_key = f"{platform.value}:{chat_context_id}:{event_id}:{index}"
             existing = self.control.repository.get_bot_delivery_record(idempotency_key)
             if existing:
+                if existing.status == BotDeliveryStatus.FAILED:
+                    records.append(existing)
+                    continue
                 duplicate = existing.model_copy(
                     update={"status": BotDeliveryStatus.SKIPPED_DUPLICATE}
                 )
                 records.append(duplicate)
                 continue
+            records.append(
+                self._send_and_store(
+                    idempotency_key=idempotency_key,
+                    platform=platform,
+                    chat_context=chat_context,
+                    event_id=event_id,
+                    event_seq=event_seq,
+                    message_index=index,
+                    text=text,
+                    existing=None,
+                )
+            )
+        return records
+
+    def list_records(
+        self,
+        chat_context_id: str | None = None,
+        status: BotDeliveryStatus | None = None,
+    ) -> list[BotDeliveryRecord]:
+        return self.control.repository.list_bot_delivery_records(chat_context_id, status=status)
+
+    def retry_failed_deliveries(
+        self,
+        *,
+        chat_context_id: str | None = None,
+        now: datetime | None = None,
+        limit: int = 100,
+    ) -> list[BotDeliveryRecord]:
+        now = now or utc_now()
+        candidates = self.control.repository.list_bot_delivery_records(
+            chat_context_id=chat_context_id,
+            status=BotDeliveryStatus.FAILED,
+        )
+        retried: list[BotDeliveryRecord] = []
+        for record in candidates:
+            if len(retried) >= limit:
+                break
+            if record.next_retry_at and record.next_retry_at > now:
+                continue
+            chat_context = self.control.repository.get_chat_context(record.chat_context_id)
+            retried.append(
+                self._send_and_store(
+                    idempotency_key=record.idempotency_key,
+                    platform=record.platform,
+                    chat_context=chat_context,
+                    event_id=record.event_id,
+                    event_seq=record.event_seq,
+                    message_index=record.message_index,
+                    text=record.text,
+                    existing=record,
+                )
+            )
+        return retried
+
+    def _send_and_store(
+        self,
+        *,
+        idempotency_key: str,
+        platform: BotPlatform,
+        chat_context: ChatContext,
+        event_id: str,
+        event_seq: int,
+        message_index: int,
+        text: str,
+        existing: BotDeliveryRecord | None,
+    ) -> BotDeliveryRecord:
+        now = utc_now()
+        attempt_count = (existing.attempt_count + 1) if existing else 1
+        try:
             platform_message_id = self.transport.send_text(
                 platform=platform,
-                chat_context_id=chat_context_id,
+                chat_context_id=chat_context.id,
                 chat_context=chat_context,
                 text=text,
                 idempotency_key=idempotency_key,
             )
             record = BotDeliveryRecord(
-                id=f"bdlv_{uuid4().hex[:12]}",
+                id=existing.id if existing else f"bdlv_{uuid4().hex[:12]}",
                 idempotency_key=idempotency_key,
                 platform=platform,
-                chat_context_id=chat_context_id,
+                chat_context_id=chat_context.id,
                 event_id=event_id,
                 event_seq=event_seq,
-                message_index=index,
+                message_index=message_index,
                 platform_message_id=platform_message_id,
                 text=text,
                 status=BotDeliveryStatus.SENT,
+                attempt_count=attempt_count,
+                last_error=None,
+                next_retry_at=None,
+                created_at=existing.created_at if existing else now,
+                updated_at=now,
             )
-            self.control.repository.store_bot_delivery_record(record)
-            records.append(record)
-        return records
+        except AgentBridgeError as exc:
+            record = self._failed_record(
+                idempotency_key=idempotency_key,
+                platform=platform,
+                chat_context=chat_context,
+                event_id=event_id,
+                event_seq=event_seq,
+                message_index=message_index,
+                text=text,
+                attempt_count=attempt_count,
+                error=exc.message,
+                existing=existing,
+                now=now,
+            )
+        except Exception as exc:
+            record = self._failed_record(
+                idempotency_key=idempotency_key,
+                platform=platform,
+                chat_context=chat_context,
+                event_id=event_id,
+                event_seq=event_seq,
+                message_index=message_index,
+                text=text,
+                attempt_count=attempt_count,
+                error=str(exc),
+                existing=existing,
+                now=now,
+            )
+        self.control.repository.store_bot_delivery_record(record)
+        return record
 
-    def list_records(self, chat_context_id: str | None = None) -> list[BotDeliveryRecord]:
-        return self.control.repository.list_bot_delivery_records(chat_context_id)
+    def _failed_record(
+        self,
+        *,
+        idempotency_key: str,
+        platform: BotPlatform,
+        chat_context: ChatContext,
+        event_id: str,
+        event_seq: int,
+        message_index: int,
+        text: str,
+        attempt_count: int,
+        error: str,
+        existing: BotDeliveryRecord | None,
+        now: datetime,
+    ) -> BotDeliveryRecord:
+        return BotDeliveryRecord(
+            id=existing.id if existing else f"bdlv_{uuid4().hex[:12]}",
+            idempotency_key=idempotency_key,
+            platform=platform,
+            chat_context_id=chat_context.id,
+            event_id=event_id,
+            event_seq=event_seq,
+            message_index=message_index,
+            platform_message_id=existing.platform_message_id if existing else None,
+            text=text,
+            status=BotDeliveryStatus.FAILED,
+            attempt_count=attempt_count,
+            last_error=error,
+            next_retry_at=now + timedelta(seconds=self._retry_delay(attempt_count)),
+            created_at=existing.created_at if existing else now,
+            updated_at=now,
+        )
+
+    def _retry_delay(self, attempt_count: int) -> int:
+        delay = self.retry_base_seconds * (2 ** max(attempt_count - 1, 0))
+        return min(delay, self.retry_max_seconds)

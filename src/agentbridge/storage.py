@@ -15,6 +15,7 @@ from agentbridge.domain import (
     AuditEvent,
     AuditOutcome,
     BotDeliveryRecord,
+    BotDeliveryStatus,
     ChatContext,
     CommandResult,
     ErrorCode,
@@ -810,7 +811,9 @@ class InMemoryRepository:
             self.bot_delivery_records[record.idempotency_key] = record
 
     def list_bot_delivery_records(
-        self, chat_context_id: str | None = None
+        self,
+        chat_context_id: str | None = None,
+        status: BotDeliveryStatus | None = None,
     ) -> list[BotDeliveryRecord]:
         with self._lock:
             records = list(self.bot_delivery_records.values())
@@ -818,4 +821,6 @@ class InMemoryRepository:
                 records = [
                     record for record in records if record.chat_context_id == chat_context_id
                 ]
+            if status:
+                records = [record for record in records if record.status == status]
             return sorted(records, key=lambda record: record.created_at)

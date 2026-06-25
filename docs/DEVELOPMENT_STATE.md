@@ -51,6 +51,10 @@ Implemented in this slice:
 - Recovery tests prove replay after repository re-instantiation skips already delivered Bot messages.
 - OneBot V11 HTTP transport with group/private payload routing, bearer token support, and idempotency header.
 - Bot transport selection through `AGENTBRIDGE_BOT_TRANSPORT=onebot.v11` and `AGENTBRIDGE_ONEBOT_HTTP_URL`.
+- Bot delivery failure records with attempt count, last error, next retry time, and exponential backoff.
+- Retry API through `POST /api/v1/bot-gateway/retry-failed-deliveries`.
+- Alembic migration `0003_bot_delivery_retry_metadata` adds retry metadata columns.
+- Tests cover initial failure, due retry, and retry after repository restart.
 - Focused unit/API tests for the above.
 
 Not implemented yet:
@@ -63,6 +67,7 @@ Not implemented yet:
 - WebSocket transport for Terminal Agent and Bot Gateway event delivery.
 - Rich platform-specific renderer delivery state, message editing, and button/card support.
 - NoneBot plugin wrapper around the OneBot transport and inbound command/action event handling.
+- Background delivery retry worker and platform rate-limit aware scheduling.
 - Normalized relational query layer for large audit/event searches; the current SQLAlchemy repository persists Pydantic payload snapshots with indexed routing columns.
 - PostgreSQL-specific operational hardening, connection pooling policy, and migration deployment docs.
 
@@ -79,6 +84,7 @@ Not implemented yet:
 - Bot delivery idempotency is implemented before real platform integration so duplicate event replay cannot cause duplicate sends once a real transport is attached.
 - Bot delivery records are persisted separately from semantic events so replay, delivery retries, and platform message IDs can evolve without mutating event history.
 - OneBot outbound delivery is implemented as a transport contract first. Full NoneBot integration still needs inbound event parsing, lifecycle registration, and adapter-specific rate-limit handling.
+- Delivery retry state is stored on delivery records, not events, so the immutable semantic event stream remains replayable while platform delivery can fail and recover independently.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
 
 ## Verification
@@ -97,5 +103,5 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 1. Add tmux lifecycle supervision tests around the local daemon, including restart/reconnect behavior.
 2. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
 3. Add NoneBot plugin wrapper for OneBot V11 inbound messages, commands, and action callbacks.
-4. Add delivery failure state, retry/backoff, and platform rate-limit handling.
+4. Add a background delivery retry worker with platform rate-limit handling.
 5. Expand policy engine to explicit role bindings, approval quorum, and risk levels.

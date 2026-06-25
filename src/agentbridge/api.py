@@ -14,6 +14,7 @@ from agentbridge.domain import (
     Actor,
     AgentBridgeError,
     AgentType,
+    BotDeliveryStatus,
     LeaseOwnerType,
     SemanticEventSource,
     Visibility,
@@ -194,6 +195,13 @@ class DeliverSessionEventsRequest(BaseModel):
     chat_context_id: str
     platform: BotPlatform = BotPlatform.ONEBOT_V11
     after_seq: int | None = None
+    limit: int = 100
+
+
+class RetryBotDeliveriesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chat_context_id: str | None = None
     limit: int = 100
 
 
@@ -586,14 +594,26 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         return [record.model_dump(mode="json") for record in records]
 
+    @app.post("/api/v1/bot-gateway/retry-failed-deliveries")
+    def retry_failed_deliveries(
+        payload: RetryBotDeliveriesRequest,
+        bot_gateway_service: BotGatewayService = Depends(get_bot_gateway),
+    ):
+        records = bot_gateway_service.retry_failed_deliveries(
+            chat_context_id=payload.chat_context_id,
+            limit=payload.limit,
+        )
+        return [record.model_dump(mode="json") for record in records]
+
     @app.get("/api/v1/bot-gateway/deliveries")
     def list_bot_deliveries(
         bot_gateway_service: BotGatewayService = Depends(get_bot_gateway),
         chat_context_id: str | None = None,
+        status: BotDeliveryStatus | None = None,
     ):
         return [
             record.model_dump(mode="json")
-            for record in bot_gateway_service.list_records(chat_context_id)
+            for record in bot_gateway_service.list_records(chat_context_id, status=status)
         ]
 
     @app.get("/api/v1/audit")

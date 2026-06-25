@@ -94,7 +94,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/deliver-session-events \
   -d '{"session_id":"<session-id>","chat_context_id":"<chat-context-id>"}'
 ```
 
-Delivery records are idempotent by platform, chat context, event, and message index, and can be persisted through the SQLAlchemy repository. The current transport is in-memory and intended for contract tests; real NoneBot/OneBot delivery is the next integration layer.
+Delivery records are idempotent by platform, chat context, event, and message index, and can be persisted through the SQLAlchemy repository. Failed sends are recorded with attempt count, last error, and next retry time; `POST /api/v1/bot-gateway/retry-failed-deliveries` retries due failures. The current in-memory transport is intended for contract tests; real NoneBot inbound handling is the next integration layer.
 
 To send through a OneBot V11 HTTP endpoint:
 

@@ -175,6 +175,9 @@ bot_delivery_records_table = Table(
     Column("event_id", String(64), nullable=False, index=True),
     Column("event_seq", Integer, nullable=False),
     Column("status", String(64), nullable=False, index=True),
+    Column("attempt_count", Integer, nullable=False, default=1),
+    Column("next_retry_at", String(64), nullable=True, index=True),
+    Column("updated_at", String(64), nullable=False),
     Column("payload", JSON, nullable=False),
 )
 
@@ -507,6 +510,11 @@ class SQLAlchemyRepository(InMemoryRepository):
                         "event_id": record.event_id,
                         "event_seq": record.event_seq,
                         "status": record.status.value,
+                        "attempt_count": record.attempt_count,
+                        "next_retry_at": (
+                            record.next_retry_at.isoformat() if record.next_retry_at else None
+                        ),
+                        "updated_at": record.updated_at.isoformat(),
                         "payload": record.model_dump(mode="json"),
                     }
                     for record in self.bot_delivery_records.values()

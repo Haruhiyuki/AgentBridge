@@ -6,7 +6,7 @@ from agentbridge.api import create_app
 from agentbridge.bot_gateway import BotDeliveryStatus, BotGatewayService, InMemoryBotTransport
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor
+from agentbridge.domain import Actor, AgentBridgeError, ErrorCode
 from agentbridge.persistence import SQLAlchemyRepository
 
 
@@ -46,6 +46,22 @@ def create_session_with_turn(control: ControlPlane, tmp_path):
         )
     )
     return context, session_result.data["session_id"]
+
+
+class FlakyTransport(InMemoryBotTransport):
+    def __init__(self, fail_times: int) -> None:
+        super().__init__()
+        self.fail_times = fail_times
+
+    def send_text(self, **kwargs):
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise AgentBridgeError(
+                ErrorCode.RESOURCE_CONFLICT,
+                "temporary platform failure",
+                status_code=502,
+            )
+        return super().send_text(**kwargs)
 
 
 def test_bot_gateway_delivers_rendered_events_idempotently(tmp_path):
@@ -93,6 +109,29 @@ def test_bot_gateway_can_resume_delivery_after_seq(tmp_path):
     assert "任务已排队" in records[0].text
 
 
+def test_bot_gateway_records_failures_and_retries_due_deliveries(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    transport = FlakyTransport(fail_times=1)
+    gateway = BotGatewayService(control, transport=transport, retry_base_seconds=0)
+
+    first = gateway.deliver_session_events(
+        session_id=session_id,
+        chat_context_id=context.id,
+        after_seq=1,
+    )
+    retry = gateway.retry_failed_deliveries(chat_context_id=context.id)
+
+    assert len(first) == 1
+    assert first[0].status == BotDeliveryStatus.FAILED
+    assert first[0].attempt_count == 1
+    assert first[0].last_error == "temporary platform failure"
+    assert retry[0].status == BotDeliveryStatus.SENT
+    assert retry[0].attempt_count == 2
+    assert retry[0].last_error is None
+    assert len(transport.sent) == 1
+
+
 def test_bot_gateway_delivery_records_survive_repository_restart(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'bot-delivery.db'}"
     first_repo = SQLAlchemyRepository(database_url, create_schema=True)
@@ -122,6 +161,35 @@ def test_bot_gateway_delivery_records_survive_repository_restart(tmp_path):
         BotDeliveryStatus.SKIPPED_DUPLICATE,
     ]
     assert second_transport.sent == []
+
+
+def test_failed_delivery_can_be_retried_after_repository_restart(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'bot-retry.db'}"
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    first_control = ControlPlane(repository=first_repo)
+    context, session_id = create_session_with_turn(first_control, tmp_path)
+    first_gateway = BotGatewayService(
+        first_control,
+        transport=FlakyTransport(fail_times=1),
+        retry_base_seconds=0,
+    )
+
+    failed = first_gateway.deliver_session_events(
+        session_id=session_id,
+        chat_context_id=context.id,
+        after_seq=1,
+    )
+
+    second_repo = SQLAlchemyRepository(database_url)
+    second_control = ControlPlane(repository=second_repo)
+    second_transport = InMemoryBotTransport()
+    second_gateway = BotGatewayService(second_control, transport=second_transport)
+    retried = second_gateway.retry_failed_deliveries(chat_context_id=context.id)
+
+    assert failed[0].status == BotDeliveryStatus.FAILED
+    assert retried[0].status == BotDeliveryStatus.SENT
+    assert retried[0].attempt_count == 2
+    assert len(second_transport.sent) == 1
 
 
 def test_bot_gateway_api_delivers_and_lists_records(tmp_path):
