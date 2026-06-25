@@ -467,6 +467,15 @@ class IssueDeviceCertificateRequest(BaseModel):
     trace_id: str = "device-certificate-issue-api"
 
 
+class RenewDeviceCertificateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    csr_pem: str
+    validity_days: int | None = Field(default=None, ge=1)
+    trace_id: str = "device-certificate-renew-api"
+
+
 class ScanDeviceCertificatesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1081,6 +1090,31 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         response = {
             "device_identity": device_identity_public_payload(identity),
+            **issued_certificate.to_payload(),
+        }
+        return response
+
+    @app.post("/api/v1/device-identities/{device_id}/certificates/renew")
+    def renew_device_certificate(
+        device_id: str,
+        payload: RenewDeviceCertificateRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        (
+            identity,
+            issued_certificate,
+            replaced_fingerprints,
+        ) = control.renew_device_identity_certificate(
+            actor=payload.actor.to_actor(),
+            device_id=device_id,
+            csr_pem=payload.csr_pem,
+            issuer=create_device_certificate_issuer_from_env(),
+            validity_days=payload.validity_days,
+            trace_id=payload.trace_id,
+        )
+        response = {
+            "device_identity": device_identity_public_payload(identity),
+            "replaced_certificate_fingerprints": replaced_fingerprints,
             **issued_certificate.to_payload(),
         }
         return response

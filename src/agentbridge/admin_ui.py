@@ -3755,6 +3755,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
         <button id="new-device" type="button">New</button>
         <button id="save-device" class="primary" type="button">Save / Rotate Key</button>
         <button id="issue-certificate" type="button">Issue Certificate</button>
+        <button id="renew-certificate" type="button">Renew Certificate</button>
         <button id="rotate-certificates" type="button">Rotate Certificates</button>
         <button id="scan-certificates" type="button">Scan Certificates</button>
         <button id="revoke-device" class="danger" type="button">Revoke</button>
@@ -4068,6 +4069,43 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       setStatus(`Issued certificate for ${issued.device_identity.device_id}`);
     }
 
+    async function renewDeviceCertificate() {
+      const deviceId = $("device-id").value.trim();
+      const csrPem = $("certificate-csr").value.trim();
+      if (!deviceId) throw new Error("Device ID is required");
+      if (!csrPem) throw new Error("Certificate CSR PEM is required");
+      const validityDays = Number.parseInt($("certificate-validity-days").value || "", 10);
+      const payload = {
+        actor: actor(),
+        csr_pem: csrPem,
+        validity_days: Number.isFinite(validityDays) ? validityDays : null,
+        trace_id: "admin-ui-device-cert-renew",
+      };
+      const renewed = await requestJson(
+        `/api/v1/device-identities/${encodeURIComponent(deviceId)}` +
+          "/certificates/renew",
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+      );
+      $("certificate-fingerprints").value = (
+        renewed.device_identity.certificate_fingerprints || []
+      ).join(",");
+      $("certificate-csr").value = "";
+      $("generated-key").textContent = JSON.stringify({
+        device_id: renewed.device_identity.device_id,
+        certificate_fingerprint: renewed.certificate_fingerprint,
+        replaced_certificate_fingerprints: renewed.replaced_certificate_fingerprints,
+        certificate_pem: renewed.certificate_pem,
+        ca_certificate_pem: renewed.ca_certificate_pem,
+        not_after: renewed.not_after,
+      }, null, 2);
+      selectedDeviceId = renewed.device_identity.device_id;
+      await loadDevices();
+      setStatus(`Renewed certificate for ${renewed.device_identity.device_id}`);
+    }
+
     async function rotateDeviceCertificates() {
       const deviceId = $("device-id").value.trim();
       if (!deviceId) throw new Error("Device ID is required");
@@ -4143,6 +4181,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
     $("new-device").addEventListener("click", newDevice);
     $("save-device").addEventListener("click", () => run(upsertDevice));
     $("issue-certificate").addEventListener("click", () => run(issueDeviceCertificate));
+    $("renew-certificate").addEventListener("click", () => run(renewDeviceCertificate));
     $("rotate-certificates").addEventListener(
       "click",
       () => run(rotateDeviceCertificates),

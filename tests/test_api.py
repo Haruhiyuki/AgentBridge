@@ -871,6 +871,96 @@ def test_managed_device_identity_issues_ca_backed_certificate(monkeypatch, tmp_p
     assert audit_events[0].details["device_id"] == "issued-device"
 
 
+def test_managed_device_identity_renews_ca_backed_certificate(monkeypatch, tmp_path):
+    ca_certificate_path, ca_key_path = _write_test_ca(tmp_path)
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE", str(ca_certificate_path))
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE", str(ca_key_path))
+    control = ControlPlane()
+    client = TestClient(create_app(control))
+    actor = {"id": "security-admin", "roles": ["admin"]}
+    headers = {
+        "x-agentbridge-device-id": "renewed-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": actor,
+            "device_id": "renewed-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "device_manage"],
+            "trace_id": "managed-device-renew-create",
+        },
+    )
+    issue_response = client.post(
+        "/api/v1/device-identities/renewed-device/certificates/issue",
+        json={
+            "actor": actor,
+            "csr_pem": _device_csr_pem("renewed-device"),
+            "validity_days": 3,
+            "trace_id": "managed-device-cert-renew-initial-issue",
+        },
+        headers=headers,
+    )
+    old_fingerprint = issue_response.json()["certificate_fingerprint"]
+    old_certificate_response = client.get(
+        "/api/v1/commands",
+        headers={"x-agentbridge-client-cert-fingerprint": old_fingerprint},
+    )
+    renew_response = client.post(
+        "/api/v1/device-identities/renewed-device/certificates/renew",
+        json={
+            "actor": actor,
+            "csr_pem": _device_csr_pem("renewed-device"),
+            "validity_days": 10,
+            "trace_id": "managed-device-cert-renew",
+        },
+        headers=headers,
+    )
+    renewed = renew_response.json()
+    new_fingerprint = renewed["certificate_fingerprint"]
+    old_certificate_after_renew_response = client.get(
+        "/api/v1/commands",
+        headers={"x-agentbridge-client-cert-fingerprint": old_fingerprint},
+    )
+    new_certificate_response = client.get(
+        "/api/v1/commands",
+        headers={"x-agentbridge-client-cert-fingerprint": new_fingerprint},
+    )
+    audit_events = control.repository.list_audit_events(
+        action="device_identity.certificate_renewed"
+    )
+    semantic_events = control.repository.list_semantic_events(
+        event_type="device_identity.certificate_renewed",
+        trace_id="managed-device-cert-renew",
+    )
+
+    assert create_response.status_code == 200
+    assert issue_response.status_code == 200
+    assert old_certificate_response.status_code == 200
+    assert renew_response.status_code == 200
+    assert new_fingerprint != old_fingerprint
+    assert renewed["replaced_certificate_fingerprints"] == [old_fingerprint]
+    assert renewed["device_identity"]["certificate_fingerprints"] == [new_fingerprint]
+    records_by_fingerprint = {
+        record["fingerprint"]: record
+        for record in renewed["device_identity"]["certificate_records"]
+    }
+    assert records_by_fingerprint[old_fingerprint]["removed_at"] is not None
+    assert records_by_fingerprint[old_fingerprint]["removed_by"] == "security-admin"
+    assert records_by_fingerprint[new_fingerprint]["source"] == "managed_ca"
+    assert records_by_fingerprint[new_fingerprint]["removed_at"] is None
+    assert old_certificate_after_renew_response.status_code == 403
+    assert new_certificate_response.status_code == 200
+    assert len(audit_events) == 1
+    assert audit_events[0].details["certificate_fingerprint"] == new_fingerprint
+    assert audit_events[0].details["replaced_fingerprints"] == [old_fingerprint]
+    assert len(semantic_events) == 1
+    assert semantic_events[0].payload["certificate_fingerprint"] == new_fingerprint
+    assert semantic_events[0].payload["replaced_fingerprints"] == [old_fingerprint]
+
+
 def test_managed_device_identity_rejects_certificate_csr_for_wrong_device(
     monkeypatch,
     tmp_path,
@@ -2437,6 +2527,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "async function loadDevices()" in html
     assert "async function upsertDevice()" in html
     assert "async function issueDeviceCertificate()" in html
+    assert "async function renewDeviceCertificate()" in html
     assert "async function rotateDeviceCertificates()" in html
     assert "async function revokeDevice()" in html
     assert "auth-device-key" in html
@@ -2476,6 +2567,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "formatCertificateHealth" in html
     assert "certificate_health" in html
     assert "/certificates/issue" in html
+    assert "/certificates/renew" in html
     assert "/certificate-fingerprints/rotate" in html
     assert "allowed_resource_ids" in html
     assert "generated-key" in html

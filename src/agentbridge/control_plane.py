@@ -2133,6 +2133,104 @@ class ControlPlane:
         )
         return identity, issued_certificate
 
+    def renew_device_identity_certificate(
+        self,
+        *,
+        actor: Actor,
+        device_id: str,
+        csr_pem: str,
+        issuer: DeviceCertificateIssuer,
+        validity_days: int | None,
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> tuple[DeviceIdentity, IssuedDeviceCertificate, list[str]]:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        normalized_device_id = self._validated_device_id(device_id)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.DEVICE_MANAGE,
+            resource_type="device_identity",
+            resource_id=normalized_device_id,
+            attributes={
+                "operation": "renew_device_identity_certificate",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
+        existing_identity = self.repository.get_device_identity(normalized_device_id)
+        if existing_identity.status != DeviceIdentityStatus.ACTIVE:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "已撤销的设备身份不能续期证书。",
+                next_step="请创建新的设备身份，或使用仍处于 active 状态的设备身份。",
+            )
+        replaced_fingerprints = self._active_managed_ca_certificate_fingerprints(
+            existing_identity
+        )
+        if not replaced_fingerprints:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "设备身份没有可续期的托管 CA 证书。",
+                next_step="请先使用 /certificates/issue 签发托管证书。",
+            )
+        issued_certificate = issuer.issue(
+            device_id=normalized_device_id,
+            csr_pem=csr_pem,
+            validity_days=validity_days,
+        )
+        next_fingerprints = set(existing_identity.certificate_fingerprints).difference(
+            replaced_fingerprints
+        )
+        next_fingerprints.add(issued_certificate.certificate_fingerprint)
+        certificate_records = self._certificate_records_for_renewed_certificate(
+            existing_identity=existing_identity,
+            issued_certificate=issued_certificate,
+            actor_id=effective_actor.id,
+            replaced_fingerprints=replaced_fingerprints,
+        )
+        identity = self.repository.upsert_device_identity(
+            device_id=existing_identity.device_id,
+            display_name=existing_identity.display_name,
+            allowed_scopes=set(existing_identity.allowed_scopes),
+            allowed_resource_ids=set(existing_identity.allowed_resource_ids),
+            certificate_fingerprints=next_fingerprints,
+            certificate_records=certificate_records,
+            updated_by=effective_actor.id,
+        )
+        replaced_values = sorted(replaced_fingerprints)
+        self.audit(
+            action="device_identity.certificate_renewed",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            details={
+                "device_identity_id": identity.id,
+                "device_id": identity.device_id,
+                "certificate_fingerprint": issued_certificate.certificate_fingerprint,
+                "replaced_fingerprints": replaced_values,
+                "serial_number": issued_certificate.serial_number,
+                "not_before": issued_certificate.not_before.isoformat(),
+                "not_after": issued_certificate.not_after.isoformat(),
+                "certificate_fingerprint_count": len(identity.certificate_fingerprints),
+            },
+        )
+        self.emit_event(
+            event_type="device_identity.certificate_renewed",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            payload={
+                "device_identity_id": identity.id,
+                "device_id": identity.device_id,
+                "certificate_fingerprint": issued_certificate.certificate_fingerprint,
+                "replaced_fingerprint_count": len(replaced_values),
+                "replaced_fingerprints": replaced_values,
+                "serial_number": issued_certificate.serial_number,
+                "not_after": issued_certificate.not_after.isoformat(),
+                "updated_by": effective_actor.id,
+            },
+        )
+        return identity, issued_certificate, replaced_values
+
     def scan_device_identity_certificates(
         self,
         *,
@@ -2351,6 +2449,57 @@ class ControlPlane:
                     issued_at=now,
                 )
             )
+        if not replaced:
+            records.append(issued_record)
+        return records
+
+    @staticmethod
+    def _active_managed_ca_certificate_fingerprints(
+        identity: DeviceIdentity,
+    ) -> set[str]:
+        active_fingerprints = set(identity.certificate_fingerprints)
+        return {
+            record.fingerprint
+            for record in identity.certificate_records
+            if record.source == "managed_ca"
+            and record.removed_at is None
+            and record.fingerprint in active_fingerprints
+        }
+
+    def _certificate_records_for_renewed_certificate(
+        self,
+        *,
+        existing_identity: DeviceIdentity,
+        issued_certificate: IssuedDeviceCertificate,
+        actor_id: str,
+        replaced_fingerprints: set[str],
+    ) -> list[DeviceCertificateRecord]:
+        now = utc_now()
+        issued_record = DeviceCertificateRecord(
+            fingerprint=issued_certificate.certificate_fingerprint,
+            source="managed_ca",
+            serial_number=issued_certificate.serial_number,
+            subject=issued_certificate.subject,
+            issuer=issued_certificate.issuer,
+            not_before=issued_certificate.not_before,
+            not_after=issued_certificate.not_after,
+            issued_by=actor_id,
+            issued_at=now,
+        )
+        records: list[DeviceCertificateRecord] = []
+        replaced = False
+        for record in existing_identity.certificate_records:
+            if record.fingerprint in replaced_fingerprints and record.removed_at is None:
+                records.append(
+                    record.model_copy(
+                        update={"removed_by": actor_id, "removed_at": now}
+                    )
+                )
+            elif record.fingerprint == issued_record.fingerprint:
+                records.append(issued_record)
+                replaced = True
+            else:
+                records.append(record)
         if not replaced:
             records.append(issued_record)
         return records

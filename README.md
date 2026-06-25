@@ -33,7 +33,7 @@ This repository currently contains the first executable backend slice:
 - Built-in Admin Web pages for system health, project/session operations with active Turn, queue, pending approval, and lease status, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
-Production PTY supervision, device certificate renewal automation, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
+Production PTY supervision, device certificate renewal scheduling/runbooks, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
 
 ## Development
 
@@ -296,7 +296,11 @@ Set `AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE` and
 must exactly match `device_id`; issued certificates include the client-auth EKU, return
 the public certificate PEM once, store the SHA-256 fingerprint plus serial number,
 subject, issuer, and validity window on the managed identity, and preserve existing
-key/scope/resource settings. `AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD`
+key/scope/resource settings. Use
+`POST /api/v1/device-identities/{device_id}/certificates/renew` with a replacement CSR
+to issue a new managed certificate and retire the active CA-issued certificate
+fingerprint records for that device while preserving their removal metadata.
+`AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD`
 or `AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD_FILE` can unlock encrypted CA keys, and
 `AGENTBRIDGE_DEVICE_CERT_DEFAULT_VALIDITY_DAYS` defaults new certificates to 30 days
 when the request omits `validity_days`. `AGENTBRIDGE_DEVICE_CERT_EXPIRY_WARNING_DAYS`
@@ -592,7 +596,8 @@ The policy editor lists rules, edits allow/deny match criteria, runs
 `/api/v1/access-policy/simulate`, and saves through the same audited REST APIs.
 The device identities page lists active/revoked managed devices, creates or rotates
 device keys, edits allowed scopes, allowed resource IDs, and certificate fingerprints,
-shows last-used timestamps, shows the generated key once, and revokes selected devices.
+issues or renews managed certificates from CSR PEM, shows last-used timestamps, shows
+generated keys/certificates once, and revokes selected devices.
 
 Set `AGENTBRIDGE_ADMIN_TOKEN` or `AGENTBRIDGE_ADMIN_TOKEN_FILE` to require a browser
 token before serving `/admin` pages. When `AGENTBRIDGE_API_TOKEN` or
