@@ -2220,6 +2220,20 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         )
     ):
         return DeviceIdentityScope.SESSION_MANAGE
+    if (
+        method == "POST"
+        and len(path_segments) >= 6
+        and path_segments[:4] == ["", "api", "v1", "sessions"]
+        and path_segments[5] == "interactions"
+    ):
+        return DeviceIdentityScope.INTERACTION_MANAGE
+    if (
+        method == "POST"
+        and len(path_segments) >= 6
+        and path_segments[:4] == ["", "api", "v1", "interactions"]
+        and path_segments[5] in {"answer", "cancel", "vote"}
+    ):
+        return DeviceIdentityScope.INTERACTION_MANAGE
     if path == "/api/v1/terminal/lifecycle-monitor/run-once":
         return DeviceIdentityScope.TERMINAL_CONTROL
     if (

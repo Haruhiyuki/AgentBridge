@@ -3442,6 +3442,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       "group_role_manage",
       "project_manage",
       "session_manage",
+      "interaction_manage",
       "terminal_control",
       "session_events_ws",
       "rendered_events_ws",

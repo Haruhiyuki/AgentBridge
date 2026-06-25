@@ -207,17 +207,19 @@ For persisted device identities, create or rotate a key through
 optional caller-supplied `device_key`. `allowed_scopes` can narrow the key or managed
 certificate fingerprint to one or more scopes: `http_api`, `bot_gateway_manage`,
 `command_execute`, `device_manage`, `policy_manage`, `group_role_manage`,
-`project_manage`, `session_manage`, `terminal_control`, `session_events_ws`,
-`rendered_events_ws`, `terminal_ws`, and `bot_gateway_ws`; omitting it grants all
-current scopes. Managed device credentials need `bot_gateway_manage` to call
-Bot Gateway HTTP mutation APIs, `command_execute` to call `/api/v1/commands/execute`,
-`device_manage` to call `/api/v1/device-identities` and its child routes,
-`policy_manage` to call `/api/v1/access-policy*` or `*/approval-policy` routes,
-`group_role_manage` to call `/api/v1/chat-contexts/{id}/roles*`, `project_manage` to
-create projects, add workspaces, or bind projects to chat spaces, `session_manage` to
-create or close sessions and acquire or release writer leases, and `terminal_control`
-to call terminal start, restart, input, or lifecycle run-once HTTP routes. Command
-execution still evaluates the command actor through RBAC and access policy.
+`project_manage`, `session_manage`, `interaction_manage`, `terminal_control`,
+`session_events_ws`, `rendered_events_ws`, `terminal_ws`, and `bot_gateway_ws`;
+omitting it grants all current scopes. Managed device credentials need
+`bot_gateway_manage` to call Bot Gateway HTTP mutation APIs, `command_execute` to call
+`/api/v1/commands/execute`, `device_manage` to call `/api/v1/device-identities` and its
+child routes, `policy_manage` to call `/api/v1/access-policy*` or `*/approval-policy`
+routes, `group_role_manage` to call `/api/v1/chat-contexts/{id}/roles*`,
+`project_manage` to create projects, add workspaces, or bind projects to chat spaces,
+`session_manage` to create or close sessions and acquire or release writer leases,
+`interaction_manage` to create interactions or answer, cancel, and vote on them, and
+`terminal_control` to call terminal start, restart, input, or lifecycle run-once HTTP
+routes. Command execution still evaluates the command actor through RBAC and access
+policy.
 `certificate_fingerprints` can bind one or more
 proxy-verified client certificate fingerprints to the same device identity. If a new
 identity has no certificate fingerprints and `device_key` is omitted, the server returns
@@ -428,7 +430,13 @@ Users can inspect and resolve them through commands:
 /agent approval cancel <interaction-id> superseded
 ```
 
-REST callers can use `GET /api/v1/interactions`, `POST /api/v1/interactions/{id}/answer`, `POST /api/v1/interactions/{id}/vote`, and `POST /api/v1/interactions/{id}/cancel`. Expired interactions move to `expired` and cannot be approved later; approval request events render with plain-text approve/deny actions for Bot delivery.
+REST callers can use `GET /api/v1/interactions`,
+`POST /api/v1/sessions/{id}/interactions`, `POST /api/v1/interactions/{id}/answer`,
+`POST /api/v1/interactions/{id}/vote`, and
+`POST /api/v1/interactions/{id}/cancel`. Managed device credentials need
+`interaction_manage` for the write APIs. Expired interactions move to `expired` and
+cannot be approved later; approval request events render with plain-text approve/deny
+actions for Bot delivery.
 
 ## Group Role Bindings
 

@@ -817,6 +817,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "group_role_manage" in html
     assert "project_manage" in html
     assert "session_manage" in html
+    assert "interaction_manage" in html
     assert "terminal_control" in html
     assert "certificate-fingerprints" in html
     assert "generated-key" in html
@@ -1404,6 +1405,215 @@ def test_managed_device_identity_group_role_manage_scope_allows_role_apis():
     assert [binding["actor_id"] for binding in list_response.json()] == ["usr_member"]
     assert revoke_response.status_code == 200
     assert revoke_response.json() is None
+
+
+def test_managed_device_identity_requires_interaction_manage_scope_for_writes(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
+    approver = {"id": "usr_approver", "roles": ["approver"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-interaction-scope",
+        prefix="interaction-scope",
+        name="Interaction Scope",
+    )
+    question = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": operator,
+            "type": "question",
+            "prompt": "Existing question?",
+            "trace_id": "interaction-scope-existing-question",
+        },
+    ).json()
+    approval = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": operator,
+            "type": "approval",
+            "prompt": "Existing approval?",
+            "required_votes": 1,
+            "trace_id": "interaction-scope-existing-approval",
+        },
+    ).json()
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-interaction-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "interaction-scope-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-interaction-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    cert_headers = {"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"}
+    list_response = client.get(
+        "/api/v1/interactions",
+        params={"session_id": session_id},
+        headers=key_headers,
+    )
+    create_response = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": operator,
+            "type": "question",
+            "prompt": "Denied question?",
+            "trace_id": "interaction-scope-denied-create",
+        },
+        headers=key_headers,
+    )
+    answer_response = client.post(
+        f"/api/v1/interactions/{question['id']}/answer",
+        json={
+            "actor": operator,
+            "answer": "Denied",
+            "trace_id": "interaction-scope-denied-answer",
+        },
+        headers=cert_headers,
+    )
+    cancel_response = client.post(
+        f"/api/v1/interactions/{question['id']}/cancel",
+        json={
+            "actor": maintainer,
+            "reason": "Denied",
+            "trace_id": "interaction-scope-denied-cancel",
+        },
+        headers=key_headers,
+    )
+    vote_response = client.post(
+        f"/api/v1/interactions/{approval['id']}/vote",
+        json={
+            "actor": approver,
+            "approve": True,
+            "reason": "Denied",
+            "trace_id": "interaction-scope-denied-vote",
+        },
+        headers=key_headers,
+    )
+
+    assert create_identity_response.status_code == 200
+    assert list_response.status_code == 200
+    assert {interaction["id"] for interaction in list_response.json()} == {
+        question["id"],
+        approval["id"],
+    }
+    assert create_response.status_code == 403
+    assert answer_response.status_code == 403
+    assert cancel_response.status_code == 403
+    assert vote_response.status_code == 403
+
+
+def test_managed_device_identity_interaction_manage_scope_allows_writes(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
+    approver = {"id": "usr_approver", "roles": ["approver"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-interaction-manager",
+        prefix="interaction-manager",
+        name="Interaction Manager",
+    )
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "interaction-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "interaction_manage"],
+            "trace_id": "interaction-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "interaction-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    question_response = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": operator,
+            "type": "question",
+            "prompt": "Which migration strategy?",
+            "trace_id": "interaction-manager-question",
+        },
+        headers=headers,
+    )
+    answer_response = client.post(
+        f"/api/v1/interactions/{question_response.json().get('id')}/answer",
+        json={
+            "actor": operator,
+            "answer": "Use expand-contract.",
+            "trace_id": "interaction-manager-answer",
+        },
+        headers=headers,
+    )
+    approval_response = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": operator,
+            "type": "approval",
+            "prompt": "Ship change?",
+            "required_votes": 1,
+            "trace_id": "interaction-manager-approval",
+        },
+        headers=headers,
+    )
+    vote_response = client.post(
+        f"/api/v1/interactions/{approval_response.json().get('id')}/vote",
+        json={
+            "actor": approver,
+            "approve": True,
+            "reason": "Looks good",
+            "trace_id": "interaction-manager-vote",
+        },
+        headers=headers,
+    )
+    cancel_target_response = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": operator,
+            "type": "question",
+            "prompt": "Cancel me?",
+            "trace_id": "interaction-manager-cancel-target",
+        },
+        headers=headers,
+    )
+    cancel_response = client.post(
+        f"/api/v1/interactions/{cancel_target_response.json().get('id')}/cancel",
+        json={
+            "actor": maintainer,
+            "reason": "Superseded",
+            "trace_id": "interaction-manager-cancel",
+        },
+        headers=headers,
+    )
+
+    assert create_identity_response.status_code == 200
+    assert question_response.status_code == 200
+    assert answer_response.status_code == 200
+    assert answer_response.json()["status"] == "resolved"
+    assert approval_response.status_code == 200
+    assert vote_response.status_code == 200
+    assert vote_response.json()["votes"] == {"usr_approver": True}
+    assert cancel_target_response.status_code == 200
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["status"] == "cancelled"
 
 
 def test_interaction_api_creates_answers_and_votes(tmp_path):
