@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import urllib.error
 from dataclasses import dataclass, field
+from email.message import Message
+from io import BytesIO
 from typing import Any
 
 import pytest
@@ -10,7 +13,7 @@ from agentbridge.api import create_app
 from agentbridge.bot_gateway import BotGatewayService
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, AgentBridgeError, BotPlatform
+from agentbridge.domain import Actor, AgentBridgeError, BotPlatform, ErrorCode
 from agentbridge.onebot import OneBotInboundAdapter, OneBotV11HTTPTransport, onebot_text_payload
 
 
@@ -139,6 +142,42 @@ def test_onebot_transport_rejects_failed_retcode():
             text="hello",
             idempotency_key="idem-1",
         )
+
+
+def test_onebot_http_poster_exposes_retry_after_from_rate_limit(monkeypatch):
+    control = ControlPlane()
+    context = control.get_or_create_chat_context(
+        bot_instance_id="bot",
+        platform="onebot.v11",
+        chat_space_id="10001",
+    )
+    transport = OneBotV11HTTPTransport(endpoint="http://127.0.0.1:5700")
+
+    def rate_limited(request, timeout):
+        headers = Message()
+        headers["Retry-After"] = "9"
+        raise urllib.error.HTTPError(
+            request.full_url,
+            429,
+            "Too Many Requests",
+            headers,
+            BytesIO(b'{"retcode": 429}'),
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", rate_limited)
+
+    with pytest.raises(AgentBridgeError) as exc_info:
+        transport.send_text(
+            platform=BotPlatform.ONEBOT_V11,
+            chat_context_id=context.id,
+            chat_context=context,
+            text="hello",
+            idempotency_key="idem-429",
+        )
+
+    assert exc_info.value.code == ErrorCode.QUOTA_EXCEEDED
+    assert exc_info.value.details["status_code"] == 429
+    assert exc_info.value.details["retry_after_seconds"] == 9
 
 
 def test_bot_gateway_can_deliver_through_onebot_transport(tmp_path):

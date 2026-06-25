@@ -73,6 +73,24 @@ class FlakyTransport(InMemoryBotTransport):
         return super().send_text(**kwargs)
 
 
+class RateLimitedTransport(InMemoryBotTransport):
+    def __init__(self, retry_after_seconds: float) -> None:
+        super().__init__()
+        self.retry_after_seconds = retry_after_seconds
+        self.calls = 0
+
+    def send_text(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise AgentBridgeError(
+                ErrorCode.QUOTA_EXCEEDED,
+                "platform rate limited",
+                status_code=429,
+                details={"retry_after_seconds": self.retry_after_seconds},
+            )
+        return super().send_text(**kwargs)
+
+
 def test_bot_gateway_delivers_rendered_events_idempotently(tmp_path):
     control = ControlPlane()
     context, session_id = create_session_with_turn(control, tmp_path)
@@ -179,6 +197,36 @@ def test_bot_gateway_rate_limit_schedules_unsent_delivery_for_retry(tmp_path):
     assert retry[0].status == BotDeliveryStatus.SENT
     assert retry[0].attempt_count == 1
     assert len(transport.sent) == 2
+
+
+def test_bot_gateway_uses_platform_retry_after_for_adaptive_scheduling(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    transport = RateLimitedTransport(retry_after_seconds=12)
+    gateway = BotGatewayService(control, transport=transport)
+
+    records = gateway.deliver_session_events(
+        session_id=session_id,
+        chat_context_id=context.id,
+        after_seq=1,
+    )
+    scheduled = records[0]
+
+    assert scheduled.status == BotDeliveryStatus.RETRYING
+    assert scheduled.attempt_count == 1
+    assert scheduled.last_error == "platform rate limited"
+    assert scheduled.next_retry_at is not None
+    assert (scheduled.next_retry_at - scheduled.created_at).total_seconds() == 12
+    assert transport.sent == []
+
+    retry = gateway.retry_failed_deliveries(
+        chat_context_id=context.id,
+        now=scheduled.next_retry_at + timedelta(seconds=1),
+    )
+
+    assert retry[0].status == BotDeliveryStatus.SENT
+    assert retry[0].attempt_count == 2
+    assert len(transport.sent) == 1
 
 
 def test_bot_retry_worker_retries_due_failures_with_batch_limit(tmp_path):

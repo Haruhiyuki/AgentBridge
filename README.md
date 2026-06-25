@@ -136,6 +136,8 @@ export AGENTBRIDGE_BOT_RATE_LIMITS="onebot.v11=20/60,plain_text=100/60"
 
 When the limit is reached, AgentBridge records the delivery as `retrying` without sending it or incrementing the attempt count. The retry worker or run-once API sends it after `next_retry_at`.
 
+If a platform transport returns a rate-limit response with `Retry-After` or related reset headers, AgentBridge records the attempted send as `retrying` and schedules `next_retry_at` from the observed platform delay instead of using generic failure backoff.
+
 Check worker state or run one bounded retry pass:
 
 ```bash

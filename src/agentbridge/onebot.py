@@ -4,6 +4,8 @@ import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,6 +39,29 @@ class UrllibHTTPPoster:
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
                 return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            retry_after_seconds = retry_after_seconds_from_headers(exc.headers)
+            details: dict[str, Any] = {"status_code": exc.code, "reason": str(exc)}
+            if retry_after_seconds is not None:
+                details["retry_after_seconds"] = retry_after_seconds
+            message = (
+                "OneBot HTTP 发送被平台限流。"
+                if retry_after_seconds is not None
+                else "OneBot HTTP 发送失败。"
+            )
+            raise AgentBridgeError(
+                ErrorCode.QUOTA_EXCEEDED
+                if exc.code == 429 or retry_after_seconds is not None
+                else ErrorCode.RESOURCE_CONFLICT,
+                message,
+                next_step=(
+                    "AgentBridge 将按平台 Retry-After 延迟重试。"
+                    if retry_after_seconds is not None
+                    else "请检查 OneBot HTTP 地址、访问令牌和网络连通性。"
+                ),
+                status_code=429 if exc.code == 429 else 502,
+                details=details,
+            ) from exc
         except urllib.error.URLError as exc:
             raise AgentBridgeError(
                 ErrorCode.RESOURCE_CONFLICT,
@@ -107,6 +132,37 @@ def onebot_message_id(response: dict[str, Any]) -> str:
     if message_id is None:
         return "onebot:unknown"
     return f"onebot:{message_id}"
+
+
+def retry_after_seconds_from_headers(headers: Any) -> float | None:
+    for key in ("retry-after", "Retry-After", "x-ratelimit-reset-after"):
+        value = headers.get(key) if headers is not None else None
+        seconds = retry_after_seconds_from_value(value)
+        if seconds is not None:
+            return seconds
+    reset_at = headers.get("x-ratelimit-reset") if headers is not None else None
+    if reset_at is None:
+        reset_at = headers.get("X-RateLimit-Reset") if headers is not None else None
+    try:
+        return max(float(reset_at) - datetime.now(UTC).timestamp(), 0.0)
+    except (TypeError, ValueError):
+        return None
+
+
+def retry_after_seconds_from_value(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return max(float(value), 0.0)
+    except (TypeError, ValueError):
+        pass
+    try:
+        retry_at = parsedate_to_datetime(str(value))
+    except (TypeError, ValueError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=UTC)
+    return max((retry_at - datetime.now(UTC)).total_seconds(), 0.0)
 
 
 class OneBotInboundCommand(BaseModel):

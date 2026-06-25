@@ -67,6 +67,8 @@ Implemented in this slice:
 - Platform-scoped Bot delivery rate-limit policies configured through `AGENTBRIDGE_BOT_RATE_LIMITS`.
 - Rate-limited Bot messages are stored as `retrying` records with `next_retry_at` without consuming send attempts.
 - Rate-limit policy API through `GET /api/v1/bot-gateway/rate-limits`.
+- Bot Gateway now treats platform limit responses with `retry_after_seconds` as adaptive `retrying` deliveries and schedules `next_retry_at` from the observed delay.
+- OneBot HTTP outbound parses HTTP 429/`Retry-After` and reset headers into adaptive Bot Gateway retry metadata.
 - Control Plane interaction APIs for questions and approvals.
 - REST interaction routes: create, list, show, answer, and vote.
 - `/agent approvals`, `/agent approval show`, `/agent answer`, `/agent approve`, and `/agent deny`.
@@ -90,7 +92,7 @@ Implemented in this slice:
 Not implemented yet:
 
 - Raw TTY console mode, brokered PTY host, desktop terminal auto-launch, and terminal resize observation.
-- NoneBot/OneBot adapter and renderer.
+- NoneBot plugin wrapper and richer OneBot renderer/action adapter.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
 - ABAC policy editor and project/group-level approval rule management.
@@ -98,7 +100,7 @@ Not implemented yet:
 - Rich platform-specific renderer delivery state, message editing, and button/card support.
 - NoneBot plugin wrapper around the OneBot transport and inbound command/action event handling.
 - Native action/callback support for platforms that expose buttons or interactions.
-- Adaptive delivery scheduling based on live platform responses and observed rate-limit headers.
+- Broader platform-specific delivery state, including message edits, deletes, acknowledgement tracking, and per-adapter action callbacks.
 - Normalized relational query layer for large audit/event searches; the current SQLAlchemy repository persists Pydantic payload snapshots with indexed routing columns.
 - PostgreSQL-specific operational hardening, connection pooling policy, and migration deployment docs.
 
@@ -120,6 +122,7 @@ Not implemented yet:
 - Delivery retry state is stored on delivery records, not events, so the immutable semantic event stream remains replayable while platform delivery can fail and recover independently.
 - The retry worker reuses the Bot Gateway retry path instead of writing records directly. This keeps manual retry, background retry, and future scheduler behavior consistent.
 - Platform rate-limit policies intentionally schedule unsent records as `retrying` instead of sleeping inside request handlers. This keeps API calls bounded and leaves actual waiting to the retry worker.
+- Observed platform rate-limit responses are also stored as `retrying`, but keep the incremented attempt count because the platform was actually contacted.
 - Interaction commands now route through the same command parser and audit chain as project/session commands. Approval voting is permission-gated by `approval.vote`; answering questions is gated by `session.send`.
 - Interaction expiry is a terminal state and never auto-approves. Reads and interaction actions opportunistically advance due interactions to `expired` so pending lists do not show stale approval requests.
 - Approval policy snapshots are copied onto each approval interaction so later policy changes do not rewrite historical approval requirements.
@@ -143,7 +146,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 
 1. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
 2. Add NoneBot plugin wrapper around the OneBot inbound/outbound adapters.
-3. Add adaptive delivery scheduling from live platform rate-limit responses.
-4. Expand policy engine to ABAC policy rules and project/group-level approval policy management.
-5. Add authenticated WebSocket client contracts for Terminal Agent command transport and Bot Gateway subscriber fan-out.
-6. Add optional real-tmux integration smoke tests gated on tmux availability.
+3. Expand policy engine to ABAC policy rules and project/group-level approval policy management.
+4. Add authenticated WebSocket client contracts for Terminal Agent command transport and Bot Gateway subscriber fan-out.
+5. Add optional real-tmux integration smoke tests gated on tmux availability.
+6. Add richer platform delivery state for edits/deletes/acknowledgements.

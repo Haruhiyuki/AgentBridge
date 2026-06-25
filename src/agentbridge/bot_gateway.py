@@ -336,19 +336,36 @@ class BotGatewayService:
                 updated_at=now,
             )
         except AgentBridgeError as exc:
-            record = self._failed_record(
-                idempotency_key=idempotency_key,
-                platform=platform,
-                chat_context=chat_context,
-                event_id=event_id,
-                event_seq=event_seq,
-                message_index=message_index,
-                text=text,
-                attempt_count=attempt_count,
-                error=exc.message,
-                existing=existing,
-                now=now,
-            )
+            retry_after_seconds = retry_after_seconds_from_error(exc)
+            if retry_after_seconds is not None:
+                record = self._retrying_record(
+                    idempotency_key=idempotency_key,
+                    platform=platform,
+                    chat_context=chat_context,
+                    event_id=event_id,
+                    event_seq=event_seq,
+                    message_index=message_index,
+                    text=text,
+                    retry_after_seconds=retry_after_seconds,
+                    existing=existing,
+                    now=now,
+                    attempt_count=attempt_count,
+                    last_error=exc.message,
+                )
+            else:
+                record = self._failed_record(
+                    idempotency_key=idempotency_key,
+                    platform=platform,
+                    chat_context=chat_context,
+                    event_id=event_id,
+                    event_seq=event_seq,
+                    message_index=message_index,
+                    text=text,
+                    attempt_count=attempt_count,
+                    error=exc.message,
+                    existing=existing,
+                    now=now,
+                )
         except Exception as exc:
             record = self._failed_record(
                 idempotency_key=idempotency_key,
@@ -379,7 +396,15 @@ class BotGatewayService:
         retry_after_seconds: float,
         existing: BotDeliveryRecord | None,
         now: datetime,
+        attempt_count: int | None = None,
+        last_error: str = "rate limited",
     ) -> BotDeliveryRecord:
+        if attempt_count is not None:
+            stored_attempt_count = attempt_count
+        elif existing:
+            stored_attempt_count = existing.attempt_count
+        else:
+            stored_attempt_count = 0
         return BotDeliveryRecord(
             id=existing.id if existing else f"bdlv_{uuid4().hex[:12]}",
             idempotency_key=idempotency_key,
@@ -391,8 +416,8 @@ class BotGatewayService:
             platform_message_id=existing.platform_message_id if existing else None,
             text=text,
             status=BotDeliveryStatus.RETRYING,
-            attempt_count=existing.attempt_count if existing else 0,
-            last_error="rate limited",
+            attempt_count=stored_attempt_count,
+            last_error=last_error,
             next_retry_at=now + timedelta(seconds=retry_after_seconds),
             created_at=existing.created_at if existing else now,
             updated_at=now,
@@ -541,3 +566,15 @@ class BotDeliveryRetryWorker:
         while not self._stop_event.is_set():
             self.run_once()
             self._stop_event.wait(self.interval_seconds)
+
+
+def retry_after_seconds_from_error(exc: AgentBridgeError) -> float | None:
+    value = exc.details.get("retry_after_seconds")
+    if value is None:
+        value = exc.details.get("retry_after")
+    if value is None:
+        return None
+    try:
+        return max(float(value), 0.0)
+    except (TypeError, ValueError):
+        return None
