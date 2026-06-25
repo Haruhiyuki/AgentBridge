@@ -44,6 +44,12 @@ uv run alembic upgrade head
 uv run uvicorn agentbridge.api:create_app --factory --reload
 ```
 
+Real tmux smoke coverage is opt-in so normal test runs do not require local tmux:
+
+```bash
+AGENTBRIDGE_RUN_TMUX_TESTS=true uv run pytest tests/test_terminal_agent.py::test_real_tmux_backend_smoke_streams_output_and_reuses_session
+```
+
 Without `uv`, use the active Python environment:
 
 ```bash

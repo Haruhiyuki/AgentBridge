@@ -52,7 +52,7 @@ Implemented in this slice:
 - Local Terminal Agent daemon using JSONL over a Unix socket with token authentication.
 - Local daemon actions for `health`, `lifecycle_status`, `run_lifecycle_monitor_once`, `start_session`, `restart_session`, `acquire_human_lease`, `release_lease`, `submit_input`, `snapshot`, `status`, cursor-based `read_output`, and multi-frame `stream_output`.
 - Local Terminal Agent client waits briefly for Unix socket recovery, allowing console requests to survive short daemon restart windows.
-- Lifecycle tests cover local daemon socket restart/reconnect behavior and tmux backend reuse of existing sessions after Agent restart.
+- Lifecycle tests cover local daemon socket restart/reconnect behavior and tmux backend reuse of existing sessions after Agent restart, with an opt-in real-tmux smoke test gated by `AGENTBRIDGE_RUN_TMUX_TESTS=true`.
 - Local Console Client command `agentbridge-console`.
 - Console Client acquires a human writer lease on first input, caches the epoch, forwards text/paste/signal/resize through the daemon, and can release the lease on exit.
 - Console Client raw TTY passthrough mode with safe terminal-state restoration, initial resize forwarding, `SIGWINCH` resize forwarding, Ctrl-C/Ctrl-D signal mapping, and Ctrl-] detach.
@@ -216,6 +216,5 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 1. Harden PTY host recovery beyond watchdog plus command restart, including cross-platform socket/pipe cleanup, Windows ConPTY/Named Pipe parity, and clearer operator policy for non-idempotent CLI restarts.
 2. Expand the Admin Web UI beyond project/session operations, interaction/approval operations, audit/event live/search exploration, access policy, terminal lifecycle, and Bot delivery operations, including additional live dashboards and payload-level relational search.
 3. Replace the MVP HTTP API/WebSocket/admin token gates with mTLS/device-key auth.
-4. Add optional real-tmux integration smoke tests gated on tmux availability.
-5. Add platform-specific rich card/button transport adapters and outbound edit extensions.
-6. Add native NoneBot matcher setup helpers once a NoneBot dependency boundary is selected.
+4. Add platform-specific rich card/button transport adapters and outbound edit extensions.
+5. Add native NoneBot matcher setup helpers once a NoneBot dependency boundary is selected.

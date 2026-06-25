@@ -625,6 +625,68 @@ def test_tmux_backend_reuses_existing_session_after_agent_restart(monkeypatch, t
     )
 
 
+def test_real_tmux_backend_smoke_streams_output_and_reuses_session(tmp_path):
+    if os.environ.get("AGENTBRIDGE_RUN_TMUX_TESTS", "").lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        pytest.skip("set AGENTBRIDGE_RUN_TMUX_TESTS=true to run real tmux smoke tests")
+    tmux = shutil.which("tmux")
+    if tmux is None:
+        pytest.skip("tmux executable is required for real tmux smoke test")
+    cat = shutil.which("cat")
+    if cat is None:
+        pytest.skip("cat executable is required for real tmux smoke test")
+
+    backend = TmuxTerminalBackend(tmux)
+    session_id = f"real-tmux-{uuid4().hex}"
+    tmux_name = TmuxTerminalBackend._tmux_name(session_id)
+    marker = f"agentbridge-real-tmux-{uuid4().hex}"
+
+    def kill_session() -> None:
+        subprocess.run(
+            [tmux, "kill-session", "-t", tmux_name],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    kill_session()
+    try:
+        backend.start(session_id=session_id, cwd=str(tmp_path), command=cat)
+        assert backend.status(session_id=session_id).running is True
+        backend.write(
+            session_id=session_id,
+            data=f"{marker}\n",
+            kind=TerminalInputKind.TEXT,
+        )
+
+        deadline = time.monotonic() + 3
+        chunk = TerminalOutputChunk(cursor=0, data="", snapshot="")
+        while time.monotonic() < deadline:
+            chunk = backend.read_output(session_id=session_id, after_cursor=0)
+            if marker in chunk.snapshot:
+                break
+            time.sleep(0.05)
+
+        assert marker in chunk.snapshot
+        restarted_backend = TmuxTerminalBackend(tmux)
+        restarted_backend.start(
+            session_id=session_id,
+            cwd=str(tmp_path),
+            command="printf ignored",
+        )
+        assert marker in restarted_backend.snapshot(session_id=session_id)
+        assert restarted_backend.read_output(
+            session_id=session_id,
+            after_cursor=chunk.cursor + 1,
+        ).reset is True
+    finally:
+        kill_session()
+
+
 def test_terminal_backend_env_selects_pty(monkeypatch):
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_BACKEND", "pty")
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_OUTPUT_LIMIT_CHARS", "2048")
