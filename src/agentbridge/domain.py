@@ -194,6 +194,7 @@ class DeviceIdentityScope(StrEnum):
     COMMAND_PARSE = "command_parse"
     COMMAND_EXECUTE = "command_execute"
     DEVICE_MANAGE = "device_manage"
+    POLICY_READ = "policy_read"
     POLICY_MANAGE = "policy_manage"
     GROUP_ROLE_MANAGE = "group_role_manage"
     CHAT_CONTEXT_MANAGE = "chat_context_manage"

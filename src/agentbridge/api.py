@@ -2298,6 +2298,12 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         and path_segments[6] in {"start", "restart", "input"}
     ):
         return DeviceIdentityScope.TERMINAL_CONTROL
+    if method == "GET" and path.endswith("/approval-policy"):
+        return DeviceIdentityScope.POLICY_READ
+    if method == "GET" and path == "/api/v1/access-policy/rules":
+        return DeviceIdentityScope.POLICY_READ
+    if method == "POST" and path == "/api/v1/access-policy/simulate":
+        return DeviceIdentityScope.POLICY_READ
     if path == "/api/v1/access-policy" or path.startswith("/api/v1/access-policy/"):
         return DeviceIdentityScope.POLICY_MANAGE
     if path.endswith("/approval-policy"):

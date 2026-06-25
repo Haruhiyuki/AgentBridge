@@ -1341,6 +1341,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "command_parse" in html
     assert "command_execute" in html
     assert "device_manage" in html
+    assert "policy_read" in html
     assert "policy_manage" in html
     assert "group_role_manage" in html
     assert "chat_context_manage" in html

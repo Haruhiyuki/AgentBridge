@@ -3442,6 +3442,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       "command_parse",
       "command_execute",
       "device_manage",
+      "policy_read",
       "policy_manage",
       "group_role_manage",
       "chat_context_manage",

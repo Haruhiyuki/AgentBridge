@@ -305,7 +305,7 @@ def test_access_policy_api_manages_and_simulates_rules():
     assert denied_response.json()["decision"]["allowed"] is False
 
 
-def test_managed_device_identity_requires_policy_manage_scope_for_policy_apis():
+def test_managed_device_identity_requires_policy_scopes_for_policy_apis():
     client = TestClient(create_app())
     admin = {"id": "security-admin", "roles": ["admin"]}
     maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
@@ -350,7 +350,79 @@ def test_managed_device_identity_requires_policy_manage_scope_for_policy_apis():
     assert approval_policy_response.status_code == 403
 
 
-def test_managed_device_identity_policy_manage_scope_allows_policy_api_access():
+def test_managed_device_identity_policy_read_scope_allows_policy_reads():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": maintainer,
+            "name": "Policy Read Scope",
+            "trace_id": "policy-read-scope-project",
+        },
+    )
+    project_id = project_response.json()["id"]
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "policy-read-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "policy_read"],
+            "trace_id": "policy-read-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "policy-read-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    list_response = client.get(
+        "/api/v1/access-policy/rules",
+        headers=headers,
+    )
+    simulate_response = client.post(
+        "/api/v1/access-policy/simulate",
+        json={
+            "actor": maintainer,
+            "target_actor": operator,
+            "action": "terminal.control",
+            "resource_type": "session",
+        },
+        headers=headers,
+    )
+    approval_policy_response = client.get(
+        f"/api/v1/projects/{project_id}/approval-policy",
+        headers=headers,
+    )
+    create_rule_response = client.post(
+        "/api/v1/access-policy/rules",
+        json={
+            "actor": maintainer,
+            "effect": "allow",
+            "action": "terminal.control",
+            "resource_type": "session",
+            "roles": ["operator"],
+            "trace_id": "policy-read-denied-rule-create",
+        },
+        headers=headers,
+    )
+
+    assert project_response.status_code == 200
+    assert create_identity_response.status_code == 200
+    assert list_response.status_code == 200
+    assert list_response.json() == []
+    assert simulate_response.status_code == 200
+    assert simulate_response.json()["decision"]["allowed"] is False
+    assert simulate_response.json()["decision"]["source"] == "role"
+    assert approval_policy_response.status_code == 200
+    assert approval_policy_response.json()["scope_id"] == project_id
+    assert create_rule_response.status_code == 403
+
+
+def test_managed_device_identity_policy_manage_scope_allows_policy_writes():
     client = TestClient(create_app())
     admin = {"id": "security-admin", "roles": ["admin"]}
     maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
@@ -383,7 +455,6 @@ def test_managed_device_identity_policy_manage_scope_allows_policy_api_access():
         },
         headers=headers,
     )
-    rule_id = create_rule_response.json().get("id")
     list_response = client.get(
         "/api/v1/access-policy/rules",
         params={"enabled": True},
@@ -403,10 +474,8 @@ def test_managed_device_identity_policy_manage_scope_allows_policy_api_access():
 
     assert create_identity_response.status_code == 200
     assert create_rule_response.status_code == 200
-    assert list_response.status_code == 200
-    assert [rule["id"] for rule in list_response.json()] == [rule_id]
-    assert simulate_response.status_code == 200
-    assert simulate_response.json()["decision"]["allowed"] is True
+    assert list_response.status_code == 403
+    assert simulate_response.status_code == 403
 
 
 def test_access_policy_admin_ui_serves_editor():
