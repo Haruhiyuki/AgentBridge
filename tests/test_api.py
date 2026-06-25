@@ -1348,6 +1348,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "session_manage" in html
     assert "session_send" in html
     assert "session_event_ingest" in html
+    assert "interaction_read" in html
     assert "interaction_manage" in html
     assert "terminal_read" in html
     assert "terminal_control" in html
@@ -2188,15 +2189,133 @@ def test_managed_device_identity_requires_interaction_manage_scope_for_writes(
     )
 
     assert create_identity_response.status_code == 200
-    assert list_response.status_code == 200
-    assert {interaction["id"] for interaction in list_response.json()} == {
-        question["id"],
-        approval["id"],
-    }
+    assert list_response.status_code == 403
     assert create_response.status_code == 403
     assert answer_response.status_code == 403
     assert cancel_response.status_code == 403
     assert vote_response.status_code == 403
+
+
+def test_managed_device_identity_requires_interaction_read_scope_for_reads(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-interaction-read-scope",
+        prefix="interaction-read-scope",
+        name="Interaction Read Scope",
+    )
+    question = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": operator,
+            "type": "question",
+            "prompt": "Existing question?",
+            "trace_id": "interaction-read-scope-existing-question",
+        },
+    ).json()
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-interaction-read-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "interaction-read-scope-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-interaction-read-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    regular_http_response = client.get("/api/v1/projects", headers=key_headers)
+    list_response = client.get(
+        "/api/v1/interactions",
+        params={"session_id": session_id},
+        headers=key_headers,
+    )
+    show_response = client.get(
+        f"/api/v1/interactions/{question['id']}",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert create_response.status_code == 200
+    assert regular_http_response.status_code == 200
+    assert list_response.status_code == 403
+    assert show_response.status_code == 403
+
+
+def test_managed_device_identity_interaction_read_scope_allows_reads(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-interaction-read-manager",
+        prefix="interaction-read-manager",
+        name="Interaction Read Manager",
+    )
+    question = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": operator,
+            "type": "question",
+            "prompt": "Existing question?",
+            "trace_id": "interaction-read-manager-existing-question",
+        },
+    ).json()
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "interaction-read-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "interaction_read"],
+            "trace_id": "interaction-read-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "interaction-read-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    list_response = client.get(
+        "/api/v1/interactions",
+        params={"session_id": session_id},
+        headers=headers,
+    )
+    show_response = client.get(
+        f"/api/v1/interactions/{question['id']}",
+        headers=headers,
+    )
+    create_interaction_response = client.post(
+        f"/api/v1/sessions/{session_id}/interactions",
+        json={
+            "actor": operator,
+            "type": "question",
+            "prompt": "Denied write?",
+            "trace_id": "interaction-read-manager-denied-create",
+        },
+        headers=headers,
+    )
+
+    assert create_response.status_code == 200
+    assert list_response.status_code == 200
+    assert [interaction["id"] for interaction in list_response.json()] == [
+        question["id"]
+    ]
+    assert show_response.status_code == 200
+    assert show_response.json()["id"] == question["id"]
+    assert create_interaction_response.status_code == 403
 
 
 def test_managed_device_identity_interaction_manage_scope_allows_writes(

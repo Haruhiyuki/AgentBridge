@@ -2263,6 +2263,14 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         and path_segments[5] in {"answer", "cancel", "vote"}
     ):
         return DeviceIdentityScope.INTERACTION_MANAGE
+    if method == "GET" and (
+        path == "/api/v1/interactions"
+        or (
+            len(path_segments) == 5
+            and path_segments[:4] == ["", "api", "v1", "interactions"]
+        )
+    ):
+        return DeviceIdentityScope.INTERACTION_READ
     if method == "GET" and path in {"/api/v1/audit", "/api/v1/events"}:
         return DeviceIdentityScope.AUDIT_READ
     if (

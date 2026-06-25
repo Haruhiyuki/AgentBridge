@@ -209,8 +209,9 @@ certificate fingerprint to one or more scopes: `http_api`, `audit_read`,
 `bot_gateway_read`, `bot_gateway_manage`, `onebot_event_ingest`, `command_parse`,
 `command_execute`, `device_manage`, `policy_manage`, `group_role_manage`,
 `chat_context_manage`, `project_manage`, `session_manage`, `session_send`,
-`session_event_ingest`, `interaction_manage`, `terminal_read`, `terminal_control`,
-`session_events_ws`, `rendered_events_ws`, `terminal_ws`, and `bot_gateway_ws`;
+`session_event_ingest`, `interaction_read`, `interaction_manage`, `terminal_read`,
+`terminal_control`, `session_events_ws`, `rendered_events_ws`, `terminal_ws`, and
+`bot_gateway_ws`;
 omitting it grants all current scopes.
 Managed device credentials need `audit_read` to call audit and event history HTTP read APIs,
 `bot_gateway_read` to call Bot Gateway HTTP read APIs, `bot_gateway_manage` to call
@@ -224,8 +225,9 @@ Bot Gateway HTTP mutation APIs,
 pointers, `project_manage` to create projects, add workspaces, or bind projects to
 chat spaces, `session_manage` to create or close sessions and acquire or release writer
 leases, `session_send` to enqueue session turns, `session_event_ingest` to ingest
-Terminal Agent session events, `interaction_manage` to create interactions or answer,
-cancel, and vote on them, `terminal_read` to call terminal snapshot, terminal status,
+Terminal Agent session events, `interaction_read` to list or show interactions,
+`interaction_manage` to create interactions or answer, cancel, and vote on them,
+`terminal_read` to call terminal snapshot, terminal status,
 or lifecycle status HTTP routes, and `terminal_control` to call terminal start,
 restart, input, or lifecycle run-once HTTP routes. Command execution, direct turn enqueue, and
 OneBot inbound commands still evaluate the effective actor through RBAC and access
@@ -445,7 +447,8 @@ REST callers can use `GET /api/v1/interactions`,
 `POST /api/v1/sessions/{id}/interactions`, `POST /api/v1/interactions/{id}/answer`,
 `POST /api/v1/interactions/{id}/vote`, and
 `POST /api/v1/interactions/{id}/cancel`. Managed device credentials need
-`interaction_manage` for the write APIs. Expired interactions move to `expired` and
+`interaction_read` for the GET APIs and `interaction_manage` for the write APIs.
+Expired interactions move to `expired` and
 cannot be approved later; approval request events render with plain-text approve/deny
 actions for Bot delivery.
 

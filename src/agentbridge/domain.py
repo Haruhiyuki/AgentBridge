@@ -201,6 +201,7 @@ class DeviceIdentityScope(StrEnum):
     SESSION_MANAGE = "session_manage"
     SESSION_SEND = "session_send"
     SESSION_EVENT_INGEST = "session_event_ingest"
+    INTERACTION_READ = "interaction_read"
     INTERACTION_MANAGE = "interaction_manage"
     TERMINAL_READ = "terminal_read"
     TERMINAL_CONTROL = "terminal_control"

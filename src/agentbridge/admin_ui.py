@@ -3449,6 +3449,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       "session_manage",
       "session_send",
       "session_event_ingest",
+      "interaction_read",
       "interaction_manage",
       "terminal_read",
       "terminal_control",
