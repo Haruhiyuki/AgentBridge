@@ -1020,7 +1020,11 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         terminal_service: TerminalAgentService = Depends(get_terminal),
     ):
         actor = payload.actor.to_actor()
-        control.policy.require(actor, Permission.TERMINAL_CONTROL)
+        control.require_terminal_control(
+            actor,
+            session_id=session_id,
+            attributes={"operation": "terminal_start", "command": payload.command},
+        )
         terminal_service.start_session(
             session_id=session_id,
             command=payload.command,
@@ -1036,7 +1040,16 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         terminal_service: TerminalAgentService = Depends(get_terminal),
     ):
         actor = payload.actor.to_actor()
-        control.policy.require(actor, Permission.TERMINAL_CONTROL)
+        control.require_terminal_control(
+            actor,
+            session_id=session_id,
+            attributes={
+                "operation": "terminal_input",
+                "owner_type": payload.owner_type.value,
+                "owner_id": payload.owner_id,
+                "input_type": payload.type.value,
+            },
+        )
         request_id = terminal_service.submit_input(
             session_id=session_id,
             epoch=payload.epoch,
@@ -1058,7 +1071,12 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         terminal_service: TerminalAgentService = Depends(get_terminal),
     ):
         actor = Actor(id="api", roles={"admin"})
-        control.policy.require(actor, Permission.SESSION_VIEW)
+        control.require_session_permission(
+            actor,
+            Permission.SESSION_VIEW,
+            session_id=session_id,
+            attributes={"operation": "terminal_snapshot"},
+        )
         return {"snapshot": terminal_service.snapshot(session_id=session_id)}
 
     @app.websocket("/api/v1/sessions/{session_id}/terminal/ws")
@@ -1547,7 +1565,14 @@ def handle_terminal_ws_action(
         return control.health()
     if action == "start_session":
         actor = actor_from_terminal_ws_payload(payload)
-        control.policy.require(actor, Permission.TERMINAL_CONTROL)
+        control.require_terminal_control(
+            actor,
+            session_id=session_id,
+            attributes={
+                "operation": "terminal_ws_start",
+                "command": str(payload.get("command") or "sh"),
+            },
+        )
         terminal_service.start_session(
             session_id=session_id,
             command=str(payload.get("command") or "sh"),
@@ -1578,7 +1603,18 @@ def handle_terminal_ws_action(
         return {"next_epoch": next_epoch}
     if action == "submit_input":
         actor = actor_from_terminal_ws_payload(payload)
-        control.policy.require(actor, Permission.TERMINAL_CONTROL)
+        control.require_terminal_control(
+            actor,
+            session_id=session_id,
+            attributes={
+                "operation": "terminal_ws_input",
+                "owner_type": str(payload["owner_type"]),
+                "owner_id": required_ws_str(payload, "owner_id"),
+                "input_type": str(
+                    payload.get("input_type") or payload.get("type") or "text"
+                ),
+            },
+        )
         request_id = payload.get("request_id")
         submitted_id = terminal_service.submit_input(
             session_id=session_id,
@@ -1597,7 +1633,12 @@ def handle_terminal_ws_action(
         return {"request_id": submitted_id}
     if action == "snapshot":
         actor = actor_from_terminal_ws_payload(payload)
-        control.policy.require(actor, Permission.SESSION_VIEW)
+        control.require_session_permission(
+            actor,
+            Permission.SESSION_VIEW,
+            session_id=session_id,
+            attributes={"operation": "terminal_ws_snapshot"},
+        )
         return {"snapshot": terminal_service.snapshot(session_id=session_id)}
     raise AgentBridgeError(
         ErrorCode.COMMAND_UNKNOWN,

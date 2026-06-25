@@ -84,7 +84,18 @@ class ControlPlane:
         chat_context_id: str | None = None,
     ) -> Project:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.PROJECT_MANAGE)
+        self.require_project_permission(
+            effective_actor,
+            Permission.PROJECT_MANAGE,
+            resource_id=slug,
+            attributes={
+                "operation": "create_project",
+                "name": name.strip(),
+                "slug": slug or "",
+                "default_agent": default_agent.value,
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         project = self.repository.create_project(
             name=name,
             actor=effective_actor,
@@ -111,14 +122,25 @@ class ControlPlane:
         return project
 
     def list_projects(self, actor: Actor) -> list[Project]:
-        self.policy.require(actor, Permission.PROJECT_VIEW)
+        self.require_project_permission(
+            actor,
+            Permission.PROJECT_VIEW,
+            attributes={"operation": "list_projects"},
+        )
         return self.repository.list_projects()
 
     def list_projects_for_context(
         self, actor: Actor, chat_context_id: str | None
     ) -> list[Project]:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.PROJECT_VIEW)
+        self.require_project_permission(
+            effective_actor,
+            Permission.PROJECT_VIEW,
+            attributes={
+                "operation": "list_projects",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         return self.repository.list_projects()
 
     def add_workspace(
@@ -134,7 +156,17 @@ class ControlPlane:
         chat_context_id: str | None = None,
     ) -> Workspace:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.PROJECT_MANAGE)
+        self.require_project_permission(
+            effective_actor,
+            Permission.PROJECT_MANAGE,
+            project_id=project_id,
+            attributes={
+                "operation": "add_workspace",
+                "workspace_type": workspace_type.value,
+                "machine_id": machine_id,
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         workspace = self.repository.add_workspace(
             project_id=project_id,
             machine_id=machine_id,
@@ -175,7 +207,17 @@ class ControlPlane:
         trace_id: str,
     ) -> None:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.PROJECT_MANAGE)
+        self.require_project_permission(
+            effective_actor,
+            Permission.PROJECT_MANAGE,
+            project_id=project_id,
+            attributes={
+                "operation": "bind_project",
+                "is_default": is_default,
+                "alias_in_chat": alias_in_chat or "",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         binding = self.repository.bind_project(
             chat_context_id=chat_context_id,
             project_id=project_id,
@@ -213,8 +255,16 @@ class ControlPlane:
         trace_id: str,
     ) -> ChatContext:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.SESSION_VIEW)
         project = self.repository.resolve_project(project_token, chat_context_id)
+        self.require_project_permission(
+            effective_actor,
+            Permission.PROJECT_VIEW,
+            project_id=project.id,
+            attributes={
+                "operation": "select_project",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         context = self.repository.update_active_project(
             chat_context_id, project.id, expected_version=expected_version
         )
@@ -252,7 +302,20 @@ class ControlPlane:
         chat_context_id: str | None = None,
     ) -> AgentSession:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.SESSION_CREATE)
+        agent_type_value = AgentType(agent_type).value
+        visibility_value = Visibility(visibility).value
+        self.require_project_permission(
+            effective_actor,
+            Permission.SESSION_CREATE,
+            project_id=project_id,
+            attributes={
+                "operation": "create_session",
+                "workspace_id": workspace_id or "",
+                "agent_type": agent_type_value,
+                "visibility": visibility_value,
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         session = self.repository.create_session(
             project_id=project_id,
             workspace_id=workspace_id,
@@ -295,9 +358,15 @@ class ControlPlane:
         trace_id: str,
     ) -> ChatContext:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.SESSION_VIEW)
         context = self.repository.get_chat_context(chat_context_id)
         session = self.repository.resolve_session(session_token, context.active_project_id)
+        self.require_session_permission(
+            effective_actor,
+            Permission.SESSION_VIEW,
+            session_id=session.id,
+            chat_context_id=chat_context_id,
+            attributes={"operation": "select_session"},
+        )
         updated = self.repository.update_active_session(
             chat_context_id, session.id, expected_version=expected_version
         )
@@ -325,7 +394,12 @@ class ControlPlane:
         return updated
 
     def list_sessions(self, actor: Actor, project_id: str | None = None) -> list[AgentSession]:
-        self.policy.require(actor, Permission.SESSION_VIEW)
+        self.require_collection_permission(
+            actor,
+            Permission.SESSION_VIEW,
+            resource_type="session",
+            attributes={"operation": "list_sessions", "project_id": project_id or ""},
+        )
         return self.repository.list_sessions(project_id)
 
     def list_sessions_for_context(
@@ -335,7 +409,16 @@ class ControlPlane:
         chat_context_id: str | None = None,
     ) -> list[AgentSession]:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.SESSION_VIEW)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.SESSION_VIEW,
+            resource_type="session",
+            attributes={
+                "operation": "list_sessions",
+                "project_id": project_id or "",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         return self.repository.list_sessions(project_id)
 
     def enqueue_turn(
@@ -348,11 +431,16 @@ class ControlPlane:
         chat_context_id: str | None = None,
     ) -> Turn:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.SESSION_SEND)
+        session = self.require_session_permission(
+            effective_actor,
+            Permission.SESSION_SEND,
+            session_id=session_id,
+            chat_context_id=chat_context_id,
+            attributes={"operation": "enqueue_turn", "prompt_length": len(prompt)},
+        )
         turn = self.repository.enqueue_turn(
             session_id=session_id, prompt=prompt, actor=effective_actor
         )
-        session = self.repository.get_session(session_id)
         self.audit(
             action="turn.queued",
             actor=effective_actor,
@@ -383,7 +471,13 @@ class ControlPlane:
         chat_context_id: str | None = None,
     ) -> AgentSession:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.SESSION_MANAGE)
+        self.require_session_permission(
+            effective_actor,
+            Permission.SESSION_MANAGE,
+            session_id=session_id,
+            chat_context_id=chat_context_id,
+            attributes={"operation": "close_session"},
+        )
         session = self.repository.close_session(session_id)
         self.audit(
             action="session.closed",
@@ -415,21 +509,38 @@ class ControlPlane:
         trace_id: str,
         chat_context_id: str | None = None,
     ) -> WriterLease:
+        effective_actor = self.effective_actor(actor, chat_context_id)
         if owner_type in {LeaseOwnerType.WEB_ADMIN, LeaseOwnerType.HUMAN}:
-            effective_actor = self.effective_actor(actor, chat_context_id)
-            self.policy.require(effective_actor, Permission.TERMINAL_CONTROL)
+            session = self.require_terminal_control(
+                effective_actor,
+                session_id=session_id,
+                chat_context_id=chat_context_id,
+                attributes={
+                    "operation": "acquire_lease",
+                    "owner_type": owner_type.value,
+                    "owner_id": owner_id,
+                },
+            )
         elif owner_type == LeaseOwnerType.BOT:
-            effective_actor = self.effective_actor(actor, chat_context_id)
-            self.policy.require(effective_actor, Permission.SESSION_SEND)
+            session = self.require_session_permission(
+                effective_actor,
+                Permission.SESSION_SEND,
+                session_id=session_id,
+                chat_context_id=chat_context_id,
+                attributes={
+                    "operation": "acquire_lease",
+                    "owner_type": owner_type.value,
+                    "owner_id": owner_id,
+                },
+            )
         else:
-            effective_actor = self.effective_actor(actor, chat_context_id)
+            session = self.repository.get_session(session_id)
         lease = self.repository.acquire_lease(
             session_id=session_id,
             owner_type=owner_type,
             owner_id=owner_id,
             ttl_seconds=ttl_seconds,
         )
-        session = self.repository.get_session(session_id)
         self.audit(
             action="lease.acquired",
             actor=effective_actor,
@@ -469,9 +580,13 @@ class ControlPlane:
         chat_context_id: str | None = None,
     ) -> int:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.TERMINAL_CONTROL)
+        session = self.require_terminal_control(
+            effective_actor,
+            session_id=session_id,
+            chat_context_id=chat_context_id,
+            attributes={"operation": "release_lease", "epoch": epoch},
+        )
         next_epoch = self.repository.release_lease(session_id=session_id, epoch=epoch)
-        session = self.repository.get_session(session_id)
         self.audit(
             action="lease.released",
             actor=effective_actor,
@@ -508,14 +623,23 @@ class ControlPlane:
         risk_level: RiskLevel = RiskLevel.MEDIUM,
     ) -> Interaction:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.SESSION_SEND)
         if not prompt.strip():
             raise AgentBridgeError(
                 ErrorCode.COMMAND_ARGUMENT_INVALID,
                 "Interaction prompt 不能为空。",
                 next_step="请提供需要用户处理的问题或审批说明。",
             )
-        session = self.repository.get_session(session_id)
+        session = self.require_session_permission(
+            effective_actor,
+            Permission.SESSION_SEND,
+            session_id=session_id,
+            chat_context_id=chat_context_id,
+            attributes={
+                "operation": "create_interaction",
+                "interaction_type": interaction_type.value,
+                "risk_level": risk_level.value,
+            },
+        )
         approval_policy, applied_overrides = self._effective_approval_policy(
             project_id=session.project_id,
             chat_context_id=chat_context_id,
@@ -601,7 +725,24 @@ class ControlPlane:
         status: InteractionStatus | None = None,
     ) -> list[Interaction]:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.SESSION_VIEW)
+        if session_id:
+            self.require_session_permission(
+                effective_actor,
+                Permission.SESSION_VIEW,
+                session_id=session_id,
+                chat_context_id=chat_context_id,
+                attributes={"operation": "list_interactions"},
+            )
+        else:
+            self.require_collection_permission(
+                effective_actor,
+                Permission.SESSION_VIEW,
+                resource_type="session",
+                attributes={
+                    "operation": "list_interactions",
+                    **self._chat_policy_attributes(chat_context_id),
+                },
+            )
         self.expire_due_interactions(
             actor=Actor(id="system", roles={"admin"}),
             trace_id="interaction-expire",
@@ -617,7 +758,19 @@ class ControlPlane:
         chat_context_id: str | None = None,
     ) -> Interaction:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.SESSION_VIEW)
+        interaction = self.repository.get_interaction(interaction_id)
+        self.require_session_permission(
+            effective_actor,
+            Permission.SESSION_VIEW,
+            session_id=interaction.session_id,
+            chat_context_id=chat_context_id,
+            attributes={
+                "operation": "get_interaction",
+                "interaction_id": interaction_id,
+                "interaction_type": interaction.type.value,
+                "risk_level": interaction.risk_level.value,
+            },
+        )
         self.expire_due_interactions(
             actor=Actor(id="system", roles={"admin"}),
             trace_id="interaction-expire",
@@ -635,13 +788,24 @@ class ControlPlane:
         chat_context_id: str | None = None,
     ) -> Interaction:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.SESSION_SEND)
         self.expire_due_interactions(
             actor=Actor(id="system", roles={"admin"}),
             trace_id=trace_id,
             chat_context_id=chat_context_id,
         )
         current = self.repository.get_interaction(interaction_id)
+        self.require_session_permission(
+            effective_actor,
+            Permission.SESSION_SEND,
+            session_id=current.session_id,
+            chat_context_id=chat_context_id,
+            attributes={
+                "operation": "answer_interaction",
+                "interaction_id": interaction_id,
+                "interaction_type": current.type.value,
+                "risk_level": current.risk_level.value,
+            },
+        )
         if current.type == InteractionType.APPROVAL:
             raise AgentBridgeError(
                 ErrorCode.COMMAND_ARGUMENT_INVALID,
@@ -689,7 +853,19 @@ class ControlPlane:
         reason: str | None = None,
     ) -> Interaction:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.SESSION_MANAGE)
+        current = self.repository.get_interaction(interaction_id)
+        self.require_session_permission(
+            effective_actor,
+            Permission.SESSION_MANAGE,
+            session_id=current.session_id,
+            chat_context_id=chat_context_id,
+            attributes={
+                "operation": "cancel_interaction",
+                "interaction_id": interaction_id,
+                "interaction_type": current.type.value,
+                "risk_level": current.risk_level.value,
+            },
+        )
         interaction = self.repository.cancel_interaction(interaction_id, reason)
         session = self.repository.get_session(interaction.session_id)
         self.audit(
@@ -784,7 +960,22 @@ class ControlPlane:
                 "非审批类 Interaction 不能投票。",
                 next_step="请执行 /agent answer <interaction-id> <answer> 处理问题。",
             )
-        self.policy.require_approval_vote(effective_actor, current.risk_level)
+        session = self.repository.get_session(current.session_id)
+        self.policy.require_approval_vote(
+            effective_actor,
+            current.risk_level,
+            resource_type="interaction",
+            resource_id=current.id,
+            attributes={
+                "operation": "vote_interaction",
+                "interaction_id": current.id,
+                "interaction_type": current.type.value,
+                "risk_level": current.risk_level.value,
+                "session_id": session.id,
+                "project_id": session.project_id,
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         if (
             approve
             and current.requested_by == effective_actor.id
@@ -811,7 +1002,6 @@ class ControlPlane:
             actor=effective_actor,
             approve=approve,
         )
-        session = self.repository.get_session(interaction.session_id)
         self.audit(
             action="approval.voted",
             actor=effective_actor,
@@ -847,6 +1037,89 @@ class ControlPlane:
     def effective_actor(self, actor: Actor, chat_context_id: str | None = None) -> Actor:
         return self.repository.effective_actor(actor, chat_context_id)
 
+    def require_collection_permission(
+        self,
+        actor: Actor,
+        permission: Permission,
+        *,
+        resource_type: str,
+        resource_id: str | None = None,
+        attributes: dict[str, object] | None = None,
+    ) -> None:
+        self.policy.require(
+            actor,
+            permission,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            attributes=attributes or {},
+        )
+
+    def require_project_permission(
+        self,
+        actor: Actor,
+        permission: Permission,
+        *,
+        project_id: str | None = None,
+        resource_id: str | None = None,
+        attributes: dict[str, object] | None = None,
+    ) -> Project | None:
+        project = self.repository.get_project(project_id) if project_id else None
+        self.policy.require(
+            actor,
+            permission,
+            resource_type="project",
+            resource_id=project.id if project else resource_id,
+            attributes=self._project_policy_attributes(project, attributes),
+        )
+        return project
+
+    def require_session_permission(
+        self,
+        actor: Actor,
+        permission: Permission,
+        *,
+        session_id: str,
+        chat_context_id: str | None = None,
+        attributes: dict[str, object] | None = None,
+    ) -> AgentSession:
+        session = self.repository.get_session(session_id)
+        self.policy.require(
+            actor,
+            permission,
+            resource_type="session",
+            resource_id=session.id,
+            attributes=self._session_policy_attributes(
+                session,
+                chat_context_id=chat_context_id,
+                attributes=attributes,
+            ),
+        )
+        return session
+
+    def require_terminal_control(
+        self,
+        actor: Actor,
+        *,
+        session_id: str,
+        chat_context_id: str | None = None,
+        attributes: dict[str, object] | None = None,
+    ) -> AgentSession:
+        session = self.repository.get_session(session_id)
+        policy_attributes = self._session_policy_attributes(
+            session,
+            chat_context_id=chat_context_id,
+            attributes=attributes,
+        )
+        policy_attributes["session_id"] = session.id
+        self.policy.require(
+            actor,
+            Permission.TERMINAL_CONTROL,
+            resource_type="terminal",
+            resource_id=session.id,
+            attributes=policy_attributes,
+        )
+        return session
+
     def grant_group_roles(
         self,
         *,
@@ -857,7 +1130,17 @@ class ControlPlane:
         trace_id: str,
     ) -> GroupRoleBinding:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.GROUP_ROLE_MANAGE)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.GROUP_ROLE_MANAGE,
+            resource_type="chat_context",
+            resource_id=chat_context_id,
+            attributes={
+                "operation": "grant_group_roles",
+                "target_actor_id": target_actor_id,
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         roles = self._validated_group_roles(roles)
         binding = self.repository.grant_group_roles(
             chat_context_id=chat_context_id,
@@ -895,7 +1178,17 @@ class ControlPlane:
         trace_id: str,
     ) -> GroupRoleBinding | None:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.GROUP_ROLE_MANAGE)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.GROUP_ROLE_MANAGE,
+            resource_type="chat_context",
+            resource_id=chat_context_id,
+            attributes={
+                "operation": "revoke_group_roles",
+                "target_actor_id": target_actor_id,
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         roles = self._validated_group_roles(roles)
         binding = self.repository.revoke_group_roles(
             chat_context_id=chat_context_id,
@@ -930,7 +1223,16 @@ class ControlPlane:
         chat_context_id: str,
     ) -> list[GroupRoleBinding]:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.GROUP_ROLE_MANAGE)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.GROUP_ROLE_MANAGE,
+            resource_type="chat_context",
+            resource_id=chat_context_id,
+            attributes={
+                "operation": "list_group_roles",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         return self.repository.list_group_role_bindings(chat_context_id)
 
     def list_access_policy_rules(
@@ -941,7 +1243,15 @@ class ControlPlane:
         chat_context_id: str | None = None,
     ) -> list[AccessPolicyRule]:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.POLICY_MANAGE)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.POLICY_MANAGE,
+            resource_type="access_policy",
+            attributes={
+                "operation": "list_access_policy_rules",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         return self.repository.list_access_policy_rules(enabled)
 
     def set_access_policy_rule(
@@ -963,7 +1273,18 @@ class ControlPlane:
         chat_context_id: str | None = None,
     ) -> AccessPolicyRule:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.POLICY_MANAGE)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.POLICY_MANAGE,
+            resource_type="access_policy",
+            resource_id=rule_id,
+            attributes={
+                "operation": "set_access_policy_rule",
+                "target_action": action.strip(),
+                "target_resource_type": resource_type or "*",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         normalized_roles = (
             sorted(self._validated_group_roles(set(roles))) if roles else []
         )
@@ -1020,7 +1341,16 @@ class ControlPlane:
         chat_context_id: str | None = None,
     ) -> AccessPolicyRule:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.POLICY_MANAGE)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.POLICY_MANAGE,
+            resource_type="access_policy",
+            resource_id=rule_id,
+            attributes={
+                "operation": "delete_access_policy_rule",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         existing = self.repository.get_access_policy_rule(rule_id)
         deleted = self.repository.delete_access_policy_rule(rule_id) or existing
         self.audit(
@@ -1057,7 +1387,15 @@ class ControlPlane:
         chat_context_id: str | None = None,
     ) -> dict[str, object]:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        self.policy.require(effective_actor, Permission.POLICY_MANAGE)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.POLICY_MANAGE,
+            resource_type="access_policy",
+            attributes={
+                "operation": "simulate_access_policy",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
         effective_target = self.effective_actor(target_actor, chat_context_id)
         normalized_action = self._validated_policy_pattern(action, "action")
         normalized_resource_type = self._validated_policy_pattern(
@@ -1093,7 +1431,20 @@ class ControlPlane:
             actor,
             chat_context_id or (scope_id if scope_type == PolicyScope.CHAT_CONTEXT else None),
         )
-        self.policy.require(effective_actor, Permission.POLICY_MANAGE)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.POLICY_MANAGE,
+            resource_type="approval_policy",
+            resource_id=scope_id,
+            attributes={
+                "operation": "get_approval_policy",
+                "scope_type": scope_type.value,
+                **self._chat_policy_attributes(
+                    chat_context_id
+                    or (scope_id if scope_type == PolicyScope.CHAT_CONTEXT else None)
+                ),
+            },
+        )
         override = self.repository.get_approval_policy_override(
             scope_type=scope_type,
             scope_id=scope_id,
@@ -1128,7 +1479,20 @@ class ControlPlane:
             actor,
             chat_context_id or (scope_id if scope_type == PolicyScope.CHAT_CONTEXT else None),
         )
-        self.policy.require(effective_actor, Permission.POLICY_MANAGE)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.POLICY_MANAGE,
+            resource_type="approval_policy",
+            resource_id=scope_id,
+            attributes={
+                "operation": "set_approval_policy",
+                "scope_type": scope_type.value,
+                **self._chat_policy_attributes(
+                    chat_context_id
+                    or (scope_id if scope_type == PolicyScope.CHAT_CONTEXT else None)
+                ),
+            },
+        )
         normalized_quorum = self._validated_quorum_by_risk(quorum_by_risk)
         override = self.repository.upsert_approval_policy_override(
             scope_type=scope_type,
@@ -1287,6 +1651,50 @@ class ControlPlane:
                 details={"allowed_roles": sorted(ROLE_PERMISSIONS)},
             )
         return normalized
+
+    def _project_policy_attributes(
+        self,
+        project: Project | None,
+        attributes: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        policy_attributes: dict[str, object] = {}
+        if project:
+            policy_attributes.update(
+                {
+                    "project_id": project.id,
+                    "project_slug": project.slug,
+                    "project_status": project.status.value,
+                    "default_agent": project.default_agent.value,
+                    "created_by": project.created_by,
+                }
+            )
+        policy_attributes.update(attributes or {})
+        return policy_attributes
+
+    def _session_policy_attributes(
+        self,
+        session: AgentSession,
+        *,
+        chat_context_id: str | None = None,
+        attributes: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        policy_attributes: dict[str, object] = {
+            "session_id": session.id,
+            "project_id": session.project_id,
+            "workspace_id": session.workspace_id,
+            "agent_type": session.agent_type.value,
+            "visibility": session.visibility.value,
+            "session_status": session.status.value,
+            "created_by": session.created_by,
+            **self._chat_policy_attributes(chat_context_id),
+        }
+        policy_attributes.update(attributes or {})
+        return policy_attributes
+
+    def _chat_policy_attributes(self, chat_context_id: str | None) -> dict[str, object]:
+        if not chat_context_id:
+            return {}
+        return {"chat_context_id": chat_context_id}
 
     def _validated_policy_pattern(self, value: str, field_name: str) -> str:
         normalized = value.strip()

@@ -309,6 +309,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/access-policy/rules \
 curl http://127.0.0.1:8000/api/v1/access-policy/rules
 ```
 
+Project, session, interaction, approval, group-role, policy-management, and terminal Control Plane checks now pass resource context into the policy engine. Session operations use `resource_type: "session"` with the session ID, terminal control uses `resource_type: "terminal"` with the session ID, and session creation is evaluated against the target project because the session ID does not exist yet.
+
 Use simulation before enabling a risky rule:
 
 ```bash
@@ -317,7 +319,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/access-policy/simulate \
   -d '{"actor":{"id":"usr_1","roles":["maintainer"]},"target_actor":{"id":"usr_operator","roles":["operator"]},"action":"terminal.control","resource_type":"session","attributes":{"risk":"low"}}'
 ```
 
-Rules are persisted by Alembic migration `0007_access_policy_rules`. Existing Control Plane permission checks already honor global action rules; resource and attribute context is available to the policy engine and simulation API and will be wired into more business-specific entry points as those workflows mature.
+Rules are persisted by Alembic migration `0007_access_policy_rules`. The REST and WebSocket terminal paths reuse the same resource-aware checks, so a rule can allow or deny a specific session's terminal without changing the global role matrix.
 
 ## Console Client
 

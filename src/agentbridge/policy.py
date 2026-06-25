@@ -254,11 +254,31 @@ class PolicyEngine:
             },
         )
 
-    def require_approval_vote(self, actor: Actor, risk_level: RiskLevel) -> None:
+    def require_approval_vote(
+        self,
+        actor: Actor,
+        risk_level: RiskLevel,
+        *,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        attributes: dict[str, object] | None = None,
+    ) -> None:
         if risk_level in {RiskLevel.HIGH, RiskLevel.CRITICAL}:
-            self.require(actor, Permission.APPROVAL_DANGEROUS)
+            self.require(
+                actor,
+                Permission.APPROVAL_DANGEROUS,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                attributes=attributes,
+            )
             return
-        self.require(actor, Permission.APPROVAL_VOTE)
+        self.require(
+            actor,
+            Permission.APPROVAL_VOTE,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            attributes=attributes,
+        )
 
     def _rule_matches(
         self,

@@ -105,6 +105,8 @@ Implemented in this slice:
 - Access policy management REST APIs through `GET/POST/PUT /api/v1/access-policy/rules` and `POST /api/v1/access-policy/rules/{id}/delete`.
 - Policy simulation REST API through `POST /api/v1/access-policy/simulate`, returning decision source, reason, required permission, roles, and matched rule ID.
 - Alembic migration `0007_access_policy_rules` persists access policy rules.
+- Project, session, interaction, approval, group-role, policy-management, and terminal checks now pass resource type/id plus stable attributes into access policy evaluation.
+- Terminal REST and WebSocket paths reuse Control Plane `terminal` resource checks, so session-specific terminal rules are enforced outside the main command flow as well.
 - Focused unit/API tests for the above.
 
 Not implemented yet:
@@ -114,7 +116,6 @@ Not implemented yet:
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
 - Admin policy editor UI for access policy rules.
-- Full resource/attribute context wiring across every project/session/terminal permission check.
 - Production WebSocket hardening with mTLS/device keys.
 - Platform-specific rich card/button transport adapters and outbound message edit extensions beyond standard OneBot V11.
 - Native action/callback support for platforms that expose buttons or interactions.
@@ -149,7 +150,8 @@ Not implemented yet:
 - Group role bindings are scoped to a chat context and actor ID. This keeps OneBot user permissions local to the group/private context while still allowing command/API callers to carry bootstrap roles.
 - Access policy rules are stored separately from approval quorum overrides. Approval policy answers "how many votes"; access policy answers "who may do which action".
 - Access policy evaluation is deny-first and then allow-before-RBAC. This makes temporary freezes explicit while preserving the existing role matrix as the default baseline.
-- The first access policy slice supports resource and attribute matching in the engine and simulation API. Existing Control Plane calls without resource metadata enforce global action rules; resource-aware enforcement will expand as each business entry point passes stable resource context.
+- Access policy enforcement uses stable resource attributes only: IDs, status, project/session linkage, visibility, agent type, chat context, operation, risk level, and owner metadata. It intentionally avoids volatile or sensitive filesystem path values as policy attributes.
+- Session creation is evaluated against the target project because the session resource ID does not exist yet. Terminal control is evaluated as `resource_type=terminal` with the session ID so terminal-specific rules do not have to overmatch ordinary session sends.
 - WebSocket session streams are read-side transports over immutable semantic events. They use `after_seq` cursors for replay/reconnect and do not mutate Bot delivery records.
 - Bot Gateway WebSocket subscriptions fan out render frames for external platform adapters, but do not store delivery records. Platform adapters report delivery acknowledgements, edits, and deletes explicitly through the delivery-result API keyed by message idempotency key.
 - Bot delivery platform state is stored on delivery records, not semantic events. Edits/deletes update platform lifecycle metadata and latest delivery text without rewriting the immutable event stream.
@@ -172,7 +174,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 ## Next Development Backlog
 
 1. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
-2. Wire resource/attribute access-policy context into every project/session/terminal permission check and add an admin policy editor UI.
+2. Add an admin policy editor UI for access policy rules with simulation before save.
 3. Replace the MVP WebSocket token gate with mTLS/device-key auth.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.
 5. Add platform-specific rich card/button transport adapters and outbound edit extensions.
