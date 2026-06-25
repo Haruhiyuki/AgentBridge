@@ -208,6 +208,70 @@ def test_terminal_lifecycle_tracking_recovers_from_persisted_events(tmp_path):
     assert exited_events[0].payload["exit_code"] == 12
 
 
+def test_terminal_lifecycle_lost_state_survives_repository_restart(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'agentbridge.db'}"
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    first_control = ControlPlane(repository=first_repo)
+    project = first_control.create_project(actor=maintainer, name="Backend", trace_id="project")
+    workspace = first_control.add_workspace(
+        actor=maintainer,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="workspace",
+    )
+    session = first_control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Lost Terminal",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="session",
+    )
+    first_terminal = TerminalAgentService(first_control, backend=FakeTerminalBackend())
+    first_terminal.start_session(
+        session_id=session.id,
+        command="fake-cli",
+        trace_id="terminal-start-before-lost-recovery",
+    )
+
+    second_repo = SQLAlchemyRepository(database_url)
+    second_control = ControlPlane(repository=second_repo)
+    second_terminal = TerminalAgentService(second_control, backend=FakeTerminalBackend())
+
+    observed = second_terminal.run_lifecycle_monitor_once(
+        trace_id="terminal-monitor-lost-after-repository-reload"
+    )
+
+    assert observed[session.id] == TerminalStatus(started=False, running=False)
+    lost_events = [
+        event
+        for event in second_repo.list_events(session_id=session.id)
+        if event.type == "terminal.lost"
+    ]
+    assert len(lost_events) == 1
+    assert lost_events[0].payload["generation"] == 1
+    assert lost_events[0].payload["reason"] == "backend_state_missing"
+
+    third_repo = SQLAlchemyRepository(database_url)
+    third_control = ControlPlane(repository=third_repo)
+    third_terminal = TerminalAgentService(third_control, backend=FakeTerminalBackend())
+    third_terminal.run_lifecycle_monitor_once(
+        trace_id="terminal-monitor-lost-after-second-repository-reload"
+    )
+
+    lost_events = [
+        event
+        for event in third_repo.list_events(session_id=session.id)
+        if event.type == "terminal.lost"
+    ]
+    assert len(lost_events) == 1
+
+
 def test_api_can_use_sqlalchemy_repository_from_environment(tmp_path, monkeypatch):
     database_url = f"sqlite:///{tmp_path / 'api.db'}"
     monkeypatch.setenv("AGENTBRIDGE_DATABASE_URL", database_url)

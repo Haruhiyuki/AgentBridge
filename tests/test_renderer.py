@@ -59,6 +59,27 @@ def test_terminal_exited_event_renders_operator_warning():
     ]
 
 
+def test_terminal_lost_event_renders_operator_warning():
+    event = make_event(
+        "terminal.lost",
+        {
+            "generation": 1,
+            "reason": "backend_state_missing",
+            "backend": "PtyTerminalBackend",
+        },
+    )
+
+    document = document_from_event(event)
+    messages = OneBotV11TextRenderer().render(document)
+
+    assert document.visibility == "operators"
+    assert messages == [
+        "terminal.lost · ses_1\n\n"
+        "终端状态丢失\n"
+        "WARNING: generation=1；reason=backend_state_missing；backend=PtyTerminalBackend"
+    ]
+
+
 def test_approval_request_event_renders_approver_actions():
     event = make_event(
         "approval.requested",

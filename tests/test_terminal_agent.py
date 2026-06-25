@@ -253,6 +253,50 @@ def test_terminal_lifecycle_recovery_does_not_duplicate_existing_exit(tmp_path):
     assert len(exited_events) == 1
 
 
+def test_terminal_lifecycle_monitor_reports_lost_recovered_session_once(tmp_path):
+    control = ControlPlane()
+    first_terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+    _, session = create_session(control, tmp_path)
+    first_terminal.start_session(
+        session_id=session.id,
+        command="fake-cli",
+        trace_id="terminal-start-before-lost-recovery",
+    )
+
+    restarted_terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+    first_observed = restarted_terminal.run_lifecycle_monitor_once(
+        trace_id="terminal-monitor-lost-1"
+    )
+    second_observed = restarted_terminal.run_lifecycle_monitor_once(
+        trace_id="terminal-monitor-lost-2"
+    )
+
+    assert first_observed[session.id] == TerminalStatus(started=False, running=False)
+    assert second_observed[session.id] == TerminalStatus(started=False, running=False)
+    lost_events = [
+        event
+        for event in control.repository.list_events(session_id=session.id)
+        if event.type == "terminal.lost"
+    ]
+    assert len(lost_events) == 1
+    assert lost_events[0].payload == {
+        "generation": 1,
+        "reason": "backend_state_missing",
+        "backend": "FakeTerminalBackend",
+    }
+    assert restarted_terminal.lifecycle_monitor_status()["reported_lost_count"] == 1
+
+    recovered_terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+    recovered_terminal.run_lifecycle_monitor_once(trace_id="terminal-monitor-lost-3")
+
+    lost_events = [
+        event
+        for event in control.repository.list_events(session_id=session.id)
+        if event.type == "terminal.lost"
+    ]
+    assert len(lost_events) == 1
+
+
 def test_terminal_api_writes_to_fake_backend_after_lease(tmp_path):
     client = TestClient(create_app())
     actor = {"id": "usr_1", "roles": ["maintainer"]}

@@ -256,6 +256,18 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 ),
             )
         )
+    elif event.type == "terminal.lost":
+        visibility = RenderVisibility.OPERATORS
+        blocks.append(
+            warning_block(
+                "终端状态丢失",
+                (
+                    f"generation={payload.get('generation')}；"
+                    f"reason={payload.get('reason')}；"
+                    f"backend={payload.get('backend')}"
+                ),
+            )
+        )
     else:
         blocks.append(text_block("事件", event.type))
         if payload:

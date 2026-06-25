@@ -494,6 +494,7 @@ class TerminalAgentService:
         self.backend = backend or FakeTerminalBackend()
         self._terminal_start_generations: dict[str, int] = {}
         self._reported_terminal_exits: set[tuple[str, int]] = set()
+        self._reported_terminal_losses: set[tuple[str, int]] = set()
         self._lifecycle_lock = RLock()
         self._lifecycle_stop_event = Event()
         self._lifecycle_thread: Thread | None = None
@@ -621,7 +622,10 @@ class TerminalAgentService:
     ) -> TerminalStatus:
         session = self.control.repository.get_session(session_id)
         status = self.backend.status(session_id=session_id)
-        self._emit_terminal_exited_once(session=session, status=status, trace_id=trace_id)
+        if status.started:
+            self._emit_terminal_exited_once(session=session, status=status, trace_id=trace_id)
+        else:
+            self._emit_terminal_lost_once(session=session, trace_id=trace_id)
         return status
 
     def run_lifecycle_monitor_once(
@@ -647,6 +651,7 @@ class TerminalAgentService:
     def recover_lifecycle_state_from_events(self) -> dict[str, int]:
         recovered_generations: dict[str, int] = {}
         recovered_exits: set[tuple[str, int]] = set()
+        recovered_losses: set[tuple[str, int]] = set()
         for session in self.control.repository.list_sessions():
             generation = 0
             events = self.control.repository.list_events(
@@ -662,6 +667,12 @@ class TerminalAgentService:
                         recovered_exits.add((session.id, event_generation))
                     elif generation > 0:
                         recovered_exits.add((session.id, generation))
+                elif event.type == "terminal.lost":
+                    event_generation = event.payload.get("generation")
+                    if isinstance(event_generation, int):
+                        recovered_losses.add((session.id, event_generation))
+                    elif generation > 0:
+                        recovered_losses.add((session.id, generation))
             if generation > 0:
                 recovered_generations[session.id] = generation
 
@@ -672,6 +683,7 @@ class TerminalAgentService:
                     self._terminal_start_generations.get(session_id, 0),
                 )
             self._reported_terminal_exits.update(recovered_exits)
+            self._reported_terminal_losses.update(recovered_losses)
         return recovered_generations
 
     def start_lifecycle_monitor(self, *, interval_seconds: float = 1.0) -> bool:
@@ -715,6 +727,8 @@ class TerminalAgentService:
                 "run_count": self._lifecycle_run_count,
                 "last_error": self._lifecycle_last_error,
                 "last_observed_count": self._lifecycle_last_observed_count,
+                "reported_exit_count": len(self._reported_terminal_exits),
+                "reported_lost_count": len(self._reported_terminal_losses),
             }
 
     def _run_lifecycle_monitor_loop(self) -> None:
@@ -734,7 +748,11 @@ class TerminalAgentService:
         with self._lifecycle_lock:
             generation = self._terminal_start_generations.get(session.id, 0)
             exit_key = (session.id, generation)
-            if exit_key in self._reported_terminal_exits:
+            if (
+                generation <= 0
+                or exit_key in self._reported_terminal_exits
+                or exit_key in self._reported_terminal_losses
+            ):
                 return
         self.control.emit_event(
             event_type="terminal.exited",
@@ -752,3 +770,34 @@ class TerminalAgentService:
         )
         with self._lifecycle_lock:
             self._reported_terminal_exits.add(exit_key)
+
+    def _emit_terminal_lost_once(
+        self,
+        *,
+        session,
+        trace_id: str,
+    ) -> None:
+        with self._lifecycle_lock:
+            generation = self._terminal_start_generations.get(session.id, 0)
+            loss_key = (session.id, generation)
+            if (
+                generation <= 0
+                or loss_key in self._reported_terminal_losses
+                or loss_key in self._reported_terminal_exits
+            ):
+                return
+        self.control.emit_event(
+            event_type="terminal.lost",
+            source=SemanticEventSource.TERMINAL_AGENT,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session.id,
+            payload={
+                "generation": generation,
+                "reason": "backend_state_missing",
+                "backend": type(self.backend).__name__,
+            },
+            idempotency_key=f"terminal-lost:{session.id}:{generation}",
+        )
+        with self._lifecycle_lock:
+            self._reported_terminal_losses.add(loss_key)
