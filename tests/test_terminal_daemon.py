@@ -363,6 +363,7 @@ def test_terminal_daemon_config_reads_desktop_open_preset(monkeypatch, tmp_path)
     socket_path = tmp_path / "terminal-agent.sock"
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_SOCKET", str(socket_path))
     monkeypatch.setenv("AGENTBRIDGE_LOCAL_TOKEN", "secret-token")
+    monkeypatch.setenv("AGENTBRIDGE_LOCAL_REQUIRE_PEER_USER", "false")
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_AUTO_OPEN", "true")
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_OPEN_PRESET", "auto")
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_OPEN_COMMAND", "custom {session_id}")
@@ -374,12 +375,50 @@ def test_terminal_daemon_config_reads_desktop_open_preset(monkeypatch, tmp_path)
 
     assert config.socket_path == socket_path
     assert config.auth_token == "secret-token"
+    assert config.require_peer_user is False
     assert config.lifecycle_poll_interval_seconds == 2.5
     assert config.terminal_auto_restart_on_lost is True
     assert config.terminal_auto_restart_max_attempts == 4
     assert config.desktop_auto_open_enabled is True
     assert config.desktop_open_preset == "auto"
     assert config.desktop_open_command == "custom {session_id}"
+
+
+def test_local_terminal_daemon_rejects_wrong_peer_uid():
+    class FakePeerSocket:
+        def getpeereid(self):
+            return (1001, 20)
+
+    class FakeWriter:
+        def get_extra_info(self, name):
+            assert name == "socket"
+            return FakePeerSocket()
+
+    control = ControlPlane()
+    terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+    server = LocalTerminalAgentServer(
+        control=control,
+        terminal=terminal,
+        auth_token="secret-token",
+        allowed_peer_uid=1000,
+        lifecycle_monitor_enabled=False,
+    )
+
+    error = server.peer_user_error(FakeWriter())
+
+    assert error is not None
+    assert error.code.value == "PERMISSION_DENIED"
+    assert error.details == {"expected_uid": 1000, "peer_uid": 1001}
+
+    disabled_server = LocalTerminalAgentServer(
+        control=control,
+        terminal=terminal,
+        auth_token="secret-token",
+        require_peer_user=False,
+        allowed_peer_uid=1000,
+        lifecycle_monitor_enabled=False,
+    )
+    assert disabled_server.peer_user_error(FakeWriter()) is None
 
 
 def test_local_terminal_daemon_auto_opens_desktop_terminal(monkeypatch, tmp_path):

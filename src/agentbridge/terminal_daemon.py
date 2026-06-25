@@ -9,6 +9,8 @@ import platform
 import secrets
 import shlex
 import shutil
+import socket
+import struct
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -37,6 +39,7 @@ from agentbridge.terminal_agent import (
 class LocalTerminalAgentConfig:
     socket_path: Path
     auth_token: str
+    require_peer_user: bool = True
     lifecycle_poll_interval_seconds: float = 1.0
     terminal_auto_restart_on_lost: bool = False
     terminal_auto_restart_max_attempts: int = 1
@@ -368,6 +371,8 @@ class LocalTerminalAgentServer:
         control: ControlPlane,
         terminal: TerminalAgentService,
         auth_token: str,
+        require_peer_user: bool = True,
+        allowed_peer_uid: int | None = None,
         lifecycle_monitor_enabled: bool = True,
         lifecycle_poll_interval_seconds: float = 1.0,
         desktop_launcher: DesktopTerminalLauncher | None = None,
@@ -377,6 +382,13 @@ class LocalTerminalAgentServer:
         self.control = control
         self.terminal = terminal
         self.auth_token = auth_token
+        self.require_peer_user = require_peer_user
+        if allowed_peer_uid is not None:
+            self.allowed_peer_uid = allowed_peer_uid
+        elif hasattr(os, "getuid"):
+            self.allowed_peer_uid = os.getuid()
+        else:
+            self.allowed_peer_uid = None
         self.lifecycle_monitor_enabled = lifecycle_monitor_enabled
         self.lifecycle_poll_interval_seconds = max(float(lifecycle_poll_interval_seconds), 0.05)
         self.desktop_launcher = desktop_launcher or DesktopTerminalLauncher(
@@ -435,6 +447,13 @@ class LocalTerminalAgentServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         try:
+            peer_error = self.peer_user_error(writer)
+            if peer_error is not None:
+                await self.write_response(
+                    writer,
+                    {"ok": False, "error": peer_error.to_payload()},
+                )
+                return
             while line := await reader.readline():
                 try:
                     request = self.decode_request_line(line)
@@ -456,6 +475,23 @@ class LocalTerminalAgentServer:
             writer.close()
             with contextlib.suppress(ConnectionError, OSError):
                 await writer.wait_closed()
+
+    def peer_user_error(self, writer: asyncio.StreamWriter) -> AgentBridgeError | None:
+        if not self.require_peer_user:
+            return None
+        peer_uid = peer_uid_from_writer(writer)
+        if self.allowed_peer_uid is None or peer_uid != self.allowed_peer_uid:
+            return AgentBridgeError(
+                ErrorCode.PERMISSION_DENIED,
+                "本地 Terminal Agent 连接用户无权访问。",
+                next_step="请使用同一 OS 用户连接本地 Terminal Agent，或关闭 peer 用户校验。",
+                status_code=403,
+                details={
+                    "expected_uid": self.allowed_peer_uid,
+                    "peer_uid": peer_uid,
+                },
+            )
+        return None
 
     def handle_request_line(self, line: bytes) -> dict[str, Any]:
         try:
@@ -786,6 +822,82 @@ def actor_from_payload(payload: dict[str, Any]) -> Actor:
     return Actor(id=actor_id, roles={str(role) for role in roles_value})
 
 
+def peer_uid_from_writer(writer: asyncio.StreamWriter) -> int | None:
+    return peer_uid_from_socket(writer.get_extra_info("socket"))
+
+
+def peer_uid_from_socket(peer_socket: object) -> int | None:
+    peer_uid = peer_uid_from_getpeereid(peer_socket)
+    if peer_uid is not None:
+        return peer_uid
+
+    peer_uid = peer_uid_from_local_peercred(peer_socket)
+    if peer_uid is not None:
+        return peer_uid
+
+    if hasattr(socket, "SO_PEERCRED"):
+        credentials_size = struct.calcsize("3i")
+        try:
+            credentials = peer_socket.getsockopt(  # type: ignore[attr-defined]
+                socket.SOL_SOCKET,
+                socket.SO_PEERCRED,
+                credentials_size,
+            )
+        except (AttributeError, OSError):
+            fileno = getattr(peer_socket, "fileno", lambda: -1)()
+            if fileno < 0:
+                return None
+            try:
+                with socket.fromfd(fileno, socket.AF_UNIX, socket.SOCK_STREAM) as dup_socket:
+                    credentials = dup_socket.getsockopt(
+                        socket.SOL_SOCKET,
+                        socket.SO_PEERCRED,
+                        credentials_size,
+                    )
+            except OSError:
+                return None
+        _pid, uid, _gid = struct.unpack("3i", credentials)
+        return int(uid)
+
+    fileno = getattr(peer_socket, "fileno", lambda: -1)()
+    if fileno < 0:
+        return None
+    try:
+        with socket.fromfd(fileno, socket.AF_UNIX, socket.SOCK_STREAM) as dup_socket:
+            return peer_uid_from_getpeereid(dup_socket)
+    except OSError:
+        return None
+    return None
+
+
+def peer_uid_from_local_peercred(peer_socket: object) -> int | None:
+    if not hasattr(socket, "LOCAL_PEERCRED"):
+        return None
+    try:
+        credentials = peer_socket.getsockopt(  # type: ignore[attr-defined]
+            getattr(socket, "SOL_LOCAL", 0),
+            socket.LOCAL_PEERCRED,
+            struct.calcsize("2i"),
+        )
+    except (AttributeError, OSError):
+        return None
+    if len(credentials) < struct.calcsize("2i"):
+        return None
+    _version, uid = struct.unpack("2i", credentials[: struct.calcsize("2i")])
+    return int(uid)
+
+
+def peer_uid_from_getpeereid(peer_socket: object) -> int | None:
+    getpeereid = getattr(peer_socket, "getpeereid", None)
+    if not callable(getpeereid):
+        return None
+    try:
+        uid, _gid = getpeereid()
+        return int(uid)
+    except OSError:
+        return None
+
+
 def config_from_env() -> LocalTerminalAgentConfig:
     socket_path = Path(
         os.environ.get(
@@ -803,6 +915,7 @@ def config_from_env() -> LocalTerminalAgentConfig:
     return LocalTerminalAgentConfig(
         socket_path=socket_path,
         auth_token=token,
+        require_peer_user=env_bool("AGENTBRIDGE_LOCAL_REQUIRE_PEER_USER", default=True),
         lifecycle_poll_interval_seconds=env_float(
             "AGENTBRIDGE_TERMINAL_LIFECYCLE_POLL_INTERVAL_SECONDS",
             default=1.0,
@@ -837,6 +950,7 @@ async def async_main() -> None:
         control=control,
         terminal=terminal,
         auth_token=config.auth_token,
+        require_peer_user=config.require_peer_user,
         lifecycle_poll_interval_seconds=config.lifecycle_poll_interval_seconds,
         desktop_launcher=DesktopTerminalLauncher(
             enabled=config.desktop_auto_open_enabled,

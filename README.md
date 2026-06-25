@@ -116,6 +116,7 @@ Run the local Terminal Agent socket server:
 ```bash
 export AGENTBRIDGE_LOCAL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 export AGENTBRIDGE_TERMINAL_SOCKET="$HOME/.agentbridge/terminal-agent.sock"
+export AGENTBRIDGE_LOCAL_REQUIRE_PEER_USER=true
 export AGENTBRIDGE_TERMINAL_LIFECYCLE_POLL_INTERVAL_SECONDS=1
 export AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=false
 export AGENTBRIDGE_TERMINAL_AUTO_RESTART_MAX_ATTEMPTS=1
@@ -127,7 +128,13 @@ export AGENTBRIDGE_TERMINAL_OPEN_PRESET=auto
 uv run agentbridge-terminal-agent
 ```
 
-If `AGENTBRIDGE_LOCAL_TOKEN` is omitted, the daemon prints a generated token at startup. The socket file is created with mode `0600`. The JSONL socket protocol currently supports `health`, `lifecycle_status`, `run_lifecycle_monitor_once`, `start_session`, `restart_session`, `acquire_human_lease`, `release_lease`, `submit_input`, `snapshot`, `status`, cursor-based `read_output`, and multi-frame `stream_output`.
+If `AGENTBRIDGE_LOCAL_TOKEN` is omitted, the daemon prints a generated token at startup.
+The socket file is created with mode `0600`, and Unix-domain connections must come from
+the same OS user by default. Set `AGENTBRIDGE_LOCAL_REQUIRE_PEER_USER=false` only for
+platforms that cannot expose peer credentials. The JSONL socket protocol currently
+supports `health`, `lifecycle_status`, `run_lifecycle_monitor_once`, `start_session`,
+`restart_session`, `acquire_human_lease`, `release_lease`, `submit_input`, `snapshot`,
+`status`, cursor-based `read_output`, and multi-frame `stream_output`.
 
 Local clients open a fresh connection per request and wait briefly for the Unix socket to reappear, so short daemon restarts do not immediately fail console operations. With the PTY backend, the daemon owns a local child process, streams PTY output through cursor frames, and runs a lightweight lifecycle monitor that emits `terminal.exited` when a started terminal exits. When using persistent storage, the monitor reconstructs known started terminal generations from semantic events after a process restart; if a recovered generation has no observable backend session, it emits `terminal.lost` once so operators see that the local PTY state must be restarted. REST, WebSocket, and local daemon clients can call `restart_session` without a command to reuse the latest persisted `terminal.started` command, or pass an explicit command override. `AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=true` lets the lifecycle monitor perform that restart automatically, bounded by `AGENTBRIDGE_TERMINAL_AUTO_RESTART_MAX_ATTEMPTS` to avoid restart loops; `lifecycle_monitor_status()` also reports backend supervision state such as PTY host watchdog restart counts. With `AGENTBRIDGE_TERMINAL_AUTO_OPEN=true`, the daemon opens a visible local console after `start_session` or a successful `restart_session`. `AGENTBRIDGE_TERMINAL_OPEN_PRESET` supports `auto`, `macos-terminal`, `gnome-terminal`, `konsole`, `wezterm`, `alacritty`, `kitty`, and `xterm`; the custom `AGENTBRIDGE_TERMINAL_OPEN_COMMAND` template remains available and takes precedence when set. `{session_id}`, `{socket_path}`, and `{console_command}` placeholders are available for custom templates, while sensitive local token/socket state is passed through environment variables instead of argv. With the tmux backend, restarting the Agent process reuses an existing `agentbridge_<session-id>` tmux session instead of creating a duplicate.
 
