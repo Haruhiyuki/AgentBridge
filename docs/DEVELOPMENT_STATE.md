@@ -39,6 +39,9 @@ Implemented in this slice:
 - Terminal input request idempotency now prevents duplicate backend writes for repeated request IDs.
 - Terminal start/input/snapshot REST endpoints for MVP integration tests.
 - Terminal input enforcement against current writer lease owner and epoch, with rejected/accepted semantic events.
+- RenderDocument intermediate representation for bot-facing messages.
+- OneBot/plain-text fallback renderer with code block preservation, action listing, and deterministic message splitting.
+- Rendered event API through `GET /api/v1/sessions/{id}/rendered-events`.
 - Focused unit/API tests for the above.
 
 Not implemented yet:
@@ -49,6 +52,7 @@ Not implemented yet:
 - Admin Web UI.
 - Full RBAC/ABAC policy editor and multi-person approval flows.
 - WebSocket transport for Terminal Agent and Bot Gateway event delivery.
+- Rich platform-specific renderer delivery state, message editing, and button/card support.
 - Normalized relational query layer for large audit/event searches; the current SQLAlchemy repository persists Pydantic payload snapshots with indexed routing columns.
 - PostgreSQL-specific operational hardening, connection pooling policy, and migration deployment docs.
 
@@ -60,6 +64,7 @@ Not implemented yet:
 - SQLAlchemy persistence is currently a single-process write-through snapshot repository. It is sufficient for restart recovery and contract tests, but multi-process production deployments need row-level updates and stronger transaction boundaries.
 - Terminal input must pass through the AgentBridge gateway. Direct `tmux attach` remains outside the safety model because it bypasses writer leases.
 - The local Terminal Agent socket is token-gated and chmodded to `0600`; production hardening still needs OS user checks, token rotation, and Windows named-pipe parity.
+- Rendering is split into platform-neutral documents and platform renderers. The first renderer intentionally targets text fallback so unsupported Bot platforms still receive coherent output.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
 
 ## Verification
@@ -77,6 +82,6 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 
 1. Add tmux lifecycle supervision tests around the local daemon, including restart/reconnect behavior.
 2. Add a local Console Client that connects to the Unix socket, acquires human lease on first key, and forwards input.
-3. Add Bot Gateway event subscription and renderer intermediate representation.
-4. Add plain-text/OneBot V11 rendering with golden snapshots.
+3. Add Bot Gateway event subscription and delivery workers using the renderer.
+4. Add OneBot V11 adapter contract tests and message delivery idempotency.
 5. Expand policy engine to explicit role bindings, approval quorum, and risk levels.

@@ -16,6 +16,7 @@ This repository currently contains the first executable backend slice:
 - Optional SQLAlchemy persistence with an Alembic-managed schema.
 - Terminal input gateway with fake/tmux backends and writer-lease epoch enforcement.
 - Local Terminal Agent daemon over a token-protected Unix socket.
+- RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
 - REST API routes aligned with the design document's service interface.
 
 NoneBot integration, Admin Web, visible local console attachment, and real Claude/Codex adapters are planned next milestones.
@@ -70,6 +71,16 @@ uv run agentbridge-terminal-agent
 ```
 
 If `AGENTBRIDGE_LOCAL_TOKEN` is omitted, the daemon prints a generated token at startup. The socket file is created with mode `0600`. The JSONL socket protocol currently supports `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, and `snapshot`.
+
+## Rendering
+
+Semantic events can be mapped to platform-neutral render documents and plain-text fallback messages:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/sessions/<session-id>/rendered-events
+```
+
+The current renderer targets reliable text fallback for OneBot-style platforms. Rich buttons/cards and platform-specific delivery state are planned for the Bot Gateway layer.
 
 ## API Smoke Test
 

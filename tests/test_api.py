@@ -139,3 +139,40 @@ def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
     events_response = client.get(f"/api/v1/sessions/{session_id}/events", params={"after_seq": 1})
     assert events_response.status_code == 200
     assert [event["type"] for event in events_response.json()] == ["assistant.delta"]
+
+
+def test_rendered_events_api_returns_documents_and_text_messages(tmp_path):
+    client = TestClient(create_app())
+    chat = {
+        "bot_instance_id": "bot-test",
+        "platform": "onebot.v11",
+        "chat_space_id": "group-render",
+    }
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+
+    client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+            "actor": actor,
+            "chat": chat,
+            "idempotency_key": "render-project",
+        },
+    )
+    session_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": "/agent session new Render Session",
+            "actor": actor,
+            "chat": chat,
+            "idempotency_key": "render-session",
+        },
+    )
+    session_id = session_response.json()["data"]["session_id"]
+
+    rendered_response = client.get(f"/api/v1/sessions/{session_id}/rendered-events")
+
+    assert rendered_response.status_code == 200
+    rendered = rendered_response.json()
+    assert rendered[0]["document"]["blocks"][0]["title"] == "会话"
+    assert "Render Session" in rendered[0]["text_messages"][0]

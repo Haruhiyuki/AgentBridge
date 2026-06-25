@@ -20,6 +20,7 @@ from agentbridge.domain import (
 )
 from agentbridge.persistence import SQLAlchemyRepository
 from agentbridge.policy import Permission
+from agentbridge.renderer import OneBotV11TextRenderer, document_from_event
 from agentbridge.storage import InMemoryRepository
 from agentbridge.terminal_agent import (
     FakeTerminalBackend,
@@ -411,6 +412,33 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             limit=limit,
         )
         return [event.model_dump(mode="json") for event in events]
+
+    @app.get("/api/v1/sessions/{session_id}/rendered-events")
+    def list_rendered_events(
+        session_id: str,
+        control: ControlPlane = Depends(get_control),
+        after_seq: int | None = None,
+        limit: int = 100,
+    ):
+        control.repository.get_session(session_id)
+        events = control.repository.list_events(
+            session_id=session_id,
+            after_seq=after_seq,
+            limit=limit,
+        )
+        renderer = OneBotV11TextRenderer()
+        rendered = []
+        for event in events:
+            document = document_from_event(event)
+            rendered.append(
+                {
+                    "event_id": event.id,
+                    "seq": event.seq,
+                    "document": document.model_dump(mode="json"),
+                    "text_messages": renderer.render(document),
+                }
+            )
+        return rendered
 
     @app.post("/api/v1/sessions/{session_id}/events")
     def ingest_session_event(
