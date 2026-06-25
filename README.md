@@ -267,6 +267,15 @@ identity through
 `add_fingerprints` and/or `remove_fingerprints`. The rotation preserves the device key,
 allowed scopes, and resource allowlist, audits the added/removed fingerprints, and
 rejects removing the last credential from a certificate-only device.
+Set `AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE` and
+`AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE` to enable CSR-based certificate issuance through
+`POST /api/v1/device-identities/{device_id}/certificates/issue`. The CSR Common Name
+must exactly match `device_id`; issued certificates include the client-auth EKU, return
+the public certificate PEM once, store the SHA-256 fingerprint on the managed identity,
+and preserve existing key/scope/resource settings. `AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD`
+or `AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD_FILE` can unlock encrypted CA keys, and
+`AGENTBRIDGE_DEVICE_CERT_DEFAULT_VALIDITY_DAYS` defaults new certificates to 30 days
+when the request omits `validity_days`.
 
 For deployments behind a TLS-terminating reverse proxy that verifies client
 certificates, set `AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS` or

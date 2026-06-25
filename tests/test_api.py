@@ -4,7 +4,12 @@ import hashlib
 import hmac
 import json
 import threading
+from datetime import UTC, datetime, timedelta
 
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from fastapi.testclient import TestClient
 
 from agentbridge.api import create_app
@@ -43,6 +48,47 @@ def _create_session_with_project(
     )
     assert session_response.status_code == 200
     return str(session_response.json()["data"]["session_id"])
+
+
+def _write_test_ca(tmp_path):
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "AgentBridge Test CA")])
+    ca_certificate = (
+        x509.CertificateBuilder()
+        .subject_name(ca_subject)
+        .issuer_name(ca_subject)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(UTC) - timedelta(minutes=5))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=30))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .sign(ca_key, hashes.SHA256())
+    )
+    ca_certificate_path = tmp_path / "device-ca.pem"
+    ca_key_path = tmp_path / "device-ca-key.pem"
+    ca_certificate_path.write_bytes(ca_certificate.public_bytes(serialization.Encoding.PEM))
+    ca_key_path.write_bytes(
+        ca_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    return ca_certificate_path, ca_key_path
+
+
+def _device_csr_pem(device_id: str) -> str:
+    device_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    csr = (
+        x509.CertificateSigningRequestBuilder()
+        .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, device_id)]))
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName(device_id)]),
+            critical=False,
+        )
+        .sign(device_key, hashes.SHA256())
+    )
+    return csr.public_bytes(serialization.Encoding.PEM).decode("utf-8")
 
 
 def test_health_endpoint_reports_memory_storage():
@@ -722,6 +768,160 @@ def test_managed_device_identity_rejects_removing_last_certificate_only_fingerpr
     assert rotate_response.status_code == 400
     assert rotate_response.json()["error_code"] == "COMMAND_ARGUMENT_INVALID"
     assert still_authorized_response.status_code == 200
+
+
+def test_managed_device_identity_issues_ca_backed_certificate(monkeypatch, tmp_path):
+    ca_certificate_path, ca_key_path = _write_test_ca(tmp_path)
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE", str(ca_certificate_path))
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE", str(ca_key_path))
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_DEFAULT_VALIDITY_DAYS", "14")
+    control = ControlPlane()
+    client = TestClient(create_app(control))
+    actor = {"id": "security-admin", "roles": ["admin"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": actor,
+            "device_id": "issued-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "device_manage"],
+            "trace_id": "managed-device-issue-create",
+        },
+    )
+    issue_response = client.post(
+        "/api/v1/device-identities/issued-device/certificates/issue",
+        json={
+            "actor": actor,
+            "csr_pem": _device_csr_pem("issued-device"),
+            "validity_days": 7,
+            "trace_id": "managed-device-cert-issue",
+        },
+        headers={
+            "x-agentbridge-device-id": "issued-device",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+    issued = issue_response.json()
+    issued_certificate = x509.load_pem_x509_certificate(
+        issued["certificate_pem"].encode("utf-8")
+    )
+    issued_fingerprint = issued_certificate.fingerprint(hashes.SHA256()).hex()
+    extended_key_usage = issued_certificate.extensions.get_extension_for_class(
+        x509.ExtendedKeyUsage
+    ).value
+    certificate_response = client.get(
+        "/api/v1/commands",
+        headers={"x-agentbridge-client-cert-fingerprint": issued_fingerprint},
+    )
+    audit_events = control.repository.list_audit_events(
+        action="device_identity.certificate_issued"
+    )
+
+    assert create_response.status_code == 200
+    assert issue_response.status_code == 200
+    assert issued["certificate_fingerprint"] == issued_fingerprint
+    assert issued["device_identity"]["certificate_fingerprints"] == [issued_fingerprint]
+    assert issued["device_identity"]["allowed_scopes"] == ["device_manage", "http_api"]
+    assert ExtendedKeyUsageOID.CLIENT_AUTH in extended_key_usage
+    assert certificate_response.status_code == 200
+    assert len(audit_events) == 1
+    assert audit_events[0].details["certificate_fingerprint"] == issued_fingerprint
+    assert audit_events[0].details["device_id"] == "issued-device"
+
+
+def test_managed_device_identity_rejects_certificate_csr_for_wrong_device(
+    monkeypatch,
+    tmp_path,
+):
+    ca_certificate_path, ca_key_path = _write_test_ca(tmp_path)
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE", str(ca_certificate_path))
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE", str(ca_key_path))
+    client = TestClient(create_app())
+    actor = {"id": "security-admin", "roles": ["admin"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": actor,
+            "device_id": "issued-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "device_manage"],
+            "trace_id": "managed-device-wrong-csr-create",
+        },
+    )
+    issue_response = client.post(
+        "/api/v1/device-identities/issued-device/certificates/issue",
+        json={
+            "actor": actor,
+            "csr_pem": _device_csr_pem("other-device"),
+            "trace_id": "managed-device-wrong-csr-issue",
+        },
+        headers={
+            "x-agentbridge-device-id": "issued-device",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+    identity_response = client.get(
+        "/api/v1/device-identities",
+        headers={
+            "x-agentbridge-device-id": "issued-device",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+
+    assert create_response.status_code == 200
+    assert issue_response.status_code == 400
+    assert issue_response.json()["error_code"] == "COMMAND_ARGUMENT_INVALID"
+    assert issue_response.json()["details"]["csr_common_name"] == "other-device"
+    assert identity_response.json()[0]["certificate_fingerprints"] == []
+
+
+def test_managed_device_identity_rejects_certificate_issue_with_mismatched_ca_key(
+    monkeypatch,
+    tmp_path,
+):
+    ca_certificate_path, _ca_key_path = _write_test_ca(tmp_path)
+    wrong_ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    wrong_ca_key_path = tmp_path / "wrong-device-ca-key.pem"
+    wrong_ca_key_path.write_bytes(
+        wrong_ca_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE", str(ca_certificate_path))
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE", str(wrong_ca_key_path))
+    client = TestClient(create_app())
+    actor = {"id": "security-admin", "roles": ["admin"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": actor,
+            "device_id": "issued-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "device_manage"],
+            "trace_id": "managed-device-mismatched-ca-create",
+        },
+    )
+    issue_response = client.post(
+        "/api/v1/device-identities/issued-device/certificates/issue",
+        json={
+            "actor": actor,
+            "csr_pem": _device_csr_pem("issued-device"),
+            "trace_id": "managed-device-mismatched-ca-issue",
+        },
+        headers={
+            "x-agentbridge-device-id": "issued-device",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+
+    assert create_response.status_code == 200
+    assert issue_response.status_code == 503
+    assert issue_response.json()["message"] == "设备证书 CA 私钥与 CA 证书不匹配。"
 
 
 def test_managed_device_identity_requires_device_manage_scope_for_device_api():
@@ -2031,6 +2231,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "/api/v1/device-identities" in html
     assert "async function loadDevices()" in html
     assert "async function upsertDevice()" in html
+    assert "async function issueDeviceCertificate()" in html
     assert "async function rotateDeviceCertificates()" in html
     assert "async function revokeDevice()" in html
     assert "auth-device-key" in html
@@ -2061,6 +2262,9 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "certificate-fingerprints" in html
     assert "certificate-fingerprints-add" in html
     assert "certificate-fingerprints-remove" in html
+    assert "certificate-csr" in html
+    assert "certificate-validity-days" in html
+    assert "/certificates/issue" in html
     assert "/certificate-fingerprints/rotate" in html
     assert "allowed_resource_ids" in html
     assert "generated-key" in html

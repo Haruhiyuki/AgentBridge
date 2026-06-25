@@ -40,6 +40,7 @@ from agentbridge.bot_gateway import (
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
 from agentbridge.device_auth import normalize_certificate_fingerprint, verify_device_key
+from agentbridge.device_certificates import DeviceCertificateIssuer
 from agentbridge.domain import (
     AccessPolicyEffect,
     Actor,
@@ -427,6 +428,15 @@ class RotateDeviceCertificateFingerprintsRequest(BaseModel):
     add_fingerprints: set[str] = Field(default_factory=set)
     remove_fingerprints: set[str] = Field(default_factory=set)
     trace_id: str = "device-certificate-rotation-api"
+
+
+class IssueDeviceCertificateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    csr_pem: str
+    validity_days: int | None = Field(default=None, ge=1)
+    trace_id: str = "device-certificate-issue-api"
 
 
 class GroupRoleChangeRequest(BaseModel):
@@ -959,6 +969,26 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             trace_id=payload.trace_id,
         )
         return device_identity_public_payload(identity)
+
+    @app.post("/api/v1/device-identities/{device_id}/certificates/issue")
+    def issue_device_certificate(
+        device_id: str,
+        payload: IssueDeviceCertificateRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        identity, issued_certificate = control.issue_device_identity_certificate(
+            actor=payload.actor.to_actor(),
+            device_id=device_id,
+            csr_pem=payload.csr_pem,
+            issuer=create_device_certificate_issuer_from_env(),
+            validity_days=payload.validity_days,
+            trace_id=payload.trace_id,
+        )
+        response = {
+            "device_identity": device_identity_public_payload(identity),
+            **issued_certificate.to_payload(),
+        }
+        return response
 
     @app.get("/api/v1/sessions")
     def list_sessions(
@@ -3390,6 +3420,55 @@ def create_approval_policy_from_env() -> ApprovalPolicy:
                 "low=1,medium=1,high=1,critical=2"
             ) from exc
     return ApprovalPolicy(quorum_by_risk=quorum_by_risk)
+
+
+def create_device_certificate_issuer_from_env() -> DeviceCertificateIssuer:
+    ca_certificate_file = os.environ.get("AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE", "")
+    ca_private_key_file = os.environ.get("AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE", "")
+    if not ca_certificate_file.strip() or not ca_private_key_file.strip():
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "设备证书签发 CA 未配置。",
+            next_step=(
+                "请设置 AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE 和 "
+                "AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE。"
+            ),
+            status_code=503,
+        )
+    return DeviceCertificateIssuer.from_files(
+        ca_certificate_path=Path(ca_certificate_file).expanduser(),
+        ca_private_key_path=Path(ca_private_key_file).expanduser(),
+        ca_private_key_password=device_certificate_ca_key_password_from_env(),
+        default_validity_days=device_certificate_default_validity_days_from_env(),
+    )
+
+
+def device_certificate_ca_key_password_from_env() -> str | None:
+    password = os.environ.get("AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD", "")
+    password_file = os.environ.get("AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD_FILE", "")
+    if password:
+        return password
+    if not password_file.strip():
+        return None
+    try:
+        return Path(password_file).expanduser().read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "设备证书 CA 私钥密码文件不可读。",
+            next_step="请检查 AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD_FILE 路径和权限。",
+            status_code=503,
+        ) from exc
+
+
+def device_certificate_default_validity_days_from_env() -> int:
+    return max(
+        1,
+        env_int(
+            "AGENTBRIDGE_DEVICE_CERT_DEFAULT_VALIDITY_DAYS",
+            default=30,
+        ),
+    )
 
 
 def create_terminal_backend_from_env():

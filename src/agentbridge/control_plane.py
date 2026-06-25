@@ -9,6 +9,10 @@ from agentbridge.device_auth import (
     hash_device_key,
     normalize_certificate_fingerprint,
 )
+from agentbridge.device_certificates import (
+    DeviceCertificateIssuer,
+    IssuedDeviceCertificate,
+)
 from agentbridge.domain import (
     AccessPolicyEffect,
     AccessPolicyRule,
@@ -2033,6 +2037,82 @@ class ControlPlane:
             },
         )
         return identity
+
+    def issue_device_identity_certificate(
+        self,
+        *,
+        actor: Actor,
+        device_id: str,
+        csr_pem: str,
+        issuer: DeviceCertificateIssuer,
+        validity_days: int | None,
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> tuple[DeviceIdentity, IssuedDeviceCertificate]:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        normalized_device_id = self._validated_device_id(device_id)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.DEVICE_MANAGE,
+            resource_type="device_identity",
+            resource_id=normalized_device_id,
+            attributes={
+                "operation": "issue_device_identity_certificate",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
+        existing_identity = self.repository.get_device_identity(normalized_device_id)
+        if existing_identity.status != DeviceIdentityStatus.ACTIVE:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "已撤销的设备身份不能签发新证书。",
+                next_step="请创建新的设备身份，或使用仍处于 active 状态的设备身份。",
+            )
+        issued_certificate = issuer.issue(
+            device_id=normalized_device_id,
+            csr_pem=csr_pem,
+            validity_days=validity_days,
+        )
+        next_fingerprints = set(existing_identity.certificate_fingerprints)
+        next_fingerprints.add(issued_certificate.certificate_fingerprint)
+        identity = self.repository.upsert_device_identity(
+            device_id=existing_identity.device_id,
+            display_name=existing_identity.display_name,
+            allowed_scopes=set(existing_identity.allowed_scopes),
+            allowed_resource_ids=set(existing_identity.allowed_resource_ids),
+            certificate_fingerprints=next_fingerprints,
+            updated_by=effective_actor.id,
+        )
+        self.audit(
+            action="device_identity.certificate_issued",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            details={
+                "device_identity_id": identity.id,
+                "device_id": identity.device_id,
+                "certificate_fingerprint": issued_certificate.certificate_fingerprint,
+                "serial_number": issued_certificate.serial_number,
+                "not_before": issued_certificate.not_before.isoformat(),
+                "not_after": issued_certificate.not_after.isoformat(),
+                "certificate_fingerprint_count": len(identity.certificate_fingerprints),
+            },
+        )
+        self.emit_event(
+            event_type="device_identity.certificate_issued",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            payload={
+                "device_identity_id": identity.id,
+                "device_id": identity.device_id,
+                "certificate_fingerprint": issued_certificate.certificate_fingerprint,
+                "serial_number": issued_certificate.serial_number,
+                "not_after": issued_certificate.not_after.isoformat(),
+                "updated_by": effective_actor.id,
+            },
+        )
+        return identity, issued_certificate
 
     def revoke_device_identity(
         self,

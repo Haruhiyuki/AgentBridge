@@ -3245,7 +3245,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
       background: var(--panel-muted);
       flex-wrap: wrap;
     }
-    button, input {
+    button, input, textarea {
       min-height: 34px;
       padding: 6px 10px;
       border: 1px solid var(--line);
@@ -3253,6 +3253,11 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
       background: #fff;
       color: var(--text);
       font: inherit;
+    }
+    textarea {
+      resize: vertical;
+      min-height: 132px;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
     button {
       cursor: pointer;
@@ -3739,6 +3744,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       <div class="toolbar">
         <button id="new-device" type="button">New</button>
         <button id="save-device" class="primary" type="button">Save / Rotate Key</button>
+        <button id="issue-certificate" type="button">Issue Certificate</button>
         <button id="rotate-certificates" type="button">Rotate Certificates</button>
         <button id="revoke-device" class="danger" type="button">Revoke</button>
       </div>
@@ -3789,6 +3795,17 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
         <label class="full">
           Certificate Fingerprints To Remove
           <input id="certificate-fingerprints-remove" placeholder="old fingerprint(s)">
+        </label>
+        <label>
+          Certificate Validity Days
+          <input id="certificate-validity-days" type="number" min="1" placeholder="default">
+        </label>
+        <label class="full">
+          Certificate CSR PEM
+          <textarea
+            id="certificate-csr"
+            placeholder="-----BEGIN CERTIFICATE REQUEST-----"
+          ></textarea>
         </label>
         <label class="full">
           New Device Key
@@ -3926,6 +3943,8 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       ).join(",");
       $("certificate-fingerprints-add").value = "";
       $("certificate-fingerprints-remove").value = "";
+      $("certificate-validity-days").value = "";
+      $("certificate-csr").value = "";
       $("device-key").value = "";
       $("selected").textContent = JSON.stringify(device, null, 2);
       document.querySelectorAll("#devices tr").forEach((row) => {
@@ -3942,6 +3961,8 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       $("certificate-fingerprints").value = "";
       $("certificate-fingerprints-add").value = "";
       $("certificate-fingerprints-remove").value = "";
+      $("certificate-validity-days").value = "";
+      $("certificate-csr").value = "";
       $("device-key").value = "";
       $("selected").textContent = "{}";
       $("generated-key").textContent = "{}";
@@ -3984,6 +4005,42 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       selectedDeviceId = saved.device_id;
       await loadDevices();
       setStatus(`Saved ${saved.device_id}`);
+    }
+
+    async function issueDeviceCertificate() {
+      const deviceId = $("device-id").value.trim();
+      const csrPem = $("certificate-csr").value.trim();
+      if (!deviceId) throw new Error("Device ID is required");
+      if (!csrPem) throw new Error("Certificate CSR PEM is required");
+      const validityDays = Number.parseInt($("certificate-validity-days").value || "", 10);
+      const payload = {
+        actor: actor(),
+        csr_pem: csrPem,
+        validity_days: Number.isFinite(validityDays) ? validityDays : null,
+        trace_id: "admin-ui-device-cert-issue",
+      };
+      const issued = await requestJson(
+        `/api/v1/device-identities/${encodeURIComponent(deviceId)}` +
+          "/certificates/issue",
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+      );
+      $("certificate-fingerprints").value = (
+        issued.device_identity.certificate_fingerprints || []
+      ).join(",");
+      $("certificate-csr").value = "";
+      $("generated-key").textContent = JSON.stringify({
+        device_id: issued.device_identity.device_id,
+        certificate_fingerprint: issued.certificate_fingerprint,
+        certificate_pem: issued.certificate_pem,
+        ca_certificate_pem: issued.ca_certificate_pem,
+        not_after: issued.not_after,
+      }, null, 2);
+      selectedDeviceId = issued.device_identity.device_id;
+      await loadDevices();
+      setStatus(`Issued certificate for ${issued.device_identity.device_id}`);
     }
 
     async function rotateDeviceCertificates() {
@@ -4043,6 +4100,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
     $("include-revoked").addEventListener("change", () => run(loadDevices));
     $("new-device").addEventListener("click", newDevice);
     $("save-device").addEventListener("click", () => run(upsertDevice));
+    $("issue-certificate").addEventListener("click", () => run(issueDeviceCertificate));
     $("rotate-certificates").addEventListener(
       "click",
       () => run(rotateDeviceCertificates),
