@@ -2226,6 +2226,13 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         method == "POST"
         and len(path_segments) >= 6
         and path_segments[:4] == ["", "api", "v1", "sessions"]
+        and path_segments[5] == "events"
+    ):
+        return DeviceIdentityScope.SESSION_EVENT_INGEST
+    if (
+        method == "POST"
+        and len(path_segments) >= 6
+        and path_segments[:4] == ["", "api", "v1", "sessions"]
         and (
             path_segments[5] == "close"
             or (

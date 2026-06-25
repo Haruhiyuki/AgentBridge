@@ -1044,6 +1044,123 @@ def test_managed_device_identity_session_send_scope_allows_turn_writes(
     assert turn_response.json()["status"] == "queued"
 
 
+def test_managed_device_identity_requires_session_event_ingest_scope_for_event_writes(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-event-ingest-scope",
+        prefix="event-ingest-scope",
+        name="Event Ingest Scope",
+    )
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-event-ingest-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "event-ingest-scope-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-event-ingest-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    cert_headers = {"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"}
+    replay_response = client.get(
+        f"/api/v1/sessions/{session_id}/events",
+        headers=key_headers,
+    )
+    key_ingest_response = client.post(
+        f"/api/v1/sessions/{session_id}/events",
+        json={
+            "type": "assistant.delta",
+            "source": "terminal_agent",
+            "trace_id": "event-ingest-scope-denied-key",
+            "idempotency_key": "event-ingest-scope-denied-key",
+            "payload": {"text": "denied via key"},
+        },
+        headers=key_headers,
+    )
+    cert_ingest_response = client.post(
+        f"/api/v1/sessions/{session_id}/events",
+        json={
+            "type": "assistant.delta",
+            "source": "terminal_agent",
+            "trace_id": "event-ingest-scope-denied-cert",
+            "idempotency_key": "event-ingest-scope-denied-cert",
+            "payload": {"text": "denied via certificate"},
+        },
+        headers=cert_headers,
+    )
+
+    assert create_identity_response.status_code == 200
+    assert replay_response.status_code == 200
+    assert key_ingest_response.status_code == 403
+    assert cert_ingest_response.status_code == 403
+
+
+def test_managed_device_identity_session_event_ingest_scope_allows_event_writes(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-event-ingest-manager",
+        prefix="event-ingest-manager",
+        name="Event Ingest Manager",
+    )
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "event-ingest-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "session_event_ingest"],
+            "trace_id": "event-ingest-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "event-ingest-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    ingest_response = client.post(
+        f"/api/v1/sessions/{session_id}/events",
+        json={
+            "type": "assistant.delta",
+            "source": "terminal_agent",
+            "trace_id": "event-ingest-manager-event",
+            "idempotency_key": "event-ingest-manager-event",
+            "payload": {"text": "hello"},
+        },
+        headers=headers,
+    )
+    replay_response = client.get(
+        f"/api/v1/sessions/{session_id}/events",
+        headers=headers,
+    )
+
+    assert create_identity_response.status_code == 200
+    assert ingest_response.status_code == 200
+    assert ingest_response.json()["type"] == "assistant.delta"
+    assert ingest_response.json()["source"] == "terminal_agent"
+    assert ingest_response.json()["payload"] == {"text": "hello"}
+    assert replay_response.status_code == 200
+    assert any(
+        event["id"] == ingest_response.json()["id"]
+        for event in replay_response.json()
+    )
+
+
 def test_project_session_admin_ui_serves_dashboard():
     client = TestClient(create_app())
 
@@ -1103,6 +1220,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "project_manage" in html
     assert "session_manage" in html
     assert "session_send" in html
+    assert "session_event_ingest" in html
     assert "interaction_manage" in html
     assert "terminal_control" in html
     assert "certificate-fingerprints" in html

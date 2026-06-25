@@ -3444,6 +3444,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       "project_manage",
       "session_manage",
       "session_send",
+      "session_event_ingest",
       "interaction_manage",
       "terminal_control",
       "session_events_ws",
