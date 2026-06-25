@@ -20,6 +20,7 @@ from agentbridge.domain import (
     AuditOutcome,
     ChatContext,
     DeviceIdentity,
+    DeviceIdentityScope,
     ErrorCode,
     GroupRoleBinding,
     Interaction,
@@ -1452,11 +1453,13 @@ class ControlPlane:
         device_id: str,
         display_name: str | None = None,
         device_key: str | None = None,
+        allowed_scopes: set[DeviceIdentityScope] | None = None,
         trace_id: str,
         chat_context_id: str | None = None,
     ) -> tuple[DeviceIdentity, str]:
         effective_actor = self.effective_actor(actor, chat_context_id)
         normalized_device_id = self._validated_device_id(device_id)
+        normalized_scopes = self._validated_device_scopes(allowed_scopes)
         self.require_collection_permission(
             effective_actor,
             Permission.DEVICE_MANAGE,
@@ -1485,8 +1488,10 @@ class ControlPlane:
             ),
             key_salt=salt,
             key_iterations=DEFAULT_DEVICE_KEY_ITERATIONS,
+            allowed_scopes=normalized_scopes,
             updated_by=effective_actor.id,
         )
+        allowed_scope_values = sorted(scope.value for scope in identity.allowed_scopes)
         self.audit(
             action="device_identity.upserted",
             actor=effective_actor,
@@ -1498,6 +1503,7 @@ class ControlPlane:
                 "device_id": identity.device_id,
                 "display_name": identity.display_name,
                 "status": identity.status.value,
+                "allowed_scopes": allowed_scope_values,
             },
         )
         self.emit_event(
@@ -1509,6 +1515,7 @@ class ControlPlane:
                 "device_id": identity.device_id,
                 "display_name": identity.display_name,
                 "status": identity.status.value,
+                "allowed_scopes": allowed_scope_values,
                 "updated_by": effective_actor.id,
             },
         )
@@ -1800,6 +1807,24 @@ class ControlPlane:
                 ErrorCode.COMMAND_ARGUMENT_INVALID,
                 "设备 ID 不能为空。",
                 next_step="请提供稳定的 device_id，例如 macbook-pro。",
+            )
+        return normalized
+
+    def _validated_device_scopes(
+        self,
+        scopes: set[DeviceIdentityScope] | None,
+    ) -> set[DeviceIdentityScope] | None:
+        if scopes is None:
+            return None
+        normalized = set(scopes)
+        if not normalized:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "设备授权 scope 不能为空。",
+                next_step="请至少选择一个 transport scope，或省略 allowed_scopes 使用默认值。",
+                details={
+                    "allowed_scopes": sorted(scope.value for scope in DeviceIdentityScope)
+                },
             )
         return normalized
 

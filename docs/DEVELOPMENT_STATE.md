@@ -38,7 +38,7 @@ Implemented in this slice:
 - Optional `AGENTBRIDGE_API_TOKEN` authentication for REST API routes other than `/api/v1/health`, accepting bearer tokens or `X-AgentBridge-API-Token`, with unlocked Admin Web cookies accepted when `AGENTBRIDGE_ADMIN_TOKEN` is configured; if only `AGENTBRIDGE_API_TOKEN` is configured, it also gates and unlocks the built-in Admin Web pages.
 - Optional `AGENTBRIDGE_WS_TOKEN` authentication for session event, rendered event, and terminal command WebSocket routes; same-origin browser sessions with an unlocked Admin Web cookie can connect to protected WebSocket streams without exposing the token to page JavaScript.
 - Optional `AGENTBRIDGE_DEVICE_KEYS` JSON mapping for per-device HTTP and WebSocket keys, using device ID plus device key rather than one shared bearer token.
-- Database-managed device identities through `/api/v1/device-identities`, storing salted PBKDF2 key hashes, returning generated keys only once, supporting revoke, and authorizing REST/WebSocket clients through the same device ID plus device key transport fields.
+- Database-managed device identities through `/api/v1/device-identities`, storing salted PBKDF2 key hashes, returning generated keys only once, supporting revoke, authorizing REST/WebSocket clients through the same device ID plus device key transport fields, enforcing coarse transport scopes, and tracking `last_used_at` on successful managed-device authentication.
 - SQLAlchemy-backed repository enabled with `AGENTBRIDGE_DATABASE_URL`.
 - Alembic initial migration for projects, workspaces, chat contexts, bindings, sessions, turns, interactions, writer leases, command idempotency records, audit events, and semantic events.
 - Recovery tests proving persisted control-plane state survives repository re-instantiation.
@@ -136,7 +136,7 @@ Implemented in this slice:
 - Built-in admin entrypoint at `/admin`, project/session operations dashboard at `/admin/projects`, interaction/approval operations dashboard at `/admin/interactions`, audit/event exploration dashboard at `/admin/audit`, access policy editor at `/admin/access-policy`, terminal lifecycle dashboard at `/admin/terminal-lifecycle`, device identity management dashboard at `/admin/device-identities`, and Bot delivery operations dashboard at `/admin/bot-delivery`; focused route coverage verifies the admin pages link to the underlying operational APIs.
 - Audit/event Admin Web page exposes the cross-stream semantic event search API with project, session, type, source, trace, turn, interaction, and limit filters.
 - Audit/event Admin Web page can live-tail a selected session's semantic event stream over `/api/v1/sessions/{id}/events/ws`, while retaining manual REST replay for bounded event history inspection.
-- Device Identity Admin Web page lists active/revoked managed devices, creates or rotates device keys, displays the generated key once, and revokes selected device identities through the managed device API.
+- Device Identity Admin Web page lists active/revoked managed devices with allowed transport scopes and last-used timestamps, creates or rotates device keys, displays the generated key once, and revokes selected device identities through the managed device API.
 - Optional `AGENTBRIDGE_ADMIN_TOKEN` browser gate for `/admin*` pages, accepting one-time `admin_token` query unlock, HttpOnly/SameSite cookie sessions, bearer tokens, or `X-AgentBridge-Admin-Token` headers.
 - Alembic migration `0007_access_policy_rules` persists access policy rules.
 - Alembic migration `0008_semantic_event_query_columns` adds indexed semantic event routing columns for source, trace, project, session, turn, and interaction search.
@@ -151,7 +151,7 @@ Not implemented yet:
 - Richer OneBot renderer/action adapter and deeper native NoneBot lifecycle helpers beyond matcher registration.
 - Real Claude Code/Codex adapters.
 - Broader Admin Web UI beyond project/session operations, interaction/approval operations, audit/event live exploration, access policy, terminal lifecycle, device identity management, and Bot delivery operations.
-- Production API/WebSocket hardening with mTLS, device certificates, scoped device authorization, and rotation workflows beyond the current token/device-key gates.
+- Production API/WebSocket hardening with mTLS, device certificates, finer-grained resource/action-scoped device authorization, and rotation workflows beyond the current token/device-key and transport-scope gates.
 - Platform-specific rich card/button transport adapters and outbound message edit extensions beyond standard OneBot V11.
 - Native action/callback support for platforms that expose buttons or interactions.
 - Broader per-adapter action callback state beyond command-carrying callbacks.
@@ -196,6 +196,7 @@ Not implemented yet:
 - Access policy rules are stored separately from approval quorum overrides. Approval policy answers "how many votes"; access policy answers "who may do which action".
 - Access policy evaluation is deny-first and then allow-before-RBAC. This makes temporary freezes explicit while preserving the existing role matrix as the default baseline.
 - Access policy enforcement uses stable resource attributes only: IDs, status, project/session linkage, visibility, agent type, chat context, operation, risk level, and owner metadata. It intentionally avoids volatile or sensitive filesystem path values as policy attributes.
+- Managed device identity scopes are coarse transport gates (`http_api`, event WebSockets, terminal WebSocket, and Bot Gateway WebSocket), not a replacement for actor RBAC, access-policy rules, or future resource-level device certificates.
 - The Admin Web UI is intentionally API-backed and build-free for now. It has a small `/admin` entrypoint, project/session operations for project inventory, workspace registration, session creation, and session closure, interaction/approval operations for listing, filtering, creating, answering, voting, and cancelling interactions, audit/event exploration for filtered audit records plus semantic event search/replay/live tail, access policy editing, terminal lifecycle inspection/run-once, device identity create/rotate/revoke, and Bot delivery operations for records, retry worker status, due retry, and rate limits. `AGENTBRIDGE_ADMIN_TOKEN` gates the built-in browser pages with token unlock plus an HttpOnly/SameSite cookie while preserving zero-config local development when unset. The optional REST API token gate accepts that unlocked admin cookie so browser-admin API calls are covered by the same gate, protected WebSocket event streams accept the cookie for same-origin Admin pages, and `AGENTBRIDGE_API_TOKEN` can serve as the admin unlock token when no separate admin token is configured. Richer dashboards remain future work.
 - Session creation is evaluated against the target project because the session resource ID does not exist yet. Terminal control is evaluated as `resource_type=terminal` with the session ID so terminal-specific rules do not have to overmatch ordinary session sends.
 - WebSocket session streams are read-side transports over immutable semantic events. They use `after_seq` cursors for replay/reconnect and do not mutate Bot delivery records.
@@ -222,6 +223,6 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 
 1. Harden PTY host recovery beyond watchdog plus command restart, including cross-platform socket/pipe cleanup, Windows ConPTY/Named Pipe parity, and clearer operator policy for non-idempotent CLI restarts.
 2. Expand the Admin Web UI beyond project/session operations, interaction/approval operations, audit/event live/search exploration, access policy, terminal lifecycle, device identity management, and Bot delivery operations, including additional live dashboards and normalized payload search.
-3. Replace the MVP HTTP API/WebSocket/admin/device-key gates with mTLS, device certificates, scoped device authorization, and rotation workflows.
+3. Replace the MVP HTTP API/WebSocket/admin/device-key gates with mTLS, device certificates, finer-grained resource/action-scoped device authorization, and rotation workflows.
 4. Add platform-specific rich card/button transport adapters and outbound edit extensions.
 5. Add deeper native NoneBot lifecycle hooks once a stronger dependency boundary is selected.

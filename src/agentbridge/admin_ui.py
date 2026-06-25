@@ -3054,6 +3054,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
               <th>Device ID</th>
               <th>Name</th>
               <th>Status</th>
+              <th>Scopes</th>
               <th>Created</th>
               <th>Last Used</th>
             </tr>
@@ -3094,6 +3095,10 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
           <input id="display-name" autocomplete="off">
         </label>
         <label class="full">
+          Allowed Scopes
+          <input id="allowed-scopes">
+        </label>
+        <label class="full">
           New Device Key
           <input
             id="device-key"
@@ -3110,6 +3115,13 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
+    const defaultScopes = [
+      "http_api",
+      "session_events_ws",
+      "rendered_events_ws",
+      "terminal_ws",
+      "bot_gateway_ws",
+    ].join(",");
     let selectedDeviceId = "";
 
     function csv(value) {
@@ -3169,6 +3181,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
           device.device_id,
           device.display_name || "",
           device.status,
+          (device.allowed_scopes || []).join(","),
           device.created_at || "",
           device.last_used_at || "",
         ]) {
@@ -3188,6 +3201,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       selectedDeviceId = device.device_id;
       $("device-id").value = device.device_id;
       $("display-name").value = device.display_name || "";
+      $("allowed-scopes").value = (device.allowed_scopes || []).join(",");
       $("device-key").value = "";
       $("selected").textContent = JSON.stringify(device, null, 2);
       document.querySelectorAll("#devices tr").forEach((row) => {
@@ -3199,6 +3213,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       selectedDeviceId = "";
       $("device-id").value = "";
       $("display-name").value = "";
+      $("allowed-scopes").value = defaultScopes;
       $("device-key").value = "";
       $("selected").textContent = "{}";
       $("generated-key").textContent = "{}";
@@ -3220,6 +3235,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
         device_id: deviceId,
         display_name: $("display-name").value.trim() || null,
         device_key: $("device-key").value.trim() || null,
+        allowed_scopes: csv($("allowed-scopes").value),
         trace_id: "admin-ui-device-upsert",
       };
       const saved = await requestJson("/api/v1/device-identities", {
@@ -3271,6 +3287,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
     $("new-device").addEventListener("click", newDevice);
     $("save-device").addEventListener("click", () => run(upsertDevice));
     $("revoke-device").addEventListener("click", () => run(revokeDevice));
+    $("allowed-scopes").value = defaultScopes;
     loadDevices().catch((error) => {
       $("error").textContent = error.message;
       setStatus(error.message);

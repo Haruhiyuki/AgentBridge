@@ -44,6 +44,7 @@ from agentbridge.domain import (
     BotDeliveryResultAction,
     BotDeliveryStatus,
     DeviceIdentity,
+    DeviceIdentityScope,
     DeviceIdentityStatus,
     ErrorCode,
     InteractionStatus,
@@ -368,6 +369,7 @@ class DeviceIdentityRequest(BaseModel):
     device_id: str
     display_name: str | None = None
     device_key: str | None = None
+    allowed_scopes: set[DeviceIdentityScope] | None = None
     trace_id: str = "device-identity-api"
 
 
@@ -861,6 +863,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             device_id=payload.device_id,
             display_name=payload.display_name,
             device_key=payload.device_key,
+            allowed_scopes=payload.allowed_scopes,
             trace_id=payload.trace_id,
         )
         response = device_identity_public_payload(identity)
@@ -1602,6 +1605,7 @@ def device_identity_public_payload(identity: DeviceIdentity) -> dict[str, object
         "device_id": identity.device_id,
         "display_name": identity.display_name,
         "status": identity.status.value,
+        "allowed_scopes": sorted(scope.value for scope in identity.allowed_scopes),
         "created_by": identity.created_by,
         "created_at": identity.created_at.isoformat(),
         "revoked_at": identity.revoked_at.isoformat() if identity.revoked_at else None,
@@ -1623,7 +1627,17 @@ async def stream_session_events(
     rendered: bool,
     token: str | None,
 ) -> None:
-    if not await accept_authenticated_websocket(websocket, token=token, control=control):
+    required_scope = (
+        DeviceIdentityScope.RENDERED_EVENTS_WS
+        if rendered
+        else DeviceIdentityScope.SESSION_EVENTS_WS
+    )
+    if not await accept_authenticated_websocket(
+        websocket,
+        token=token,
+        control=control,
+        required_scope=required_scope,
+    ):
         return
     try:
         control.repository.get_session(session_id)
@@ -1695,7 +1709,12 @@ async def stream_bot_gateway_events(
     idle_timeout_seconds: float | None,
     token: str | None,
 ) -> None:
-    if not await accept_authenticated_websocket(websocket, token=token, control=control):
+    if not await accept_authenticated_websocket(
+        websocket,
+        token=token,
+        control=control,
+        required_scope=DeviceIdentityScope.BOT_GATEWAY_WS,
+    ):
         return
     try:
         control.repository.get_session(session_id)
@@ -1800,7 +1819,12 @@ async def stream_terminal_commands(
     session_id: str,
     token: str | None,
 ) -> None:
-    if not await accept_authenticated_websocket(websocket, token=token, control=control):
+    if not await accept_authenticated_websocket(
+        websocket,
+        token=token,
+        control=control,
+        required_scope=DeviceIdentityScope.TERMINAL_WS,
+    ):
         return
     try:
         control.repository.get_session(session_id)
@@ -2175,7 +2199,12 @@ def http_device_key_authorized(
         device_id,
         presented_key,
         device_keys,
-    ) or matching_managed_device_key(device_id, presented_key, control)
+    ) or matching_managed_device_key(
+        device_id,
+        presented_key,
+        control,
+        required_scope=DeviceIdentityScope.HTTP_API,
+    )
 
 
 def http_api_auth_error_response() -> JSONResponse:
@@ -2215,6 +2244,7 @@ async def accept_authenticated_websocket(
     *,
     token: str | None,
     control: ControlPlane | None = None,
+    required_scope: DeviceIdentityScope,
 ) -> bool:
     await websocket.accept()
     expected_tokens = websocket_expected_tokens()
@@ -2228,7 +2258,12 @@ async def accept_authenticated_websocket(
     presented_token = websocket_presented_token(websocket, token)
     if matching_token(presented_token, expected_tokens):
         return True
-    if websocket_device_key_authorized(websocket, device_keys, control=control):
+    if websocket_device_key_authorized(
+        websocket,
+        device_keys,
+        control=control,
+        required_scope=required_scope,
+    ):
         return True
     if websocket_admin_cookie_authorized(websocket):
         return True
@@ -2268,6 +2303,7 @@ def websocket_device_key_authorized(
     device_keys: dict[str, str],
     *,
     control: ControlPlane | None = None,
+    required_scope: DeviceIdentityScope,
 ) -> bool:
     device_id = websocket.query_params.get("device_id")
     presented_key = websocket.query_params.get("device_key")
@@ -2279,6 +2315,7 @@ def websocket_device_key_authorized(
         device_id,
         presented_key,
         control,
+        required_scope=required_scope,
     )
 
 
@@ -2345,6 +2382,8 @@ def matching_managed_device_key(
     device_id: str | None,
     presented_key: str | None,
     control: ControlPlane | None,
+    *,
+    required_scope: DeviceIdentityScope,
 ) -> bool:
     if control is None or not device_id or not presented_key:
         return False
@@ -2354,8 +2393,10 @@ def matching_managed_device_key(
         return False
     if identity.status != DeviceIdentityStatus.ACTIVE:
         return False
+    if required_scope not in identity.allowed_scopes:
+        return False
     try:
-        return verify_device_key(
+        verified = verify_device_key(
             presented_key.strip(),
             expected_hash=identity.key_hash,
             salt=identity.key_salt,
@@ -2363,6 +2404,10 @@ def matching_managed_device_key(
         )
     except ValueError:
         return False
+    if not verified:
+        return False
+    control.repository.mark_device_identity_used(identity.device_id)
+    return True
 
 
 def clamp_stream_limit(limit: int) -> int:

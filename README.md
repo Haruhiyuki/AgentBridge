@@ -168,12 +168,15 @@ JSON object mapping device IDs to secrets. REST clients present
 
 For persisted device identities, create or rotate a key through
 `POST /api/v1/device-identities` with `device_id`, optional `display_name`, and an
-optional caller-supplied `device_key`. If `device_key` is omitted, the server returns a
-generated key once in the creation response. Stored keys are salted PBKDF2 hashes, and
-list/revoke responses never include raw keys, hashes, or salts. Once any managed device
-identity exists, REST and WebSocket routes stay gated even if all managed devices are
-later revoked; use an admin/API token to create a new active device key and regain
-device-key access.
+optional caller-supplied `device_key`. `allowed_scopes` can narrow the key to one or
+more transport scopes: `http_api`, `session_events_ws`, `rendered_events_ws`,
+`terminal_ws`, and `bot_gateway_ws`; omitting it grants all current scopes. If
+`device_key` is omitted, the server returns a generated key once in the creation
+response. Stored keys are salted PBKDF2 hashes, successful managed-device
+authentication updates `last_used_at`, and list/revoke responses never include raw keys,
+hashes, or salts. Once any managed device identity exists, REST and WebSocket routes stay
+gated even if all managed devices are later revoked; use an admin/API token to create a
+new active device key and regain device-key access.
 
 Audit records can be queried through `GET /api/v1/audit` with optional `actor_id`,
 `action`, `project_id`, `session_id`, `interaction_id`, `trace_id`, `q`, and
@@ -417,7 +420,8 @@ WebSocket.
 The policy editor lists rules, edits allow/deny match criteria, runs
 `/api/v1/access-policy/simulate`, and saves through the same audited REST APIs.
 The device identities page lists active/revoked managed devices, creates or rotates
-device keys, shows the generated key once, and revokes selected devices.
+device keys, edits transport scopes, shows last-used timestamps, shows the generated key
+once, and revokes selected devices.
 
 Set `AGENTBRIDGE_ADMIN_TOKEN` to require a browser token before serving `/admin` pages.
 When `AGENTBRIDGE_API_TOKEN` is configured and `AGENTBRIDGE_ADMIN_TOKEN` is not, the

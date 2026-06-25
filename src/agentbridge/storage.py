@@ -23,6 +23,7 @@ from agentbridge.domain import (
     ChatContext,
     CommandResult,
     DeviceIdentity,
+    DeviceIdentityScope,
     DeviceIdentityStatus,
     ErrorCode,
     GroupRoleBinding,
@@ -509,6 +510,7 @@ class InMemoryRepository:
         key_hash: str,
         key_salt: str,
         key_iterations: int,
+        allowed_scopes: set[DeviceIdentityScope] | None = None,
         updated_by: str,
     ) -> DeviceIdentity:
         normalized_device_id = device_id.strip()
@@ -521,6 +523,15 @@ class InMemoryRepository:
         with self._lock:
             existing = self.device_identities.get(normalized_device_id)
             now = utc_now()
+            identity_scopes = (
+                set(allowed_scopes)
+                if allowed_scopes is not None
+                else (
+                    set(existing.allowed_scopes)
+                    if existing
+                    else set(DeviceIdentityScope)
+                )
+            )
             identity = DeviceIdentity(
                 id=existing.id if existing else new_id("dev"),
                 device_id=normalized_device_id,
@@ -529,6 +540,7 @@ class InMemoryRepository:
                 key_salt=key_salt,
                 key_iterations=key_iterations,
                 status=DeviceIdentityStatus.ACTIVE,
+                allowed_scopes=identity_scopes,
                 created_by=existing.created_by if existing else updated_by,
                 created_at=existing.created_at if existing else now,
                 revoked_at=None,
@@ -577,6 +589,20 @@ class InMemoryRepository:
             )
             self.device_identities[revoked.device_id] = revoked
             return revoked
+
+    def mark_device_identity_used(
+        self,
+        device_id: str,
+        *,
+        used_at: datetime | None = None,
+    ) -> DeviceIdentity:
+        with self._lock:
+            identity = self.get_device_identity(device_id)
+            updated = identity.model_copy(
+                update={"last_used_at": used_at or utc_now()}
+            )
+            self.device_identities[updated.device_id] = updated
+            return updated
 
     def _require_policy_scope(self, scope_type: PolicyScope, scope_id: str) -> None:
         if scope_type == PolicyScope.PROJECT:

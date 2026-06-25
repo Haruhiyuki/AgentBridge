@@ -256,6 +256,7 @@ class SQLAlchemyRepository(InMemoryRepository):
         "delete_access_policy_rule",
         "upsert_device_identity",
         "revoke_device_identity",
+        "mark_device_identity_used",
         "bind_project",
         "update_active_project",
         "update_active_session",

@@ -188,6 +188,14 @@ class DeviceIdentityStatus(StrEnum):
     REVOKED = "revoked"
 
 
+class DeviceIdentityScope(StrEnum):
+    HTTP_API = "http_api"
+    SESSION_EVENTS_WS = "session_events_ws"
+    RENDERED_EVENTS_WS = "rendered_events_ws"
+    TERMINAL_WS = "terminal_ws"
+    BOT_GATEWAY_WS = "bot_gateway_ws"
+
+
 class SemanticEventSource(StrEnum):
     CONTROL_PLANE = "control_plane"
     TERMINAL_AGENT = "terminal_agent"
@@ -344,6 +352,9 @@ class DeviceIdentity(BaseModel):
     key_salt: str
     key_iterations: int = 210000
     status: DeviceIdentityStatus = DeviceIdentityStatus.ACTIVE
+    allowed_scopes: set[DeviceIdentityScope] = Field(
+        default_factory=lambda: set(DeviceIdentityScope)
+    )
     created_by: str
     created_at: datetime = Field(default_factory=utc_now)
     revoked_at: datetime | None = None

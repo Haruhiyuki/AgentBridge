@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from agentbridge.api import create_app
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, Visibility
+from agentbridge.domain import Actor, DeviceIdentityScope, Visibility
 from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService
 
 
@@ -151,6 +151,7 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
             "device_id": "laptop",
             "display_name": "Maintainer laptop",
             "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
             "trace_id": "managed-device-create",
         },
     )
@@ -191,6 +192,7 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
     assert created["device_id"] == "laptop"
     assert created["display_name"] == "Maintainer laptop"
     assert created["status"] == "active"
+    assert created["allowed_scopes"] == ["http_api"]
     assert created["device_key"] == "managed-secret"
     assert "key_hash" not in created
     assert "key_salt" not in created
@@ -198,8 +200,11 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
     assert authorized_response.status_code == 200
     assert authorized_response.json() == []
     assert list_response.status_code == 200
-    assert list_response.json()[0]["device_id"] == "laptop"
-    assert "device_key" not in list_response.json()[0]
+    listed = list_response.json()[0]
+    assert listed["device_id"] == "laptop"
+    assert listed["allowed_scopes"] == ["http_api"]
+    assert listed["last_used_at"] is not None
+    assert "device_key" not in listed
     assert revoke_response.status_code == 200
     assert revoke_response.json()["status"] == "revoked"
     assert revoked_key_response.status_code == 403
@@ -255,6 +260,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "async function upsertDevice()" in html
     assert "async function revokeDevice()" in html
     assert "auth-device-key" in html
+    assert "allowed-scopes" in html
     assert "generated-key" in html
 
 
@@ -1408,6 +1414,61 @@ def test_session_events_websocket_accepts_managed_device_key(tmp_path):
     assert message["type"] == "semantic_event"
     assert message["event"]["type"] == "session.created"
     assert idle == {"type": "idle_timeout", "last_seq": message["event"]["seq"]}
+
+
+def test_managed_device_identity_scope_limits_websocket(tmp_path):
+    control = ControlPlane()
+    admin = Actor(id="security-admin", roles={"admin"})
+    control.upsert_device_identity(
+        actor=admin,
+        device_id="laptop",
+        device_key="managed-secret",
+        allowed_scopes={DeviceIdentityScope.HTTP_API},
+        trace_id="managed-device-scope-create",
+    )
+    actor = Actor(id="usr_1", roles={"maintainer"})
+    project = control.create_project(
+        actor=actor,
+        name="Scoped Device Backend",
+        trace_id="managed-device-scope-project",
+    )
+    workspace = control.add_workspace(
+        actor=actor,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="managed-device-scope-workspace",
+    )
+    session = control.create_session(
+        actor=actor,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Scoped Device Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="managed-device-scope-session",
+    )
+    client = TestClient(create_app(control))
+
+    http_response = client.get(
+        "/api/v1/projects",
+        headers={
+            "x-agentbridge-device-id": "laptop",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session.id}/events/ws"
+        "?device_id=laptop&device_key=managed-secret&idle_timeout_seconds=0"
+    ) as websocket:
+        denied = websocket.receive_json()
+
+    assert http_response.status_code == 200
+    assert denied["type"] == "error"
+    assert denied["error"]["error_code"] == "PERMISSION_DENIED"
+    identity = control.repository.get_device_identity("laptop")
+    assert identity.last_used_at is not None
 
 
 def test_session_events_websocket_accepts_unlocked_admin_cookie(monkeypatch, tmp_path):

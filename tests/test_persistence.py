@@ -13,6 +13,7 @@ from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
     AccessPolicyEffect,
     Actor,
+    DeviceIdentityScope,
     DeviceIdentityStatus,
     InteractionType,
     LeaseOwnerType,
@@ -401,6 +402,10 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
         device_id="laptop",
         display_name="Maintainer laptop",
         device_key="managed-secret",
+        allowed_scopes={
+            DeviceIdentityScope.HTTP_API,
+            DeviceIdentityScope.SESSION_EVENTS_WS,
+        },
         trace_id="device-identity-create",
     )
 
@@ -414,8 +419,18 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
     assert restored_identity.display_name == "Maintainer laptop"
     assert restored_identity.status == DeviceIdentityStatus.ACTIVE
     assert restored_identity.key_hash == identity.key_hash
+    assert restored_identity.allowed_scopes == {
+        DeviceIdentityScope.HTTP_API,
+        DeviceIdentityScope.SESSION_EVENTS_WS,
+    }
+    used_identity = restored.mark_device_identity_used("laptop")
+    assert used_identity.last_used_at is not None
 
-    restored_control = ControlPlane(repository=restored)
+    restored_after_use = SQLAlchemyRepository(database_url)
+    [used_restored_identity] = restored_after_use.list_device_identities()
+    assert used_restored_identity.last_used_at == used_identity.last_used_at
+
+    restored_control = ControlPlane(repository=restored_after_use)
     revoked = restored_control.revoke_device_identity(
         actor=admin,
         device_id="laptop",
