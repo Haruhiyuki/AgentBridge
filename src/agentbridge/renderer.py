@@ -268,6 +268,19 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 ),
             )
         )
+    elif event.type == "terminal.auto_restart.skipped":
+        visibility = RenderVisibility.OPERATORS
+        blocks.append(
+            warning_block(
+                "终端自动重启已跳过",
+                (
+                    f"generation={payload.get('generation')}；"
+                    f"reason={payload.get('reason')}；"
+                    f"command={payload.get('command')}；"
+                    f"allowed_patterns={payload.get('allowed_patterns')}"
+                ),
+            )
+        )
     else:
         blocks.append(text_block("事件", event.type))
         if payload:

@@ -355,6 +355,8 @@ def test_admin_home_and_terminal_lifecycle_ui_routes():
     assert "AgentBridge Terminal Lifecycle" in html
     assert "/api/v1/terminal/lifecycle-monitor" in html
     assert "/api/v1/terminal/lifecycle-monitor/run-once" in html
+    assert 'id="allowlist"' in html
+    assert 'id="blocks"' in html
     assert "async function runOnce()" in html
 
 

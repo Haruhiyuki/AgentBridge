@@ -25,6 +25,7 @@ from agentbridge.api import (
     env_int,
     start_terminal_backend_supervision,
     stop_terminal_backend_supervision,
+    terminal_auto_restart_command_allowlist_from_env,
 )
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, LeaseOwnerType
@@ -44,6 +45,7 @@ class LocalTerminalAgentConfig:
     lifecycle_poll_interval_seconds: float = 1.0
     terminal_auto_restart_on_lost: bool = False
     terminal_auto_restart_max_attempts: int = 1
+    terminal_auto_restart_command_allowlist: tuple[str, ...] = ()
     desktop_auto_open_enabled: bool = False
     desktop_open_command: str | None = None
     desktop_open_preset: str | None = None
@@ -1010,6 +1012,9 @@ def config_from_env() -> LocalTerminalAgentConfig:
             env_int("AGENTBRIDGE_TERMINAL_AUTO_RESTART_MAX_ATTEMPTS", default=1),
             0,
         ),
+        terminal_auto_restart_command_allowlist=(
+            terminal_auto_restart_command_allowlist_from_env()
+        ),
         desktop_auto_open_enabled=env_bool("AGENTBRIDGE_TERMINAL_AUTO_OPEN", default=False),
         desktop_open_command=os.environ.get("AGENTBRIDGE_TERMINAL_OPEN_COMMAND"),
         desktop_open_preset=os.environ.get("AGENTBRIDGE_TERMINAL_OPEN_PRESET"),
@@ -1026,6 +1031,7 @@ async def async_main() -> None:
         lifecycle_policy=TerminalLifecyclePolicy(
             auto_restart_on_lost=config.terminal_auto_restart_on_lost,
             auto_restart_max_attempts=config.terminal_auto_restart_max_attempts,
+            auto_restart_command_allowlist=config.terminal_auto_restart_command_allowlist,
         ),
     )
     server = LocalTerminalAgentServer(

@@ -18,7 +18,9 @@ operators a standard place to inspect logs and restart policy.
   `AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_ENABLED=false` unless you intentionally want the
   API/daemon process to act as a fallback supervisor.
 - Enable `AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=true` only after deciding that command
-  restart is acceptable for your native CLI workflow.
+  restart is acceptable for your native CLI workflow, and set
+  `AGENTBRIDGE_TERMINAL_AUTO_RESTART_COMMAND_ALLOWLIST` to the shell-style command
+  patterns that may be replayed.
 
 ## systemd User Service
 
@@ -54,6 +56,7 @@ export AGENTBRIDGE_TERMINAL_BACKEND=pty_host
 export AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET="$XDG_RUNTIME_DIR/agentbridge/pty-host.sock"
 export AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN="<same-token>"
 export AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH="$HOME/.local/state/agentbridge/pty-host-state.json"
+export AGENTBRIDGE_TERMINAL_AUTO_RESTART_COMMAND_ALLOWLIST="codex*,claude*"
 ```
 
 ## macOS launchd User Agent
@@ -88,6 +91,7 @@ export AGENTBRIDGE_TERMINAL_BACKEND=pty_host
 export AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET="$HOME/Library/Application Support/AgentBridge/pty-host.sock"
 export AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN="<same-token>"
 export AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH="$HOME/Library/Application Support/AgentBridge/pty-host-state.json"
+export AGENTBRIDGE_TERMINAL_AUTO_RESTART_COMMAND_ALLOWLIST="codex*,claude*"
 ```
 
 ## Recovery Expectations
@@ -98,10 +102,12 @@ owned by that process. AgentBridge can make that failure explicit:
 1. The service manager restarts `agentbridge-pty-host`.
 2. The Terminal lifecycle monitor observes that a previously started session is missing.
 3. AgentBridge emits `terminal.lost`.
-4. If `AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=true`, AgentBridge starts a new terminal
-   generation from the latest persisted `terminal.started` command.
+4. If `AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=true` and the latest persisted command
+   matches `AGENTBRIDGE_TERMINAL_AUTO_RESTART_COMMAND_ALLOWLIST`, AgentBridge starts a new
+   terminal generation from that command. If the command is not allowlisted, AgentBridge
+   emits `terminal.auto_restart.skipped` and leaves the session stopped for manual review.
 
 Use `GET /api/v1/terminal/lifecycle-monitor` or the local daemon `lifecycle_status` action to
-inspect tracked sessions, lost/exited counts, auto-restart attempts, and backend-supervision
-state. Use the run-once operation only as an operator action because it can emit lifecycle
-events and trigger opt-in restarts.
+inspect tracked sessions, lost/exited counts, auto-restart attempts, command allowlist
+patterns, policy blocks, and backend-supervision state. Use the run-once operation only as
+an operator action because it can emit lifecycle events and trigger opt-in restarts.

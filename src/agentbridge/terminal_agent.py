@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import fnmatch
 import json
 import os
 import pty
@@ -97,10 +98,27 @@ class TerminalRestartResult:
 class TerminalLifecyclePolicy:
     auto_restart_on_lost: bool = False
     auto_restart_max_attempts: int = 1
+    auto_restart_command_allowlist: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.auto_restart_max_attempts < 0:
             raise ValueError("auto_restart_max_attempts must be non-negative")
+        object.__setattr__(
+            self,
+            "auto_restart_command_allowlist",
+            tuple(
+                pattern.strip()
+                for pattern in self.auto_restart_command_allowlist
+                if pattern.strip()
+            ),
+        )
+
+    def allows_auto_restart_command(self, command: str) -> bool:
+        normalized = command.strip()
+        return any(
+            fnmatch.fnmatchcase(normalized, pattern)
+            for pattern in self.auto_restart_command_allowlist
+        )
 
 
 class TerminalBackend(Protocol):
@@ -712,7 +730,9 @@ class TerminalAgentService:
         self._terminal_start_generations: dict[str, int] = {}
         self._reported_terminal_exits: set[tuple[str, int]] = set()
         self._reported_terminal_losses: set[tuple[str, int]] = set()
+        self._reported_auto_restart_blocks: set[tuple[str, int, str]] = set()
         self._auto_restart_attempts: dict[str, int] = {}
+        self._auto_restart_last_block_reason: str | None = None
         self._lifecycle_lock = RLock()
         self._lifecycle_stop_event = Event()
         self._lifecycle_thread: Thread | None = None
@@ -955,7 +975,11 @@ class TerminalAgentService:
             try:
                 status = self.status(session_id=session_id, trace_id=trace_id)
                 observed[session_id] = status
-                if self._should_auto_restart_lost(session_id=session_id, status=status):
+                if self._should_auto_restart_lost(
+                    session_id=session_id,
+                    status=status,
+                    trace_id=trace_id,
+                ):
                     self.restart_session(
                         session_id=session_id,
                         trace_id=f"{trace_id}:auto-restart",
@@ -972,6 +996,7 @@ class TerminalAgentService:
         recovered_generations: dict[str, int] = {}
         recovered_exits: set[tuple[str, int]] = set()
         recovered_losses: set[tuple[str, int]] = set()
+        recovered_auto_restart_blocks: set[tuple[str, int, str]] = set()
         for session in self.control.repository.list_sessions():
             generation = 0
             events = self.control.repository.list_events(
@@ -993,6 +1018,15 @@ class TerminalAgentService:
                         recovered_losses.add((session.id, event_generation))
                     elif generation > 0:
                         recovered_losses.add((session.id, generation))
+                elif event.type == "terminal.auto_restart.skipped":
+                    event_generation = event.payload.get("generation")
+                    reason = str(event.payload.get("reason") or "unknown")
+                    if isinstance(event_generation, int):
+                        recovered_auto_restart_blocks.add(
+                            (session.id, event_generation, reason)
+                        )
+                    elif generation > 0:
+                        recovered_auto_restart_blocks.add((session.id, generation, reason))
             if generation > 0:
                 recovered_generations[session.id] = generation
 
@@ -1004,6 +1038,7 @@ class TerminalAgentService:
                 )
             self._reported_terminal_exits.update(recovered_exits)
             self._reported_terminal_losses.update(recovered_losses)
+            self._reported_auto_restart_blocks.update(recovered_auto_restart_blocks)
         return recovered_generations
 
     def start_lifecycle_monitor(self, *, interval_seconds: float = 1.0) -> bool:
@@ -1054,7 +1089,12 @@ class TerminalAgentService:
                 "auto_restart_max_attempts": (
                     self.lifecycle_policy.auto_restart_max_attempts
                 ),
+                "auto_restart_command_allowlist": list(
+                    self.lifecycle_policy.auto_restart_command_allowlist
+                ),
                 "auto_restart_attempt_count": sum(self._auto_restart_attempts.values()),
+                "auto_restart_blocked_count": len(self._reported_auto_restart_blocks),
+                "auto_restart_last_block_reason": self._auto_restart_last_block_reason,
                 "backend_supervision": (
                     backend_supervision_status()
                     if callable(backend_supervision_status)
@@ -1133,7 +1173,49 @@ class TerminalAgentService:
         with self._lifecycle_lock:
             self._reported_terminal_losses.add(loss_key)
 
-    def _should_auto_restart_lost(self, *, session_id: str, status: TerminalStatus) -> bool:
+    def _emit_auto_restart_skipped_once(
+        self,
+        *,
+        session_id: str,
+        generation: int,
+        command: str | None,
+        reason: str,
+        trace_id: str,
+    ) -> None:
+        session = self.control.repository.get_session(session_id)
+        block_key = (session_id, generation, reason)
+        with self._lifecycle_lock:
+            if block_key in self._reported_auto_restart_blocks:
+                return
+        self.control.emit_event(
+            event_type="terminal.auto_restart.skipped",
+            source=SemanticEventSource.TERMINAL_AGENT,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            payload={
+                "generation": generation,
+                "reason": reason,
+                "command": command,
+                "allowed_patterns": list(
+                    self.lifecycle_policy.auto_restart_command_allowlist
+                ),
+            },
+            idempotency_key=(
+                f"terminal-auto-restart-skipped:{session_id}:{generation}:{reason}"
+            ),
+        )
+        with self._lifecycle_lock:
+            self._reported_auto_restart_blocks.add(block_key)
+            self._auto_restart_last_block_reason = f"{session_id}: {reason}"
+
+    def _should_auto_restart_lost(
+        self,
+        *,
+        session_id: str,
+        status: TerminalStatus,
+        trace_id: str,
+    ) -> bool:
         if not self.lifecycle_policy.auto_restart_on_lost:
             return False
         if status.started or status.running:
@@ -1141,8 +1223,30 @@ class TerminalAgentService:
         if self.lifecycle_policy.auto_restart_max_attempts <= 0:
             return False
         with self._lifecycle_lock:
-            if self._terminal_start_generations.get(session_id, 0) <= 0:
+            generation = self._terminal_start_generations.get(session_id, 0)
+            if generation <= 0:
                 return False
+        try:
+            start_spec = self.latest_start_spec(session_id=session_id)
+        except AgentBridgeError:
+            self._emit_auto_restart_skipped_once(
+                session_id=session_id,
+                generation=generation,
+                command=None,
+                reason="missing_start_command",
+                trace_id=trace_id,
+            )
+            return False
+        if not self.lifecycle_policy.allows_auto_restart_command(start_spec.command):
+            self._emit_auto_restart_skipped_once(
+                session_id=session_id,
+                generation=generation,
+                command=start_spec.command,
+                reason="command_not_allowlisted",
+                trace_id=trace_id,
+            )
+            return False
+        with self._lifecycle_lock:
             attempts = self._auto_restart_attempts.get(session_id, 0)
             if attempts >= self.lifecycle_policy.auto_restart_max_attempts:
                 return False

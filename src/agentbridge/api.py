@@ -2565,7 +2565,15 @@ def create_terminal_lifecycle_policy_from_env() -> TerminalLifecyclePolicy:
             env_int("AGENTBRIDGE_TERMINAL_AUTO_RESTART_MAX_ATTEMPTS", default=1),
             0,
         ),
+        auto_restart_command_allowlist=terminal_auto_restart_command_allowlist_from_env(),
     )
+
+
+def terminal_auto_restart_command_allowlist_from_env() -> tuple[str, ...]:
+    config = os.environ.get("AGENTBRIDGE_TERMINAL_AUTO_RESTART_COMMAND_ALLOWLIST")
+    if config is None:
+        return ()
+    return tuple(item.strip() for item in config.split(",") if item.strip())
 
 
 def terminal_pty_output_limit_from_env() -> int:

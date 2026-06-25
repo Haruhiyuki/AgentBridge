@@ -80,6 +80,29 @@ def test_terminal_lost_event_renders_operator_warning():
     ]
 
 
+def test_terminal_auto_restart_skipped_event_renders_operator_warning():
+    event = make_event(
+        "terminal.auto_restart.skipped",
+        {
+            "generation": 1,
+            "reason": "command_not_allowlisted",
+            "command": "dangerous-cli --apply",
+            "allowed_patterns": ["codex*", "claude*"],
+        },
+    )
+
+    document = document_from_event(event)
+    messages = OneBotV11TextRenderer().render(document)
+
+    assert document.visibility == "operators"
+    assert messages == [
+        "terminal.auto_restart.skipped · ses_1\n\n"
+        "终端自动重启已跳过\n"
+        "WARNING: generation=1；reason=command_not_allowlisted；"
+        "command=dangerous-cli --apply；allowed_patterns=['codex*', 'claude*']"
+    ]
+
+
 def test_approval_request_event_renders_approver_actions():
     event = make_event(
         "approval.requested",

@@ -3018,6 +3018,8 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
         <div class="metric"><span>Reported Losses</span><strong id="losses">-</strong></div>
         <div class="metric"><span>Auto Restart</span><strong id="auto-restart">-</strong></div>
         <div class="metric"><span>Restart Attempts</span><strong id="attempts">-</strong></div>
+        <div class="metric"><span>Restart Blocks</span><strong id="blocks">-</strong></div>
+        <div class="metric"><span>Command Allowlist</span><strong id="allowlist">-</strong></div>
       </div>
       <pre id="backend">{}</pre>
       <pre id="error" class="danger"></pre>
@@ -3096,8 +3098,10 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
       setText("losses", status.reported_lost_count);
       setText("auto-restart", status.auto_restart_on_lost);
       setText("attempts", status.auto_restart_attempt_count);
+      setText("blocks", status.auto_restart_blocked_count);
+      setText("allowlist", (status.auto_restart_command_allowlist || []).join(",") || "-");
       $("backend").textContent = JSON.stringify(status.backend_supervision || {}, null, 2);
-      $("error").textContent = status.last_error || "";
+      $("error").textContent = status.last_error || status.auto_restart_last_block_reason || "";
     }
 
     function renderObserved(observed) {

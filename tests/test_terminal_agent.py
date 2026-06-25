@@ -326,6 +326,7 @@ def test_terminal_lifecycle_monitor_auto_restarts_lost_session(tmp_path):
         lifecycle_policy=TerminalLifecyclePolicy(
             auto_restart_on_lost=True,
             auto_restart_max_attempts=1,
+            auto_restart_command_allowlist=("fake-cli *",),
         ),
     )
 
@@ -356,6 +357,54 @@ def test_terminal_lifecycle_monitor_auto_restarts_lost_session(tmp_path):
     assert recovered_terminal.lifecycle_monitor_status()["auto_restart_attempt_count"] == 1
 
 
+def test_terminal_lifecycle_auto_restart_requires_allowlisted_command(tmp_path):
+    control = ControlPlane()
+    first_terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+    _, session = create_session(control, tmp_path)
+    first_terminal.start_session(
+        session_id=session.id,
+        command="dangerous-cli --apply",
+        trace_id="terminal-start-before-auto-restart-block",
+    )
+    recovered_backend = FakeTerminalBackend()
+    recovered_terminal = TerminalAgentService(
+        control,
+        backend=recovered_backend,
+        lifecycle_policy=TerminalLifecyclePolicy(
+            auto_restart_on_lost=True,
+            auto_restart_max_attempts=1,
+            auto_restart_command_allowlist=("codex*", "claude*"),
+        ),
+    )
+
+    observed = recovered_terminal.run_lifecycle_monitor_once(
+        trace_id="terminal-monitor-auto-restart-block"
+    )
+
+    assert observed[session.id] == TerminalStatus(started=False, running=False)
+    assert recovered_backend.started == {}
+    events = control.repository.list_events(session_id=session.id)
+    assert [event.type for event in events] == [
+        "session.created",
+        "terminal.started",
+        "terminal.lost",
+        "terminal.auto_restart.skipped",
+    ]
+    skipped_event = events[-1]
+    assert skipped_event.payload == {
+        "generation": 1,
+        "reason": "command_not_allowlisted",
+        "command": "dangerous-cli --apply",
+        "allowed_patterns": ["codex*", "claude*"],
+    }
+    status = recovered_terminal.lifecycle_monitor_status()
+    assert status["auto_restart_attempt_count"] == 0
+    assert status["auto_restart_blocked_count"] == 1
+    assert status["auto_restart_last_block_reason"] == (
+        f"{session.id}: command_not_allowlisted"
+    )
+
+
 def test_terminal_lifecycle_auto_restart_attempts_are_bounded(tmp_path):
     class AlwaysLostBackend(FakeTerminalBackend):
         def status(self, *, session_id: str) -> TerminalStatus:
@@ -376,6 +425,7 @@ def test_terminal_lifecycle_auto_restart_attempts_are_bounded(tmp_path):
         lifecycle_policy=TerminalLifecyclePolicy(
             auto_restart_on_lost=True,
             auto_restart_max_attempts=1,
+            auto_restart_command_allowlist=("fake-cli *",),
         ),
     )
 
@@ -847,6 +897,7 @@ def test_pty_host_watchdog_restart_can_auto_restart_lost_terminal(
         lifecycle_policy=TerminalLifecyclePolicy(
             auto_restart_on_lost=True,
             auto_restart_max_attempts=1,
+            auto_restart_command_allowlist=(f"{sh} *",),
         ),
     )
 

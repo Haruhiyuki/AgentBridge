@@ -1637,13 +1637,19 @@ def test_terminal_lifecycle_monitor_can_autostart_from_api_env(monkeypatch):
 def test_terminal_lifecycle_policy_reads_auto_restart_env(monkeypatch):
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST", "true")
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_AUTO_RESTART_MAX_ATTEMPTS", "3")
+    monkeypatch.setenv(
+        "AGENTBRIDGE_TERMINAL_AUTO_RESTART_COMMAND_ALLOWLIST",
+        "codex*, claude*",
+    )
 
     app = create_app()
 
     status = app.state.terminal.lifecycle_monitor_status()
     assert status["auto_restart_on_lost"] is True
     assert status["auto_restart_max_attempts"] == 3
+    assert status["auto_restart_command_allowlist"] == ["codex*", "claude*"]
     assert status["auto_restart_attempt_count"] == 0
+    assert status["auto_restart_blocked_count"] == 0
 
 
 def test_terminal_lifecycle_monitor_status_and_run_once_api(tmp_path):

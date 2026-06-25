@@ -435,6 +435,7 @@ def test_terminal_daemon_config_reads_desktop_open_preset(monkeypatch, tmp_path)
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_LIFECYCLE_POLL_INTERVAL_SECONDS", "2.5")
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST", "true")
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_AUTO_RESTART_MAX_ATTEMPTS", "4")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_AUTO_RESTART_COMMAND_ALLOWLIST", "codex*,claude*")
 
     config = terminal_daemon.config_from_env()
 
@@ -445,6 +446,7 @@ def test_terminal_daemon_config_reads_desktop_open_preset(monkeypatch, tmp_path)
     assert config.lifecycle_poll_interval_seconds == 2.5
     assert config.terminal_auto_restart_on_lost is True
     assert config.terminal_auto_restart_max_attempts == 4
+    assert config.terminal_auto_restart_command_allowlist == ("codex*", "claude*")
     assert config.desktop_auto_open_enabled is True
     assert config.desktop_open_preset == "auto"
     assert config.desktop_open_command == "custom {session_id}"
