@@ -1057,6 +1057,38 @@ class InMemoryRepository:
             self.audit_events.append(event)
             return event
 
+    def list_audit_events(
+        self,
+        *,
+        actor_id: str | None = None,
+        action: str | None = None,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        interaction_id: str | None = None,
+        trace_id: str | None = None,
+        limit: int = 100,
+    ) -> list[AuditEvent]:
+        max_results = self._clamp_audit_limit(limit)
+        with self._lock:
+            events: list[AuditEvent] = []
+            for event in reversed(self.audit_events):
+                if (
+                    (actor_id is None or event.actor_id == actor_id)
+                    and (action is None or event.action == action)
+                    and (project_id is None or event.project_id == project_id)
+                    and (session_id is None or event.session_id == session_id)
+                    and (interaction_id is None or event.interaction_id == interaction_id)
+                    and (trace_id is None or event.trace_id == trace_id)
+                ):
+                    events.append(event)
+                    if len(events) >= max_results:
+                        break
+            return events
+
+    @staticmethod
+    def _clamp_audit_limit(limit: int) -> int:
+        return max(1, min(limit, 500))
+
     def append_event(
         self,
         *,

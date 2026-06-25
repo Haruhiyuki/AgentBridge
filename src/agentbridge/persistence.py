@@ -377,6 +377,39 @@ class SQLAlchemyRepository(InMemoryRepository):
             for row in connection.execute(select(table)).all()
         }
 
+    def list_audit_events(
+        self,
+        *,
+        actor_id: str | None = None,
+        action: str | None = None,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        interaction_id: str | None = None,
+        trace_id: str | None = None,
+        limit: int = 100,
+    ) -> list[AuditEvent]:
+        max_results = self._clamp_audit_limit(limit)
+        stmt = select(audit_events_table).order_by(audit_events_table.c.position.desc())
+        if action is not None:
+            stmt = stmt.where(audit_events_table.c.action == action)
+        if actor_id is not None:
+            stmt = stmt.where(audit_events_table.c.actor_id == actor_id)
+
+        events: list[AuditEvent] = []
+        with self._lock, self.engine.connect() as connection:
+            for row in connection.execute(stmt):
+                event = AuditEvent.model_validate(row.payload)
+                if (
+                    (project_id is None or event.project_id == project_id)
+                    and (session_id is None or event.session_id == session_id)
+                    and (interaction_id is None or event.interaction_id == interaction_id)
+                    and (trace_id is None or event.trace_id == trace_id)
+                ):
+                    events.append(event)
+                    if len(events) >= max_results:
+                        break
+        return events
+
     def _persist_state(self) -> None:
         with self._lock, self.engine.begin() as connection:
             for table in (

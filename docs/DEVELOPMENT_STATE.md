@@ -27,7 +27,7 @@ Implemented in this slice:
 - Optimistic locking for active project/session pointers.
 - Writer lease epoch handling with local human preemption over bot control.
 - Audit hash chain for command and domain state changes.
-- Filtered audit API through `GET /api/v1/audit`, bounded by `limit` and supporting action, actor, trace, project, session, and interaction filters for operational review.
+- Filtered audit API through `GET /api/v1/audit`, backed by repository-level newest-first queries bounded by `limit` and supporting action, actor, trace, project, session, and interaction filters for operational review; SQLAlchemy uses indexed action/actor columns before payload-level filters.
 - Ordered semantic event streams for project/session state changes.
 - REST event replay through `GET /api/v1/sessions/{id}/events`.
 - Idempotent Terminal Agent event ingestion through `POST /api/v1/sessions/{id}/events`.
@@ -145,7 +145,7 @@ Not implemented yet:
 - Platform-specific rich card/button transport adapters and outbound message edit extensions beyond standard OneBot V11.
 - Native action/callback support for platforms that expose buttons or interactions.
 - Broader per-adapter action callback state beyond command-carrying callbacks.
-- Normalized relational query layer for large audit/event searches; the current SQLAlchemy repository persists Pydantic payload snapshots with indexed routing columns.
+- Fully normalized relational query layer for large semantic event searches and arbitrary audit cross-field searches; audit action/actor filtering now uses indexed columns, while project/session/interaction/trace filters still derive from persisted payload snapshots.
 - PostgreSQL-specific operational hardening, connection pooling policy, and migration deployment docs.
 
 ## Important Decisions
@@ -153,6 +153,7 @@ Not implemented yet:
 - The first backend slice uses an in-memory repository to make command, routing, lease, and API semantics testable before introducing persistence.
 - Unknown ASCII-looking `/agent` management commands are rejected instead of being silently treated as prompts. Non-command free text still becomes `ask` to support the documented shortcut pattern.
 - Semantic events are separate from audit records: events drive product state replay and Bot rendering, while audit records preserve security/accountability history.
+- Audit listing is a repository concern. In-memory and SQLAlchemy repositories return bounded newest-first results; the SQLAlchemy path filters action/actor in the database and then applies project/session/interaction/trace payload filters until the requested limit is reached.
 - SQLAlchemy persistence is currently a single-process write-through snapshot repository. It is sufficient for restart recovery and contract tests, but multi-process production deployments need row-level updates and stronger transaction boundaries.
 - Terminal input must pass through the AgentBridge gateway. Direct `tmux attach` remains outside the safety model because it bypasses writer leases.
 - The local Terminal Agent socket is token-gated and chmodded to `0600`; production hardening still needs OS user checks, token rotation, and Windows named-pipe parity.

@@ -147,6 +147,75 @@ def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
     assert len(second_repo.sessions) == 1
 
 
+def test_sqlalchemy_repository_lists_filtered_audit_events(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'audit-query.db'}"
+    maintainer = Actor(id="usr_audit", roles={"maintainer"})
+
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    control = ControlPlane(repository=first_repo)
+    project = control.create_project(
+        actor=maintainer,
+        name="Audit Backend",
+        trace_id="audit-project",
+    )
+    workspace = control.add_workspace(
+        actor=maintainer,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="audit-workspace",
+    )
+    first_session = control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="First Audit Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="audit-session-one",
+    )
+    second_session = control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Second Audit Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="audit-session-two",
+    )
+
+    restored = SQLAlchemyRepository(database_url)
+
+    newest = restored.list_audit_events(
+        action="session.created",
+        actor_id="usr_audit",
+        project_id=project.id,
+        limit=1,
+    )
+    assert len(newest) == 1
+    assert newest[0].session_id == second_session.id
+    assert newest[0].trace_id == "audit-session-two"
+
+    session_filtered = restored.list_audit_events(
+        action="session.created",
+        actor_id="usr_audit",
+        session_id=first_session.id,
+        trace_id="audit-session-one",
+    )
+    assert [event.session_id for event in session_filtered] == [first_session.id]
+
+    project_sessions = restored.list_audit_events(
+        action="session.created",
+        project_id=project.id,
+    )
+    assert [event.session_id for event in project_sessions] == [
+        second_session.id,
+        first_session.id,
+    ]
+    assert restored.list_audit_events(action="session.created", actor_id="missing") == []
+
+
 def test_terminal_lifecycle_tracking_recovers_from_persisted_events(tmp_path):
     class RecoveredExitedBackend(FakeTerminalBackend):
         def status(self, *, session_id: str) -> TerminalStatus:

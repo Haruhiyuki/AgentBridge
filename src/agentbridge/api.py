@@ -38,7 +38,6 @@ from agentbridge.domain import (
     Actor,
     AgentBridgeError,
     AgentType,
-    AuditEvent,
     BotDeliveryResultAction,
     BotDeliveryStatus,
     ErrorCode,
@@ -1474,8 +1473,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         trace_id: str | None = None,
         limit: int = 100,
     ):
-        events = filter_audit_events(
-            control.repository.audit_events,
+        events = control.repository.list_audit_events(
             actor_id=actor_id,
             action=action,
             project_id=project_id,
@@ -1909,34 +1907,6 @@ def terminal_error_frame(request_id: object, exc: AgentBridgeError) -> dict[str,
         "ok": False,
         "error": exc.to_payload(),
     }
-
-
-def filter_audit_events(
-    events: list[AuditEvent],
-    *,
-    actor_id: str | None,
-    action: str | None,
-    project_id: str | None,
-    session_id: str | None,
-    interaction_id: str | None,
-    trace_id: str | None,
-    limit: int,
-) -> list[AuditEvent]:
-    filtered = [
-        event
-        for event in events
-        if (actor_id is None or event.actor_id == actor_id)
-        and (action is None or event.action == action)
-        and (project_id is None or event.project_id == project_id)
-        and (session_id is None or event.session_id == session_id)
-        and (interaction_id is None or event.interaction_id == interaction_id)
-        and (trace_id is None or event.trace_id == trace_id)
-    ]
-    return list(reversed(filtered[-clamp_audit_limit(limit) :]))
-
-
-def clamp_audit_limit(limit: int) -> int:
-    return max(1, min(limit, 500))
 
 
 ADMIN_AUTH_COOKIE_NAME = "agentbridge_admin_token"
