@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from agentbridge.admin_ui import (
     ACCESS_POLICY_ADMIN_HTML,
     ADMIN_HOME_HTML,
+    BOT_DELIVERY_ADMIN_HTML,
     TERMINAL_LIFECYCLE_ADMIN_HTML,
 )
 from agentbridge.bot_gateway import (
@@ -476,6 +477,10 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     @app.get("/admin/terminal-lifecycle", response_class=HTMLResponse)
     def terminal_lifecycle_admin_ui():
         return HTMLResponse(TERMINAL_LIFECYCLE_ADMIN_HTML)
+
+    @app.get("/admin/bot-delivery", response_class=HTMLResponse)
+    def bot_delivery_admin_ui():
+        return HTMLResponse(BOT_DELIVERY_ADMIN_HTML)
 
     def get_control() -> ControlPlane:
         return app.state.control

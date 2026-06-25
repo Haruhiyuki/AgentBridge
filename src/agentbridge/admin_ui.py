@@ -84,6 +84,10 @@ ADMIN_HOME_HTML = """<!doctype html>
       <strong>Terminal Lifecycle</strong>
       <span>Monitor status, backend supervision, run once</span>
     </a>
+    <a href="/admin/bot-delivery">
+      <strong>Bot Delivery</strong>
+      <span>Records, retry worker, due retry, rate limits</span>
+    </a>
   </main>
 </body>
 </html>
@@ -961,6 +965,392 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
     $("refresh").addEventListener("click", () => run(refresh));
     $("run-once").addEventListener("click", () => run(runOnce));
     refresh().catch((error) => setStatus(error.message));
+  </script>
+</body>
+</html>
+"""
+
+
+BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentBridge Bot Delivery</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --panel-muted: #f0f3f7;
+      --line: #d6dde6;
+      --text: #17202a;
+      --muted: #5b6878;
+      --accent: #0f766e;
+      --danger: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+    header {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-weight: 650;
+    }
+    nav a:hover { color: var(--accent); }
+    main {
+      display: grid;
+      grid-template-columns: minmax(480px, 1.1fr) minmax(380px, .9fr);
+      min-height: calc(100vh - 56px);
+    }
+    section {
+      min-width: 0;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+    }
+    section:last-child { border-right: 0; }
+    .toolbar {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-muted);
+      flex-wrap: wrap;
+    }
+    button, input, select {
+      min-height: 34px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+    button {
+      cursor: pointer;
+      font-weight: 650;
+    }
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+    label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .compact { max-width: 180px; }
+    .status {
+      flex: 1;
+      min-width: 180px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    th, td {
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    th {
+      color: var(--muted);
+      background: #f9fafb;
+      font-size: 12px;
+      font-weight: 700;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+    tr {
+      cursor: pointer;
+    }
+    tr.selected td {
+      background: #e8f5f3;
+    }
+    .table-wrap {
+      max-height: calc(100vh - 112px);
+      overflow: auto;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding: 14px;
+    }
+    .metric {
+      min-height: 76px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .metric strong {
+      display: block;
+      margin-top: 6px;
+      font-size: 22px;
+      font-weight: 700;
+    }
+    pre {
+      margin: 0 14px 14px;
+      padding: 10px;
+      min-height: 154px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfe;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow: auto;
+    }
+    .danger { color: var(--danger); }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+      section { border-right: 0; border-bottom: 1px solid var(--line); }
+      .metrics { grid-template-columns: 1fr; }
+      header { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AgentBridge Bot Delivery</h1>
+    <nav>
+      <a href="/admin">Admin</a>
+      <a href="/admin/access-policy">Access Policy</a>
+      <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
+    </nav>
+  </header>
+  <main>
+    <section>
+      <div class="toolbar">
+        <button id="refresh" type="button">Refresh</button>
+        <button class="primary" id="retry-due" type="button">Retry Due</button>
+        <label class="compact">
+          Chat Context
+          <input id="chat-context-id" placeholder="optional">
+        </label>
+        <label class="compact">
+          Status
+          <select id="status-filter">
+            <option value="">All</option>
+            <option value="sent">sent</option>
+            <option value="failed">failed</option>
+            <option value="retrying">retrying</option>
+            <option value="skipped_duplicate">skipped_duplicate</option>
+          </select>
+        </label>
+        <div class="status" id="status">Ready</div>
+      </div>
+      <div class="table-wrap">
+        <table aria-label="Bot delivery records">
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Platform</th>
+              <th>Chat</th>
+              <th>Event</th>
+              <th>Attempts</th>
+              <th>Next Retry</th>
+            </tr>
+          </thead>
+          <tbody id="records"></tbody>
+        </table>
+      </div>
+    </section>
+    <section>
+      <div class="toolbar">
+        <button id="worker-refresh" type="button">Worker Status</button>
+        <button class="primary" id="worker-run" type="button">Run Worker</button>
+        <label class="compact">
+          Limit
+          <input id="limit" type="number" value="100">
+        </label>
+      </div>
+      <div class="metrics">
+        <div class="metric"><span>Worker Enabled</span><strong id="worker-enabled">-</strong></div>
+        <div class="metric"><span>Worker Running</span><strong id="worker-running">-</strong></div>
+        <div class="metric"><span>Run Count</span><strong id="worker-runs">-</strong></div>
+        <div class="metric"><span>Last Records</span><strong id="worker-records">-</strong></div>
+      </div>
+      <pre id="worker">{}</pre>
+      <pre id="rate-limits">{}</pre>
+      <pre id="selected">{}</pre>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let selectedKey = "";
+
+    function setStatus(text) {
+      $("status").textContent = text;
+    }
+
+    function setText(id, value) {
+      $(id).textContent = String(value ?? "-");
+    }
+
+    async function requestJson(url, options = {}) {
+      const response = await fetch(url, {
+        headers: {"content-type": "application/json"},
+        ...options,
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || data.detail || response.statusText);
+      }
+      return data;
+    }
+
+    function deliveryQuery() {
+      const params = new URLSearchParams();
+      const chat = $("chat-context-id").value.trim();
+      const status = $("status-filter").value;
+      if (chat) params.set("chat_context_id", chat);
+      if (status) params.set("status", status);
+      const suffix = params.toString();
+      return suffix ? `?${suffix}` : "";
+    }
+
+    function renderRecords(records) {
+      const rows = records.map((record) => {
+        const tr = document.createElement("tr");
+        tr.dataset.key = record.idempotency_key;
+        tr.className = record.idempotency_key === selectedKey ? "selected" : "";
+        for (const value of [
+          record.status,
+          record.platform,
+          record.chat_context_id,
+          `${record.event_seq}.${record.message_index}`,
+          record.attempt_count,
+          record.next_retry_at || "",
+        ]) {
+          const td = document.createElement("td");
+          td.textContent = String(value);
+          td.title = String(value);
+          tr.appendChild(td);
+        }
+        tr.addEventListener("click", () => {
+          selectedKey = record.idempotency_key;
+          $("selected").textContent = JSON.stringify(record, null, 2);
+          document.querySelectorAll("#records tr").forEach((row) => {
+            row.classList.toggle("selected", row.dataset.key === selectedKey);
+          });
+        });
+        return tr;
+      });
+      $("records").replaceChildren(...rows);
+      setStatus(`${records.length} records`);
+    }
+
+    function renderWorker(worker) {
+      setText("worker-enabled", worker.enabled);
+      setText("worker-running", worker.running);
+      setText("worker-runs", worker.run_count);
+      setText("worker-records", worker.last_record_count);
+      $("worker").textContent = JSON.stringify(worker, null, 2);
+    }
+
+    async function refreshRecords() {
+      setStatus("Loading");
+      const records = await requestJson(`/api/v1/bot-gateway/deliveries${deliveryQuery()}`);
+      renderRecords(records);
+    }
+
+    async function refreshWorker() {
+      const worker = await requestJson("/api/v1/bot-gateway/retry-worker");
+      renderWorker(worker);
+      const limits = await requestJson("/api/v1/bot-gateway/rate-limits");
+      $("rate-limits").textContent = JSON.stringify(limits, null, 2);
+    }
+
+    async function retryDue() {
+      setStatus("Retrying due failures");
+      const payload = {
+        chat_context_id: $("chat-context-id").value.trim() || null,
+        limit: Number.parseInt($("limit").value || "100", 10),
+      };
+      const records = await requestJson("/api/v1/bot-gateway/retry-failed-deliveries", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      setStatus(`Retried ${records.length} records`);
+      await refreshRecords();
+    }
+
+    async function runWorker() {
+      const payload = {
+        chat_context_id: $("chat-context-id").value.trim() || null,
+        limit: Number.parseInt($("limit").value || "100", 10),
+      };
+      const result = await requestJson("/api/v1/bot-gateway/retry-worker/run-once", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      renderWorker(result.worker);
+      setStatus(`Worker retried ${result.records.length} records`);
+      await refreshRecords();
+    }
+
+    async function run(action) {
+      try {
+        await action();
+      } catch (error) {
+        setStatus(error.message);
+      }
+    }
+
+    $("refresh").addEventListener("click", () => run(refreshRecords));
+    $("status-filter").addEventListener("change", () => run(refreshRecords));
+    $("retry-due").addEventListener("click", () => run(retryDue));
+    $("worker-refresh").addEventListener("click", () => run(refreshWorker));
+    $("worker-run").addEventListener("click", () => run(runWorker));
+    Promise.all([refreshRecords(), refreshWorker()]).catch((error) => {
+      setStatus(error.message);
+    });
   </script>
 </body>
 </html>

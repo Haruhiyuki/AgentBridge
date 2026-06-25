@@ -727,3 +727,18 @@ def test_bot_retry_worker_can_autostart_from_environment(monkeypatch):
         assert running_status.json()["running"] is True
 
     assert app.state.bot_retry_worker.is_running() is False
+
+
+def test_bot_delivery_admin_ui_serves_dashboard():
+    client = TestClient(create_app())
+
+    response = client.get("/admin/bot-delivery")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    html = response.text
+    assert "AgentBridge Bot Delivery" in html
+    assert "/api/v1/bot-gateway/deliveries" in html
+    assert "/api/v1/bot-gateway/retry-worker" in html
+    assert "/api/v1/bot-gateway/rate-limits" in html
+    assert "async function retryDue()" in html

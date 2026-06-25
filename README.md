@@ -354,9 +354,9 @@ curl -X POST http://127.0.0.1:8000/api/v1/access-policy/simulate \
 Rules are persisted by Alembic migration `0007_access_policy_rules`. The REST and WebSocket terminal paths reuse the same resource-aware checks, so a rule can allow or deny a specific session's terminal without changing the global role matrix.
 
 The built-in admin entrypoint is available at `http://127.0.0.1:8000/admin`.
-It links to the access policy editor and terminal lifecycle dashboard. The policy editor
-lists rules, edits allow/deny match criteria, runs `/api/v1/access-policy/simulate`, and
-saves through the same audited REST APIs.
+It links to the access policy editor, terminal lifecycle dashboard, and Bot delivery
+operations dashboard. The policy editor lists rules, edits allow/deny match criteria, runs
+`/api/v1/access-policy/simulate`, and saves through the same audited REST APIs.
 
 ## Console Client
 
