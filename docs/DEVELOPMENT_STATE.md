@@ -90,6 +90,7 @@ Implemented in this slice:
 - OneBot V11 inbound event adapter for group/private text messages and reply segments.
 - OneBot inbound API through `POST /api/v1/onebot/events`, converting `/agent` and `/ab` messages into the existing command execution flow.
 - Optional NoneBot wrapper module that normalizes NoneBot/OneBot-style message events into the existing command execution flow without adding a hard NoneBot dependency.
+- Dependency-free NoneBot matcher registration helpers that attach the AgentBridge async handler through matcher `handle()` decorators.
 - NoneBot callback/action payloads containing command strings can execute through the same audited `/agent` command path.
 - Bot delivery failure records with attempt count, last error, next retry time, and exponential backoff.
 - Retry API through `POST /api/v1/bot-gateway/retry-failed-deliveries`.
@@ -142,7 +143,7 @@ Implemented in this slice:
 Not implemented yet:
 
 - Remaining PTY host hardening: true process-preserving recovery across host-process death, cross-platform stale socket/pipe cleanup, and Windows ConPTY/Named Pipe parity.
-- Richer OneBot renderer/action adapter and native NoneBot lifecycle registration helpers.
+- Richer OneBot renderer/action adapter and deeper native NoneBot lifecycle helpers beyond matcher registration.
 - Real Claude Code/Codex adapters.
 - Broader Admin Web UI beyond project/session operations, interaction/approval operations, audit/event live exploration, access policy, terminal lifecycle, and Bot delivery operations.
 - Production API/WebSocket hardening with mTLS/device keys.
@@ -176,7 +177,7 @@ Not implemented yet:
 - Rendering is split into platform-neutral documents and platform renderers. The first renderer intentionally targets text fallback so unsupported Bot platforms still receive coherent output.
 - Bot delivery idempotency is implemented before real platform integration so duplicate event replay cannot cause duplicate sends once a real transport is attached.
 - Bot delivery records are persisted separately from semantic events so replay, delivery retries, and platform message IDs can evolve without mutating event history.
-- OneBot outbound delivery is implemented as a transport contract first. The NoneBot wrapper is optional and dependency-free; full NoneBot integration still needs lifecycle registration, richer message components, and adapter-specific delivery capabilities.
+- OneBot outbound delivery is implemented as a transport contract first. The NoneBot wrapper is optional and dependency-free; matcher registration helpers cover the common `matcher.handle()` setup path, while full NoneBot integration still needs broader lifecycle hooks, richer message components, and adapter-specific delivery capabilities.
 - Delivery retry state is stored on delivery records, not events, so the immutable semantic event stream remains replayable while platform delivery can fail and recover independently.
 - The retry worker reuses the Bot Gateway retry path instead of writing records directly. This keeps manual retry, background retry, and future scheduler behavior consistent.
 - Platform rate-limit policies intentionally schedule unsent records as `retrying` instead of sleeping inside request handlers. This keeps API calls bounded and leaves actual waiting to the retry worker.
@@ -217,4 +218,4 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 2. Expand the Admin Web UI beyond project/session operations, interaction/approval operations, audit/event live/search exploration, access policy, terminal lifecycle, and Bot delivery operations, including additional live dashboards and payload-level relational search.
 3. Replace the MVP HTTP API/WebSocket/admin token gates with mTLS/device-key auth.
 4. Add platform-specific rich card/button transport adapters and outbound edit extensions.
-5. Add native NoneBot matcher setup helpers once a NoneBot dependency boundary is selected.
+5. Add deeper native NoneBot lifecycle hooks once a stronger dependency boundary is selected.

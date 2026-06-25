@@ -8,6 +8,7 @@ from agentbridge.domain import Actor, InteractionStatus, InteractionType, Visibi
 from agentbridge.nonebot_plugin import (
     NoneBotAgentBridgePlugin,
     nonebot_event_to_onebot_event,
+    register_nonebot_matcher,
 )
 
 
@@ -161,3 +162,56 @@ def test_nonebot_plugin_async_handler_wraps_sync_bridge():
 
     assert result["handled"] is True
     assert result["result"]["canonical_command"] == "health"
+
+
+def test_nonebot_matcher_registration_helper_registers_async_handler():
+    class FakeMatcher:
+        def __init__(self) -> None:
+            self.handlers = []
+
+        def handle(self):
+            def decorator(handler):
+                self.handlers.append(handler)
+                return handler
+
+            return decorator
+
+    matcher = FakeMatcher()
+    control = ControlPlane()
+
+    plugin = register_nonebot_matcher(
+        matcher,
+        control=control,
+        bot_instance_id="nonebot-helper",
+        default_roles={"operator"},
+    )
+
+    assert isinstance(plugin, NoneBotAgentBridgePlugin)
+    assert len(matcher.handlers) == 1
+    result = asyncio.run(
+        matcher.handlers[0](
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 10001,
+                "user_id": 20002,
+                "message_id": 30005,
+                "raw_message": "/agent health",
+            }
+        )
+    )
+    context = control.repository.get_chat_context(result["chat_context_id"])
+    assert result["handled"] is True
+    assert result["result"]["canonical_command"] == "health"
+    assert context.bot_instance_id == "nonebot-helper"
+
+
+def test_nonebot_matcher_registration_requires_handle_decorator():
+    plugin = NoneBotAgentBridgePlugin(control=ControlPlane())
+
+    try:
+        plugin.register_matcher(object())
+    except TypeError as exc:
+        assert "handle()" in str(exc)
+    else:
+        raise AssertionError("expected invalid matcher to be rejected")

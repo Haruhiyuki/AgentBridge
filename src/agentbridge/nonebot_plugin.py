@@ -72,6 +72,39 @@ class NoneBotAgentBridgePlugin:
 
         return handler
 
+    def register_matcher(self, matcher: Any) -> Any:
+        return register_nonebot_handler(matcher, self.as_async_handler())
+
+
+def register_nonebot_matcher(
+    matcher: Any,
+    *,
+    control: ControlPlane,
+    command_service: CommandService | None = None,
+    bot_instance_id: str = "nonebot",
+    default_roles: set[str] | None = None,
+    command_prefixes: tuple[str, ...] = ("/agent", "/ab"),
+) -> NoneBotAgentBridgePlugin:
+    plugin = NoneBotAgentBridgePlugin(
+        control=control,
+        command_service=command_service,
+        bot_instance_id=bot_instance_id,
+        default_roles=default_roles,
+        command_prefixes=command_prefixes,
+    )
+    plugin.register_matcher(matcher)
+    return plugin
+
+
+def register_nonebot_handler(matcher: Any, handler: Any) -> Any:
+    handle = getattr(matcher, "handle", None)
+    if not callable(handle):
+        raise TypeError("NoneBot matcher must expose a callable handle() decorator")
+    decorator = handle()
+    if not callable(decorator):
+        raise TypeError("NoneBot matcher handle() must return a decorator")
+    return decorator(handler)
+
 
 def nonebot_event_to_onebot_event(event: Any) -> dict[str, Any]:
     source = event_mapping(event)

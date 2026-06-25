@@ -281,18 +281,27 @@ curl -X POST http://127.0.0.1:8000/api/v1/onebot/events \
 
 Only `/agent` and `/ab` text commands are executed. Non-command messages are ignored.
 
-For NoneBot deployments, use the optional wrapper from application setup code and register the returned async handler with your NoneBot matcher:
+For NoneBot deployments, register a matcher from application setup code:
 
 ```python
 from agentbridge.control_plane import ControlPlane
-from agentbridge.nonebot_plugin import NoneBotAgentBridgePlugin
+from agentbridge.nonebot_plugin import register_nonebot_matcher
 
 control = ControlPlane()
-agentbridge = NoneBotAgentBridgePlugin(control=control, bot_instance_id="nonebot-main")
-handler = agentbridge.as_async_handler()
+agentbridge = register_nonebot_matcher(
+    matcher,
+    control=control,
+    bot_instance_id="nonebot-main",
+    default_roles={"operator"},
+)
 ```
 
-The wrapper has no hard NoneBot dependency. It accepts NoneBot/OneBot-style event objects, executes `/agent` and `/ab` text commands, and maps callback/action payloads containing a command string through the same audited command path.
+The wrapper has no hard NoneBot dependency. The helper only expects a matcher object
+with a `handle()` decorator; if you need manual wiring, `NoneBotAgentBridgePlugin`
+still exposes `as_async_handler()` and `register_matcher()`. It accepts
+NoneBot/OneBot-style event objects, executes `/agent` and `/ab` text commands, and
+maps callback/action payloads containing a command string through the same audited
+command path.
 
 ## Interactions And Approvals
 
