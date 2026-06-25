@@ -15,8 +15,8 @@
   <dict>
     <key>AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET</key>
     <string>__HOME__/Library/Application Support/AgentBridge/pty-host.sock</string>
-    <key>AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN</key>
-    <string>__GENERATE_STRONG_TOKEN__</string>
+    <key>AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE</key>
+    <string>__HOME__/Library/Application Support/AgentBridge/pty-host.token</string>
     <key>AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH</key>
     <string>__HOME__/Library/Application Support/AgentBridge/pty-host-state.json</string>
     <key>AGENTBRIDGE_TERMINAL_PTY_OUTPUT_LIMIT_CHARS</key>

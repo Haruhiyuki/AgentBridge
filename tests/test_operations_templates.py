@@ -26,7 +26,8 @@ def test_pty_host_env_template_contains_required_host_settings():
     )
 
     assert "AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET=" in env_template
-    assert "AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN=__GENERATE_STRONG_TOKEN__" in env_template
+    assert "AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE=" in env_template
+    assert "AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN=__GENERATE_STRONG_TOKEN__" not in env_template
     assert "AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH=" in env_template
     assert "AGENTBRIDGE_TERMINAL_PTY_OUTPUT_LIMIT_CHARS=1000000" in env_template
 
@@ -39,6 +40,7 @@ def test_pty_host_launchd_template_is_valid_plist_with_keepalive():
     assert payload["ProgramArguments"] == ["__AGENTBRIDGE_PTY_HOST_BIN__"]
     assert payload["RunAtLoad"] is True
     assert payload["KeepAlive"] is True
-    assert payload["EnvironmentVariables"]["AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN"] == (
-        "__GENERATE_STRONG_TOKEN__"
+    assert "AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN" not in payload["EnvironmentVariables"]
+    assert payload["EnvironmentVariables"]["AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE"] == (
+        "__HOME__/Library/Application Support/AgentBridge/pty-host.token"
     )

@@ -10,9 +10,10 @@ operators a standard place to inspect logs and restart policy.
 - Run exactly one `agentbridge-pty-host` per local user account.
 - Put the host socket under a user-private runtime directory.
 - Put the host state registry under a user-private state directory.
-- Store `AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN` in a mode-0600 file or launchd plist.
+- Store the shared PTY Host token in a mode-0600 file and point both host and clients at
+  it with `AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE`.
 - Configure API/daemon processes with `AGENTBRIDGE_TERMINAL_BACKEND=pty_host`,
-  the same socket path, and the same token.
+  the same socket path, and the same token file path.
 - Prefer the service manager as the primary host restart mechanism. Keep
   `AGENTBRIDGE_TERMINAL_PTY_HOST_AUTO_START=false` and
   `AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_ENABLED=false` unless you intentionally want the
@@ -34,11 +35,15 @@ sed "s#__AGENTBRIDGE_PTY_HOST_BIN__#$(command -v agentbridge-pty-host)#" \
   > "$HOME/.config/systemd/user/agentbridge-pty-host.service"
 ```
 
-Edit `~/.config/agentbridge/pty-host.env`:
+Create the token file and edit `~/.config/agentbridge/pty-host.env`:
+
+```bash
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > "$HOME/.config/agentbridge/pty-host.token"
+chmod 0600 "$HOME/.config/agentbridge/pty-host.token"
+```
 
 - Replace `__XDG_RUNTIME_DIR__` with `echo "$XDG_RUNTIME_DIR"`.
 - Replace `__HOME__` with your home directory.
-- Replace `__GENERATE_STRONG_TOKEN__` with `python3 -c 'import secrets; print(secrets.token_urlsafe(32))'`.
 
 Start and inspect:
 
@@ -54,7 +59,7 @@ Configure API or local daemon clients:
 ```bash
 export AGENTBRIDGE_TERMINAL_BACKEND=pty_host
 export AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET="$XDG_RUNTIME_DIR/agentbridge/pty-host.sock"
-export AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN="<same-token>"
+export AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE="$HOME/.config/agentbridge/pty-host.token"
 export AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH="$HOME/.local/state/agentbridge/pty-host-state.json"
 export AGENTBRIDGE_TERMINAL_AUTO_RESTART_COMMAND_ALLOWLIST="codex*,claude*"
 ```
@@ -68,10 +73,11 @@ install -m 0700 -d "$HOME/Library/LaunchAgents" "$HOME/Library/Application Suppo
 sed \
   -e "s#__AGENTBRIDGE_PTY_HOST_BIN__#$(command -v agentbridge-pty-host)#" \
   -e "s#__HOME__#$HOME#g" \
-  -e "s#__GENERATE_STRONG_TOKEN__#$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')#" \
   docs/operations/templates/com.agentbridge.pty-host.launchd.plist \
   > "$HOME/Library/LaunchAgents/com.agentbridge.pty-host.plist"
 chmod 0600 "$HOME/Library/LaunchAgents/com.agentbridge.pty-host.plist"
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > "$HOME/Library/Application Support/AgentBridge/pty-host.token"
+chmod 0600 "$HOME/Library/Application Support/AgentBridge/pty-host.token"
 ```
 
 Start and inspect:
@@ -89,10 +95,15 @@ Configure API or local daemon clients:
 ```bash
 export AGENTBRIDGE_TERMINAL_BACKEND=pty_host
 export AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET="$HOME/Library/Application Support/AgentBridge/pty-host.sock"
-export AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN="<same-token>"
+export AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE="$HOME/Library/Application Support/AgentBridge/pty-host.token"
 export AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH="$HOME/Library/Application Support/AgentBridge/pty-host-state.json"
 export AGENTBRIDGE_TERMINAL_AUTO_RESTART_COMMAND_ALLOWLIST="codex*,claude*"
 ```
+
+The host and clients reread `AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE` on each request, so
+rotating the file atomically changes the shared token without restarting either process. If
+the file is unreadable or empty and no static `AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN` fallback
+is configured, the token gate stays closed.
 
 ## Recovery Expectations
 

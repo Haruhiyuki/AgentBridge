@@ -21,7 +21,13 @@ from agentbridge.api import (
 )
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, LeaseOwnerType, Visibility
-from agentbridge.pty_host import PtyHostServer, PtyHostTerminalBackend
+from agentbridge.pty_host import (
+    PtyHostServer,
+    PtyHostTerminalBackend,
+)
+from agentbridge.pty_host import (
+    config_from_env as pty_host_config_from_env,
+)
 from agentbridge.terminal_agent import (
     FakeTerminalBackend,
     PtyTerminalBackend,
@@ -768,6 +774,96 @@ def test_terminal_backend_env_selects_pty_host(monkeypatch, tmp_path):
     assert isinstance(backend, PtyHostTerminalBackend)
     assert backend.socket_path == socket_path
     assert backend.auth_token == "secret-token"
+    assert backend.auth_token_file is None
+
+
+def test_terminal_backend_env_selects_pty_host_token_file(monkeypatch, tmp_path):
+    socket_path = Path(f"/tmp/agentbridge-pty-host-{uuid4().hex}.sock")
+    token_file = tmp_path / "pty-host.token"
+    token_file.write_text("file-secret\n", encoding="utf-8")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_BACKEND", "pty_host")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET", str(socket_path))
+    monkeypatch.delenv("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN", raising=False)
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_AUTO_START", "true")
+
+    backend = create_terminal_backend_from_env()
+
+    assert isinstance(backend, PtyHostTerminalBackend)
+    assert backend.auth_token == ""
+    assert backend.auth_token_file == token_file
+    assert backend.supervisor is not None
+    assert backend.supervisor.config.auth_token_file == token_file
+
+
+def test_pty_host_config_reads_token_file(monkeypatch, tmp_path):
+    socket_path = tmp_path / "pty-host.sock"
+    token_file = tmp_path / "pty-host.token"
+    token_file.write_text("file-secret\n", encoding="utf-8")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET", str(socket_path))
+    monkeypatch.delenv("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN", raising=False)
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE", str(token_file))
+
+    config = pty_host_config_from_env()
+
+    assert config.socket_path == socket_path
+    assert config.auth_token == ""
+    assert config.auth_token_file == token_file
+
+
+def test_pty_host_token_file_hot_reloads(tmp_path):
+    socket_path = Path(f"/tmp/agentbridge-pty-host-{uuid4().hex}.sock")
+    token_file = tmp_path / "pty-host.token"
+    token_file.write_text("first-token\n", encoding="utf-8")
+    server = PtyHostServer(
+        socket_path=socket_path,
+        auth_token_file=token_file,
+        backend=PtyTerminalBackend(),
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        reloading_client = PtyHostTerminalBackend(
+            socket_path=socket_path,
+            auth_token_file=token_file,
+        )
+        assert reloading_client.health()["status"] == "ok"
+
+        token_file.write_text("second-token\n", encoding="utf-8")
+
+        stale_client = PtyHostTerminalBackend(
+            socket_path=socket_path,
+            auth_token="first-token",
+        )
+        with pytest.raises(AgentBridgeError) as exc_info:
+            stale_client.health()
+        assert exc_info.value.code == ErrorCode.PERMISSION_DENIED
+        assert reloading_client.health()["status"] == "ok"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_pty_host_token_file_missing_fails_closed(tmp_path):
+    socket_path = Path(f"/tmp/agentbridge-pty-host-{uuid4().hex}.sock")
+    missing_token_file = tmp_path / "missing.token"
+    server = PtyHostServer(
+        socket_path=socket_path,
+        auth_token_file=missing_token_file,
+        backend=PtyTerminalBackend(),
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = PtyHostTerminalBackend(socket_path=socket_path)
+        with pytest.raises(AgentBridgeError) as exc_info:
+            client.health()
+        assert exc_info.value.code == ErrorCode.PERMISSION_DENIED
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_pty_host_backend_auto_starts_host_and_cleans_stale_socket(monkeypatch, tmp_path):

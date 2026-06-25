@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import secrets
@@ -27,6 +28,7 @@ from agentbridge.terminal_agent import (
 class PtyHostConfig:
     socket_path: Path
     auth_token: str = ""
+    auth_token_file: Path | None = None
     max_output_chars: int = DEFAULT_PTY_OUTPUT_LIMIT_CHARS
     host_state_path: Path | None = None
 
@@ -35,6 +37,7 @@ class PtyHostConfig:
 class PtyHostSupervisorConfig:
     socket_path: Path
     auth_token: str = ""
+    auth_token_file: Path | None = None
     max_output_chars: int = DEFAULT_PTY_OUTPUT_LIMIT_CHARS
     host_state_path: Path | None = None
     start_command: tuple[str, ...] = ()
@@ -50,11 +53,13 @@ class PtyHostTerminalBackend:
         *,
         socket_path: Path,
         auth_token: str = "",
+        auth_token_file: Path | None = None,
         timeout_seconds: float = 2.0,
         supervisor: PtyHostSupervisor | None = None,
     ) -> None:
         self.socket_path = socket_path.expanduser()
         self.auth_token = auth_token
+        self.auth_token_file = auth_token_file
         self.timeout_seconds = timeout_seconds
         self.supervisor = supervisor
 
@@ -122,7 +127,7 @@ class PtyHostTerminalBackend:
 
     def _request(self, action: str, payload: dict[str, object]) -> dict[str, Any]:
         request = {
-            "token": self.auth_token,
+            "token": self.current_auth_token(),
             "action": action,
             "payload": payload,
         }
@@ -190,6 +195,15 @@ class PtyHostTerminalBackend:
             status_code=503,
             details={"reason": str(exc), "socket_path": str(self.socket_path)},
         )
+
+    def current_auth_token(self) -> str:
+        token = pty_host_current_auth_token(
+            auth_token=self.auth_token,
+            auth_token_file=self.auth_token_file,
+        )
+        if token is None:
+            return ""
+        return token
 
 
 class PtyHostSupervisor:
@@ -291,6 +305,7 @@ class PtyHostSupervisor:
             client = PtyHostTerminalBackend(
                 socket_path=self.config.socket_path,
                 auth_token=self.config.auth_token,
+                auth_token_file=self.config.auth_token_file,
                 timeout_seconds=min(self.config.startup_timeout_seconds, 1.0),
             )
             return client.health().get("status") == "ok"
@@ -317,7 +332,16 @@ class PtyHostSupervisor:
         env["AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET"] = str(
             self.config.socket_path.expanduser()
         )
-        env["AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN"] = self.config.auth_token
+        if self.config.auth_token:
+            env["AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN"] = self.config.auth_token
+        else:
+            env.pop("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN", None)
+        if self.config.auth_token_file is not None:
+            env["AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE"] = str(
+                self.config.auth_token_file.expanduser()
+            )
+        else:
+            env.pop("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE", None)
         env["AGENTBRIDGE_TERMINAL_PTY_OUTPUT_LIMIT_CHARS"] = str(
             self.config.max_output_chars
         )
@@ -351,6 +375,7 @@ class PtyHostServer(socketserver.ThreadingUnixStreamServer):
         *,
         socket_path: Path,
         auth_token: str = "",
+        auth_token_file: Path | None = None,
         backend: PtyTerminalBackend | None = None,
     ) -> None:
         self.socket_path = socket_path.expanduser()
@@ -360,6 +385,7 @@ class PtyHostServer(socketserver.ThreadingUnixStreamServer):
                 raise RuntimeError(f"Refusing to replace non-socket path: {self.socket_path}")
             self.socket_path.unlink()
         self.auth_token = auth_token
+        self.auth_token_file = auth_token_file
         self.backend = backend or PtyTerminalBackend()
         super().__init__(str(self.socket_path), PtyHostRequestHandler)
         self.socket_path.chmod(0o600)
@@ -394,7 +420,14 @@ class PtyHostRequestHandler(socketserver.StreamRequestHandler):
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, object]:
         token = request.get("token")
-        if self.server.auth_token and token != self.server.auth_token:
+        expected_tokens, token_configured = pty_host_auth_tokens(
+            auth_token=self.server.auth_token,
+            auth_token_file=self.server.auth_token_file,
+        )
+        if token_configured and not any(
+            isinstance(token, str) and hmac.compare_digest(token, expected_token)
+            for expected_token in expected_tokens
+        ):
             raise AgentBridgeError(
                 ErrorCode.PERMISSION_DENIED,
                 "PTY Host token 无效。",
@@ -476,6 +509,43 @@ def required_str(payload: dict[str, object], key: str) -> str:
     return value
 
 
+def pty_host_auth_tokens(
+    *,
+    auth_token: str,
+    auth_token_file: Path | None,
+) -> tuple[list[str], bool]:
+    tokens: list[str] = []
+    configured = False
+    if auth_token:
+        configured = True
+        tokens.append(auth_token)
+    if auth_token_file is not None:
+        configured = True
+        file_token = pty_host_token_from_file(auth_token_file)
+        if file_token:
+            tokens.append(file_token)
+    return tokens, configured
+
+
+def pty_host_current_auth_token(
+    *,
+    auth_token: str,
+    auth_token_file: Path | None,
+) -> str | None:
+    if auth_token_file is not None:
+        file_token = pty_host_token_from_file(auth_token_file)
+        if file_token:
+            return file_token
+    return auth_token or None
+
+
+def pty_host_token_from_file(path: Path) -> str | None:
+    try:
+        return path.expanduser().read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
 def config_from_env() -> PtyHostConfig:
     socket_path = Path(
         os.environ.get(
@@ -484,7 +554,13 @@ def config_from_env() -> PtyHostConfig:
         )
     ).expanduser()
     token = os.environ.get("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN", "")
-    if not token and os.environ.get("AGENTBRIDGE_TERMINAL_PTY_HOST_REQUIRE_TOKEN"):
+    token_file = os.environ.get("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE", "").strip()
+    token_file_path = Path(token_file).expanduser() if token_file else None
+    if (
+        not token
+        and token_file_path is None
+        and os.environ.get("AGENTBRIDGE_TERMINAL_PTY_HOST_REQUIRE_TOKEN")
+    ):
         token = secrets.token_urlsafe(32)
         print(f"AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN={token}", flush=True)
     max_output_chars = int(
@@ -497,6 +573,7 @@ def config_from_env() -> PtyHostConfig:
     return PtyHostConfig(
         socket_path=socket_path,
         auth_token=token,
+        auth_token_file=token_file_path,
         max_output_chars=max_output_chars,
         host_state_path=Path(host_state).expanduser() if host_state else None,
     )
@@ -510,6 +587,7 @@ def serve(config: PtyHostConfig) -> None:
     server = PtyHostServer(
         socket_path=config.socket_path,
         auth_token=config.auth_token,
+        auth_token_file=config.auth_token_file,
         backend=backend,
     )
     try:

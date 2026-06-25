@@ -2545,6 +2545,12 @@ def create_terminal_backend_from_env():
         ).expanduser()
         host_state_path = os.environ.get("AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH")
         host_state = Path(host_state_path).expanduser() if host_state_path else None
+        host_token = os.environ.get("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN", "")
+        host_token_file = os.environ.get(
+            "AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE",
+            "",
+        ).strip()
+        host_token_file_path = Path(host_token_file).expanduser() if host_token_file else None
         max_output_chars = terminal_pty_output_limit_from_env()
         host_auto_start = env_bool("AGENTBRIDGE_TERMINAL_PTY_HOST_AUTO_START", default=False)
         host_watchdog_enabled = env_bool(
@@ -2555,7 +2561,8 @@ def create_terminal_backend_from_env():
             PtyHostSupervisor(
                 PtyHostSupervisorConfig(
                     socket_path=socket_path,
-                    auth_token=os.environ.get("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN", ""),
+                    auth_token=host_token,
+                    auth_token_file=host_token_file_path,
                     max_output_chars=max_output_chars,
                     host_state_path=host_state,
                     startup_timeout_seconds=env_float(
@@ -2574,7 +2581,8 @@ def create_terminal_backend_from_env():
         )
         return PtyHostTerminalBackend(
             socket_path=socket_path,
-            auth_token=os.environ.get("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN", ""),
+            auth_token=host_token,
+            auth_token_file=host_token_file_path,
             supervisor=supervisor,
         )
     raise RuntimeError("AGENTBRIDGE_TERMINAL_BACKEND must be one of: fake, tmux, pty, pty_host")
