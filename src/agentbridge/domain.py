@@ -409,6 +409,7 @@ class AgentSession(BaseModel):
     status: SessionStatus = SessionStatus.IDLE
     created_by: str
     active_turn_id: str | None = None
+    queue_paused: bool = False
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

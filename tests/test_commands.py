@@ -269,12 +269,26 @@ def test_queue_commands_list_remove_and_clear_queued_turns(tmp_path):
         context.id,
         "queue-command-list",
     )
+    paused = execute(
+        commands,
+        f"/agent queue pause --version {listed.data['queue_version']}",
+        maintainer,
+        context.id,
+        "queue-command-pause",
+    )
+    resumed = execute(
+        commands,
+        f"/agent queue resume --version {paused.data['queue_version']}",
+        maintainer,
+        context.id,
+        "queue-command-resume",
+    )
     moved = execute(
         commands,
         (
             f"/agent queue move {third_turn.data['turn_id']} "
             f"--before {first_turn.data['turn_id']} "
-            f"--version {listed.data['queue_version']}"
+            f"--version {resumed.data['queue_version']}"
         ),
         maintainer,
         context.id,
@@ -312,6 +326,13 @@ def test_queue_commands_list_remove_and_clear_queued_turns(tmp_path):
         third_turn.data["turn_id"],
     ]
     assert listed.data["queue_version"].startswith("qv_")
+    assert listed.data["queue_paused"] is False
+    assert paused.canonical_command == "queue.pause"
+    assert paused.data["queue_paused"] is True
+    assert paused.data["queue_version"] != listed.data["queue_version"]
+    assert resumed.canonical_command == "queue.resume"
+    assert resumed.data["queue_paused"] is False
+    assert resumed.data["queue_version"] != paused.data["queue_version"]
     assert moved.canonical_command == "queue.move"
     assert [turn["id"] for turn in moved.data["turns"]] == [
         third_turn.data["turn_id"],

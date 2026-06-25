@@ -910,13 +910,19 @@ class InMemoryRepository:
         )
 
     @staticmethod
-    def _queue_version_for_turns(turns: list[Turn]) -> str:
-        serialized = "\n".join(turn.id for turn in turns)
+    def _queue_version_for_state(*, turns: list[Turn], queue_paused: bool) -> str:
+        serialized = "\n".join(
+            [f"paused={int(queue_paused)}", *[turn.id for turn in turns]]
+        )
         digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
         return f"qv_{digest}"
 
     def _queue_version_locked(self, session_id: str) -> str:
-        return self._queue_version_for_turns(self._sorted_queue_locked(session_id))
+        session = self.get_session(session_id)
+        return self._queue_version_for_state(
+            turns=self._sorted_queue_locked(session_id),
+            queue_paused=session.queue_paused,
+        )
 
     def _validate_queue_version_locked(
         self,
@@ -1120,11 +1126,18 @@ class InMemoryRepository:
             self.get_session(session_id)
             return self._queue_version_locked(session_id)
 
-    def queue_snapshot(self, session_id: str) -> tuple[list[Turn], str]:
+    def queue_snapshot(self, session_id: str) -> tuple[list[Turn], str, bool]:
         with self._lock:
-            self.get_session(session_id)
+            session = self.get_session(session_id)
             turns = self._sorted_queue_locked(session_id)
-            return turns, self._queue_version_for_turns(turns)
+            return (
+                turns,
+                self._queue_version_for_state(
+                    turns=turns,
+                    queue_paused=session.queue_paused,
+                ),
+                session.queue_paused,
+            )
 
     def get_turn(self, turn_id: str) -> Turn:
         with self._lock:
@@ -1239,12 +1252,45 @@ class InMemoryRepository:
                 updated_turns.append(updated)
             return updated_turns
 
+    def set_turn_queue_paused(
+        self,
+        *,
+        session_id: str,
+        paused: bool,
+        expected_queue_version: str,
+    ) -> AgentSession:
+        with self._lock:
+            session = self.get_session(session_id)
+            self._validate_queue_version_locked(
+                session_id=session_id,
+                expected_queue_version=expected_queue_version,
+            )
+            if session.queue_paused == paused:
+                return session
+            updated = session.model_copy(
+                update={"queue_paused": paused, "updated_at": utc_now()}
+            )
+            self.sessions[session_id] = updated
+            return updated
+
     def start_turn(self, *, session_id: str, turn_id: str) -> Turn:
         with self._lock:
             session = self.get_session(session_id)
             turn = self._get_session_turn(session_id=session_id, turn_id=turn_id)
             if turn.status == TurnStatus.RUNNING:
                 return turn
+            if session.queue_paused and turn.status == TurnStatus.QUEUED:
+                raise AgentBridgeError(
+                    ErrorCode.RESOURCE_CONFLICT,
+                    "当前 Session 队列已暂停，不能开始新的 queued Turn。",
+                    next_step="请执行 /agent queue resume 恢复队列后再开始 Turn。",
+                    status_code=409,
+                    details={
+                        "session_id": session_id,
+                        "turn_id": turn_id,
+                        "queue_paused": True,
+                    },
+                )
             if turn.status in {
                 TurnStatus.COMPLETED,
                 TurnStatus.FAILED,

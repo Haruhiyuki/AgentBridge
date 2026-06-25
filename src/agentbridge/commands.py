@@ -352,10 +352,17 @@ class CommandService:
                 "session": session,
                 "expected_queue_version": queue_version,
             }
+        if action in {"pause", "resume"}:
+            if queue_version is None:
+                raise missing_argument(f"queue {action}", "--version <queue_version>")
+            return f"queue.{action}", {
+                "session": session,
+                "expected_queue_version": queue_version,
+            }
         raise AgentBridgeError(
             ErrorCode.COMMAND_UNKNOWN,
             f"未知 queue 子命令：{action}",
-            next_step="当前可用子命令：list、remove、clear、move。",
+            next_step="当前可用子命令：list、remove、clear、move、pause、resume。",
         )
 
     def _parse_control(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
@@ -644,7 +651,7 @@ class CommandService:
             )
         if command == "queue.list":
             session = self._resolve_session_arg(invocation)
-            turns, queue_version = self.control.list_turn_queue(
+            turns, queue_version, queue_paused = self.control.list_turn_queue(
                 actor=invocation.actor,
                 session_id=session.id,
                 chat_context_id=invocation.chat_context_id,
@@ -660,6 +667,7 @@ class CommandService:
                     "project_id": session.project_id,
                     "session_id": session.id,
                     "queue_version": queue_version,
+                    "queue_paused": queue_paused,
                     "turns": [turn.model_dump(mode="json") for turn in turns],
                 },
             )
@@ -746,6 +754,33 @@ class CommandService:
                     "turn_id": turn.id,
                     "before_turn_id": before_turn.id,
                     "turns": [turn.model_dump(mode="json") for turn in reordered],
+                },
+            )
+        if command in {"queue.pause", "queue.resume"}:
+            session = self._resolve_session_arg(invocation)
+            queue_paused = command == "queue.pause"
+            updated_session, queue_version = self.control.set_turn_queue_paused(
+                actor=invocation.actor,
+                session_id=session.id,
+                paused=queue_paused,
+                expected_queue_version=str(args["expected_queue_version"]),
+                trace_id=invocation.trace_id,
+                chat_context_id=invocation.chat_context_id,
+            )
+            return self._result(
+                invocation,
+                "Queue Paused" if queue_paused else "Queue Resumed",
+                (
+                    f"[{session.short_code}] 队列已"
+                    f"{'暂停' if queue_paused else '恢复'}，"
+                    f"queue_version={queue_version}。"
+                ),
+                {
+                    "project_id": session.project_id,
+                    "session_id": session.id,
+                    "queue_version": queue_version,
+                    "queue_paused": updated_session.queue_paused,
+                    "session": updated_session.model_dump(mode="json"),
                 },
             )
         if command == "queue.clear":

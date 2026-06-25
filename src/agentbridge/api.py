@@ -203,6 +203,14 @@ class QueueReorderRequest(BaseModel):
     trace_id: str = "api"
 
 
+class QueueStateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    expected_queue_version: str
+    trace_id: str = "api"
+
+
 class AcquireLeaseRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -966,12 +974,13 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
 
     @app.get("/api/v1/sessions/{session_id}/queue")
     def list_turn_queue(session_id: str, control: ControlPlane = Depends(get_control)):
-        turns, queue_version = control.list_turn_queue(
+        turns, queue_version, queue_paused = control.list_turn_queue(
             actor=Actor(id="api", roles={"admin"}),
             session_id=session_id,
         )
         return {
             "queue_version": queue_version,
+            "queue_paused": queue_paused,
             "turns": [turn.model_dump(mode="json") for turn in turns],
         }
 
@@ -992,6 +1001,44 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         return {
             "queue_version": queue_version,
             "turns": [turn.model_dump(mode="json") for turn in turns],
+        }
+
+    @app.post("/api/v1/sessions/{session_id}/queue/pause")
+    def pause_turn_queue(
+        session_id: str,
+        payload: QueueStateRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        session, queue_version = control.set_turn_queue_paused(
+            actor=payload.actor.to_actor(),
+            session_id=session_id,
+            paused=True,
+            expected_queue_version=payload.expected_queue_version,
+            trace_id=payload.trace_id,
+        )
+        return {
+            "queue_version": queue_version,
+            "queue_paused": session.queue_paused,
+            "session": session.model_dump(mode="json"),
+        }
+
+    @app.post("/api/v1/sessions/{session_id}/queue/resume")
+    def resume_turn_queue(
+        session_id: str,
+        payload: QueueStateRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        session, queue_version = control.set_turn_queue_paused(
+            actor=payload.actor.to_actor(),
+            session_id=session_id,
+            paused=False,
+            expected_queue_version=payload.expected_queue_version,
+            trace_id=payload.trace_id,
+        )
+        return {
+            "queue_version": queue_version,
+            "queue_paused": session.queue_paused,
+            "session": session.model_dump(mode="json"),
         }
 
     @app.delete("/api/v1/sessions/{session_id}/queue/{turn_id}")
@@ -2361,7 +2408,7 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         and len(path_segments) == 7
         and path_segments[:4] == ["", "api", "v1", "sessions"]
         and path_segments[5] == "queue"
-        and path_segments[6] in {"clear", "reorder"}
+        and path_segments[6] in {"clear", "reorder", "pause", "resume"}
     ):
         return DeviceIdentityScope.SESSION_MANAGE
     if (

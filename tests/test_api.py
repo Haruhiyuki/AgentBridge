@@ -1088,6 +1088,7 @@ def test_managed_device_identity_session_read_scope_allows_session_read_apis(
     assert detail_response.json()["id"] == existing_session["id"]
     assert queue_response.status_code == 200
     assert queue_response.json()["queue_version"].startswith("qv_")
+    assert queue_response.json()["queue_paused"] is False
     assert [turn["id"] for turn in queue_response.json()["turns"]] == [queued_turn["id"]]
     assert create_session_response.status_code == 403
 
@@ -1177,13 +1178,31 @@ def test_managed_device_identity_session_manage_scope_allows_session_write_apis(
         },
         headers=headers,
     )
+    pause_queue_response = client.post(
+        f"/api/v1/sessions/{session_id}/queue/pause",
+        json={
+            "actor": maintainer,
+            "expected_queue_version": control.repository.queue_version(session_id),
+            "trace_id": "session-manager-pause-queue",
+        },
+        headers=headers,
+    )
+    resume_queue_response = client.post(
+        f"/api/v1/sessions/{session_id}/queue/resume",
+        json={
+            "actor": maintainer,
+            "expected_queue_version": pause_queue_response.json().get("queue_version"),
+            "trace_id": "session-manager-resume-queue",
+        },
+        headers=headers,
+    )
     reorder_queue_response = client.post(
         f"/api/v1/sessions/{session_id}/queue/reorder",
         json={
             "actor": maintainer,
             "turn_id": second_queued_turn.id,
             "before_turn_id": first_queued_turn.id,
-            "expected_queue_version": control.repository.queue_version(session_id),
+            "expected_queue_version": resume_queue_response.json().get("queue_version"),
             "trace_id": "session-manager-reorder-queue",
         },
         headers=headers,
@@ -1210,6 +1229,10 @@ def test_managed_device_identity_session_manage_scope_allows_session_write_apis(
     assert lease_response.json()["owner_id"] == "usr_maintainer"
     assert release_response.status_code == 200
     assert release_response.json()["next_epoch"] == lease_response.json()["epoch"] + 1
+    assert pause_queue_response.status_code == 200
+    assert pause_queue_response.json()["queue_paused"] is True
+    assert resume_queue_response.status_code == 200
+    assert resume_queue_response.json()["queue_paused"] is False
     assert reorder_queue_response.status_code == 200
     assert [turn["id"] for turn in reorder_queue_response.json()["turns"]] == [
         second_queued_turn.id,
@@ -2085,13 +2108,39 @@ def test_session_queue_api_lists_removes_and_clears_queued_turns(tmp_path):
 
     list_response = client.get(f"/api/v1/sessions/{session['id']}/queue")
     queue_version = list_response.json()["queue_version"]
+    pause_response = client.post(
+        f"/api/v1/sessions/{session['id']}/queue/pause",
+        json={
+            "actor": maintainer,
+            "expected_queue_version": queue_version,
+            "trace_id": "test-queue-pause",
+        },
+    )
+    paused_queue_version = pause_response.json()["queue_version"]
+    paused_start_response = client.post(
+        f"/api/v1/sessions/{session['id']}/events",
+        json={
+            "type": "turn.started",
+            "turn_id": first_turn["id"],
+            "trace_id": "test-queue-paused-start",
+        },
+    )
+    resume_response = client.post(
+        f"/api/v1/sessions/{session['id']}/queue/resume",
+        json={
+            "actor": maintainer,
+            "expected_queue_version": paused_queue_version,
+            "trace_id": "test-queue-resume",
+        },
+    )
+    resumed_queue_version = resume_response.json()["queue_version"]
     reorder_response = client.post(
         f"/api/v1/sessions/{session['id']}/queue/reorder",
         json={
             "actor": maintainer,
             "turn_id": third_turn["id"],
             "before_turn_id": first_turn["id"],
-            "expected_queue_version": queue_version,
+            "expected_queue_version": resumed_queue_version,
             "trace_id": "test-queue-reorder",
         },
     )
@@ -2137,14 +2186,23 @@ def test_session_queue_api_lists_removes_and_clears_queued_turns(tmp_path):
 
     assert list_response.status_code == 200
     assert queue_version.startswith("qv_")
+    assert list_response.json()["queue_paused"] is False
     assert [turn["id"] for turn in list_response.json()["turns"]] == [
         first_turn["id"],
         second_turn["id"],
         third_turn["id"],
     ]
+    assert pause_response.status_code == 200
+    assert pause_response.json()["queue_paused"] is True
+    assert pause_response.json()["queue_version"] != queue_version
+    assert paused_start_response.status_code == 409
+    assert paused_start_response.json()["details"]["queue_paused"] is True
+    assert resume_response.status_code == 200
+    assert resume_response.json()["queue_paused"] is False
+    assert resume_response.json()["queue_version"] != paused_queue_version
     assert reorder_response.status_code == 200
     assert reordered_queue_version.startswith("qv_")
-    assert reordered_queue_version != queue_version
+    assert reordered_queue_version != resumed_queue_version
     assert [turn["id"] for turn in reorder_response.json()["turns"]] == [
         third_turn["id"],
         first_turn["id"],
@@ -2167,6 +2225,7 @@ def test_session_queue_api_lists_removes_and_clears_queued_turns(tmp_path):
         second_turn["id"],
     ]
     assert final_list_response.status_code == 200
+    assert final_list_response.json()["queue_paused"] is False
     assert final_list_response.json()["turns"] == []
     assert control.repository.turns[first_turn["id"]].status == TurnStatus.CANCELLED
     assert control.repository.turns[second_turn["id"]].status == TurnStatus.CANCELLED
