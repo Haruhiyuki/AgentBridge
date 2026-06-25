@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -10,6 +13,7 @@ from agentbridge.terminal_agent import (
     FakeTerminalBackend,
     TerminalAgentService,
     TerminalInputKind,
+    TmuxTerminalBackend,
 )
 
 
@@ -187,3 +191,55 @@ def test_terminal_api_writes_to_fake_backend_after_lease(tmp_path):
     snapshot_response = client.get(f"/api/v1/sessions/{session_id}/terminal/snapshot")
     assert snapshot_response.status_code == 200
     assert snapshot_response.json()["snapshot"] == "hello api\n"
+
+
+def test_tmux_backend_reuses_existing_session_after_agent_restart(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+    existing_sessions: set[str] = set()
+
+    def fake_which(executable: str) -> str:
+        assert executable == "tmux"
+        return "/usr/bin/tmux"
+
+    def fake_run(
+        args: list[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        assert args[0] == "tmux"
+        assert capture_output is True
+        assert text is True
+        command = args[1]
+        if command == "has-session":
+            name = args[3]
+            return subprocess.CompletedProcess(
+                args,
+                0 if name in existing_sessions else 1,
+                stdout="",
+                stderr="",
+            )
+        if command == "new-session":
+            assert check is True
+            name = args[args.index("-s") + 1]
+            existing_sessions.add(name)
+            return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+        if command == "capture-pane":
+            assert check is True
+            assert args[args.index("-t") + 1] in existing_sessions
+            return subprocess.CompletedProcess(args, 0, stdout="still alive\n", stderr="")
+        raise AssertionError(f"unexpected tmux command: {command}")
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    first_backend = TmuxTerminalBackend("tmux")
+    first_backend.start(session_id="sess/one", cwd=str(tmp_path), command="codex")
+    restarted_backend = TmuxTerminalBackend("tmux")
+    restarted_backend.start(session_id="sess/one", cwd=str(tmp_path), command="ignored")
+
+    new_session_calls = [call for call in calls if call[1] == "new-session"]
+    assert len(new_session_calls) == 1
+    assert restarted_backend.snapshot(session_id="sess/one") == "still alive\n"

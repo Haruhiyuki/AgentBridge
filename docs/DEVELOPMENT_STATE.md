@@ -38,6 +38,8 @@ Implemented in this slice:
 - Terminal Agent input gateway with fake and tmux backends.
 - Local Terminal Agent daemon using JSONL over a Unix socket with token authentication.
 - Local daemon actions for `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, and `snapshot`.
+- Local Terminal Agent client waits briefly for Unix socket recovery, allowing console requests to survive short daemon restart windows.
+- Lifecycle tests cover local daemon socket restart/reconnect behavior and tmux backend reuse of existing sessions after Agent restart.
 - Local Console Client command `agentbridge-console`.
 - Console Client acquires a human writer lease on first input, caches the epoch, forwards text/paste/signal/resize through the daemon, and can release the lease on exit.
 - Terminal input request idempotency now prevents duplicate backend writes for repeated request IDs.
@@ -108,7 +110,9 @@ Not implemented yet:
 - SQLAlchemy persistence is currently a single-process write-through snapshot repository. It is sufficient for restart recovery and contract tests, but multi-process production deployments need row-level updates and stronger transaction boundaries.
 - Terminal input must pass through the AgentBridge gateway. Direct `tmux attach` remains outside the safety model because it bypasses writer leases.
 - The local Terminal Agent socket is token-gated and chmodded to `0600`; production hardening still needs OS user checks, token rotation, and Windows named-pipe parity.
+- Local console/daemon clients open a fresh socket per request and retry connection for short restart windows. Long offline periods still need explicit user-facing reconnect state in raw TTY mode.
 - The first Console Client is line-mode to validate the lease boundary. Raw mode and visible TUI passthrough remain separate work because they need careful terminal state restoration.
+- The tmux backend treats an existing `agentbridge_<session-id>` session as resumable state after Agent restart, matching the design's MVP recovery path.
 - Rendering is split into platform-neutral documents and platform renderers. The first renderer intentionally targets text fallback so unsupported Bot platforms still receive coherent output.
 - Bot delivery idempotency is implemented before real platform integration so duplicate event replay cannot cause duplicate sends once a real transport is attached.
 - Bot delivery records are persisted separately from semantic events so replay, delivery retries, and platform message IDs can evolve without mutating event history.
@@ -137,9 +141,9 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 
 ## Next Development Backlog
 
-1. Add tmux lifecycle supervision tests around the local daemon, including restart/reconnect behavior.
-2. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
-3. Add NoneBot plugin wrapper around the OneBot inbound/outbound adapters.
-4. Add adaptive delivery scheduling from live platform rate-limit responses.
-5. Expand policy engine to ABAC policy rules and project/group-level approval policy management.
-6. Add authenticated WebSocket client contracts for Terminal Agent command transport and Bot Gateway subscriber fan-out.
+1. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
+2. Add NoneBot plugin wrapper around the OneBot inbound/outbound adapters.
+3. Add adaptive delivery scheduling from live platform rate-limit responses.
+4. Expand policy engine to ABAC policy rules and project/group-level approval policy management.
+5. Add authenticated WebSocket client contracts for Terminal Agent command transport and Bot Gateway subscriber fan-out.
+6. Add optional real-tmux integration smoke tests gated on tmux availability.

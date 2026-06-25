@@ -170,12 +170,21 @@ class LocalTerminalAgentServer:
 
 
 class LocalTerminalAgentClient:
-    def __init__(self, socket_path: Path, auth_token: str) -> None:
+    def __init__(
+        self,
+        socket_path: Path,
+        auth_token: str,
+        *,
+        connect_timeout_seconds: float = 2.0,
+        connect_retry_interval_seconds: float = 0.05,
+    ) -> None:
         self.socket_path = socket_path
         self.auth_token = auth_token
+        self.connect_timeout_seconds = max(connect_timeout_seconds, 0.0)
+        self.connect_retry_interval_seconds = max(connect_retry_interval_seconds, 0.01)
 
     async def request(self, action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        reader, writer = await asyncio.open_unix_connection(str(self.socket_path))
+        reader, writer = await self._connect()
         request = {"token": self.auth_token, "action": action, "payload": payload or {}}
         writer.write(json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n")
         await writer.drain()
@@ -185,6 +194,19 @@ class LocalTerminalAgentClient:
         if not line:
             raise RuntimeError("Terminal Agent closed the connection without a response")
         return json.loads(line.decode("utf-8"))
+
+    async def _connect(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.connect_timeout_seconds
+        while True:
+            try:
+                return await asyncio.open_unix_connection(str(self.socket_path))
+            except OSError:
+                if loop.time() >= deadline:
+                    raise
+                await asyncio.sleep(
+                    min(self.connect_retry_interval_seconds, max(deadline - loop.time(), 0.0))
+                )
 
 
 def required_str(payload: dict[str, Any], key: str) -> str:
