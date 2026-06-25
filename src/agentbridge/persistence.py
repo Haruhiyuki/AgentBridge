@@ -24,6 +24,7 @@ from agentbridge.domain import (
     BotDeliveryRecord,
     ChatContext,
     CommandResult,
+    GroupRoleBinding,
     Interaction,
     Project,
     ProjectBinding,
@@ -81,6 +82,16 @@ project_bindings_table = Table(
     Column("project_id", String(64), nullable=False, index=True),
     Column("is_default", Boolean, nullable=False, default=False),
     Column("payload", JSON, nullable=False),
+)
+
+group_role_bindings_table = Table(
+    "group_role_bindings",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("chat_context_id", String(64), nullable=False, index=True),
+    Column("actor_id", String(255), nullable=False, index=True),
+    Column("payload", JSON, nullable=False),
+    UniqueConstraint("chat_context_id", "actor_id", name="uq_group_role_binding_actor"),
 )
 
 sessions_table = Table(
@@ -190,6 +201,8 @@ class SQLAlchemyRepository(InMemoryRepository):
         "create_project",
         "add_workspace",
         "get_or_create_chat_context",
+        "grant_group_roles",
+        "revoke_group_roles",
         "bind_project",
         "update_active_project",
         "update_active_session",
@@ -244,6 +257,12 @@ class SQLAlchemyRepository(InMemoryRepository):
             self.bindings = self._load_mapping(
                 connection, project_bindings_table, ProjectBinding
             )
+            self.group_role_bindings = {
+                (binding.chat_context_id, binding.actor_id): binding
+                for binding in self._load_mapping(
+                    connection, group_role_bindings_table, GroupRoleBinding
+                ).values()
+            }
             self.chat_contexts = self._load_mapping(
                 connection, chat_contexts_table, ChatContext
             )
@@ -325,6 +344,7 @@ class SQLAlchemyRepository(InMemoryRepository):
                 interactions_table,
                 turns_table,
                 sessions_table,
+                group_role_bindings_table,
                 project_bindings_table,
                 chat_contexts_table,
                 workspaces_table,
@@ -385,6 +405,19 @@ class SQLAlchemyRepository(InMemoryRepository):
                         "payload": binding.model_dump(mode="json"),
                     }
                     for binding in self.bindings.values()
+                ],
+            )
+            self._insert_many(
+                connection,
+                group_role_bindings_table,
+                [
+                    {
+                        "id": binding.id,
+                        "chat_context_id": binding.chat_context_id,
+                        "actor_id": binding.actor_id,
+                        "payload": binding.model_dump(mode="json"),
+                    }
+                    for binding in self.group_role_bindings.values()
                 ],
             )
             self._insert_many(

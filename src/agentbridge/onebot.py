@@ -134,7 +134,7 @@ class OneBotInboundAdapter:
         command_prefixes: tuple[str, ...] = ("/agent", "/ab"),
     ) -> None:
         self.bot_instance_id = bot_instance_id
-        self.default_roles = default_roles or {"operator"}
+        self.default_roles = default_roles or {"member"}
         self.command_prefixes = command_prefixes
 
     def command_from_event(self, event: dict[str, Any]) -> OneBotInboundCommand | None:

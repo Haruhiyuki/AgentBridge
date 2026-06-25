@@ -19,6 +19,7 @@ from agentbridge.domain import (
     ChatContext,
     CommandResult,
     ErrorCode,
+    GroupRoleBinding,
     Interaction,
     InteractionStatus,
     InteractionType,
@@ -65,6 +66,7 @@ class InMemoryRepository:
         self.projects: dict[str, Project] = {}
         self.workspaces: dict[str, Workspace] = {}
         self.bindings: dict[str, ProjectBinding] = {}
+        self.group_role_bindings: dict[tuple[str, str], GroupRoleBinding] = {}
         self.chat_contexts: dict[str, ChatContext] = {}
         self.sessions: dict[str, AgentSession] = {}
         self.turns: dict[str, Turn] = {}
@@ -259,6 +261,88 @@ class InMemoryRepository:
                     status_code=404,
                 )
             return context
+
+    def grant_group_roles(
+        self,
+        *,
+        chat_context_id: str,
+        actor_id: str,
+        roles: set[str],
+        granted_by: str,
+    ) -> GroupRoleBinding:
+        with self._lock:
+            self.get_chat_context(chat_context_id)
+            key = (chat_context_id, actor_id)
+            existing = self.group_role_bindings.get(key)
+            now = utc_now()
+            if existing:
+                binding = existing.model_copy(
+                    update={
+                        "roles": set(existing.roles).union(roles),
+                        "granted_by": granted_by,
+                        "updated_at": now,
+                    }
+                )
+            else:
+                binding = GroupRoleBinding(
+                    id=new_id("grb"),
+                    chat_context_id=chat_context_id,
+                    actor_id=actor_id,
+                    roles=set(roles),
+                    granted_by=granted_by,
+                    created_at=now,
+                    updated_at=now,
+                )
+            self.group_role_bindings[key] = binding
+            return binding
+
+    def revoke_group_roles(
+        self,
+        *,
+        chat_context_id: str,
+        actor_id: str,
+        roles: set[str],
+        revoked_by: str,
+    ) -> GroupRoleBinding | None:
+        with self._lock:
+            self.get_chat_context(chat_context_id)
+            key = (chat_context_id, actor_id)
+            existing = self.group_role_bindings.get(key)
+            if not existing:
+                return None
+            remaining_roles = set(existing.roles).difference(roles)
+            if not remaining_roles:
+                self.group_role_bindings.pop(key, None)
+                return None
+            binding = existing.model_copy(
+                update={
+                    "roles": remaining_roles,
+                    "granted_by": revoked_by,
+                    "updated_at": utc_now(),
+                }
+            )
+            self.group_role_bindings[key] = binding
+            return binding
+
+    def list_group_role_bindings(
+        self, chat_context_id: str | None = None
+    ) -> list[GroupRoleBinding]:
+        with self._lock:
+            bindings = list(self.group_role_bindings.values())
+            if chat_context_id:
+                bindings = [
+                    binding for binding in bindings if binding.chat_context_id == chat_context_id
+                ]
+            return sorted(bindings, key=lambda binding: (binding.chat_context_id, binding.actor_id))
+
+    def effective_actor(self, actor: Actor, chat_context_id: str | None = None) -> Actor:
+        with self._lock:
+            if not chat_context_id:
+                return actor
+            binding = self.group_role_bindings.get((chat_context_id, actor.id))
+            if not binding:
+                return actor
+            return actor.model_copy(update={"roles": set(actor.roles).union(binding.roles)})
 
     def bind_project(
         self,

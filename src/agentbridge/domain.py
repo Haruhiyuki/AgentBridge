@@ -230,6 +230,18 @@ class ChatContext(BaseModel):
     pointer_version: int = 0
 
 
+class GroupRoleBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    chat_context_id: str
+    actor_id: str
+    roles: set[str]
+    granted_by: str
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class AgentSession(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

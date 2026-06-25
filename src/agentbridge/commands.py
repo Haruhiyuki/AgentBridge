@@ -34,6 +34,10 @@ COMMAND_ALIASES = {
     "状态": "status",
     "接管": "takeover",
     "释放": "release",
+    "角色": "role",
+    "授权": "grant",
+    "授予": "grant",
+    "撤销": "revoke",
     "健康": "health",
     "上下文": "context",
 }
@@ -60,6 +64,7 @@ KNOWN_ROOTS = {
     "export",
     "control",
     "terminal",
+    "role",
     "settings",
     "verbose",
     "model",
@@ -189,6 +194,8 @@ class CommandService:
             return self._parse_session(tokens)
         if root == "control":
             return self._parse_control(tokens)
+        if root == "role":
+            return self._parse_role(tokens)
         raise AgentBridgeError(
             ErrorCode.COMMAND_UNKNOWN,
             f"子命令暂未实现：{root}",
@@ -287,6 +294,41 @@ class CommandService:
             next_step="可用子命令：status、takeover、release。",
         )
 
+    def _parse_role(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
+        if not tokens:
+            return "role.list", {}
+        action = self._canonical_token(tokens[0])
+        positional, options = parse_options(tokens[1:])
+        if action == "list":
+            return "role.list", {}
+        if action == "grant":
+            if not positional:
+                raise missing_argument("role grant", "<actor-id>")
+            roles = parse_role_values(
+                positional[1:],
+                options.get("role"),
+                options.get("roles"),
+            )
+            if not roles:
+                raise missing_argument("role grant", "<role>")
+            return "role.grant", {"target_actor_id": positional[0], "roles": roles}
+        if action in {"revoke", "remove"}:
+            if not positional:
+                raise missing_argument("role revoke", "<actor-id>")
+            roles = parse_role_values(
+                positional[1:],
+                options.get("role"),
+                options.get("roles"),
+            )
+            if not roles:
+                raise missing_argument("role revoke", "<role>")
+            return "role.revoke", {"target_actor_id": positional[0], "roles": roles}
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_UNKNOWN,
+            f"未知 role 子命令：{action}",
+            next_step="可用子命令：list、grant、revoke。",
+        )
+
     def _execute_uncached(self, invocation: CommandInvocation) -> CommandResult:
         command = invocation.canonical_command
         args = invocation.args
@@ -294,7 +336,7 @@ class CommandService:
             return self._result(
                 invocation,
                 "AgentBridge commands",
-                "可用命令：project、session、ask/send、control、health。",
+                "可用命令：project、session、ask/send、control、role、health。",
             )
         if command == "health":
             return self._result(invocation, "Health", "Control Plane 正常。", self.control.health())
@@ -309,7 +351,9 @@ class CommandService:
         if command == "project.create":
             return self._execute_project_create(invocation)
         if command == "project.list":
-            projects = self.control.list_projects(invocation.actor)
+            projects = self.control.list_projects_for_context(
+                invocation.actor, invocation.chat_context_id
+            )
             return self._result(
                 invocation,
                 "Projects",
@@ -347,7 +391,11 @@ class CommandService:
             return self._execute_session_create(invocation)
         if command == "session.list":
             project_id = self._optional_project_id(invocation)
-            sessions = self.control.list_sessions(invocation.actor, project_id)
+            sessions = self.control.list_sessions_for_context(
+                invocation.actor,
+                project_id=project_id,
+                chat_context_id=invocation.chat_context_id,
+            )
             return self._result(
                 invocation,
                 "Sessions",
@@ -479,6 +527,59 @@ class CommandService:
                     "project_id": session.project_id,
                     "session_id": session.id,
                     "next_epoch": next_epoch,
+                },
+            )
+        if command == "role.list":
+            bindings = self.control.list_group_role_bindings(
+                actor=invocation.actor,
+                chat_context_id=invocation.chat_context_id,
+            )
+            return self._result(
+                invocation,
+                "Role Bindings",
+                f"共 {len(bindings)} 条角色绑定。",
+                {
+                    "chat_context_id": invocation.chat_context_id,
+                    "bindings": [binding.model_dump(mode="json") for binding in bindings],
+                },
+            )
+        if command == "role.grant":
+            roles = set(str(role) for role in args.get("roles", []))
+            binding = self.control.grant_group_roles(
+                actor=invocation.actor,
+                chat_context_id=invocation.chat_context_id,
+                target_actor_id=str(args["target_actor_id"]),
+                roles=roles,
+                trace_id=invocation.trace_id,
+            )
+            return self._result(
+                invocation,
+                "Role Granted",
+                f"已授予 {binding.actor_id}；当前角色：{', '.join(sorted(binding.roles))}。",
+                {
+                    "chat_context_id": invocation.chat_context_id,
+                    "target_actor_id": binding.actor_id,
+                    "binding": binding.model_dump(mode="json"),
+                },
+            )
+        if command == "role.revoke":
+            roles = set(str(role) for role in args.get("roles", []))
+            binding = self.control.revoke_group_roles(
+                actor=invocation.actor,
+                chat_context_id=invocation.chat_context_id,
+                target_actor_id=str(args["target_actor_id"]),
+                roles=roles,
+                trace_id=invocation.trace_id,
+            )
+            current_roles = sorted(binding.roles) if binding else []
+            return self._result(
+                invocation,
+                "Role Revoked",
+                f"已撤销 {args['target_actor_id']}；当前角色：{', '.join(current_roles) or '无'}。",
+                {
+                    "chat_context_id": invocation.chat_context_id,
+                    "target_actor_id": str(args["target_actor_id"]),
+                    "binding": binding.model_dump(mode="json") if binding else None,
                 },
             )
         raise AgentBridgeError(
@@ -693,6 +794,16 @@ def parse_optional_int(value: object) -> int | None:
 
 def parse_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def parse_role_values(positional: list[str], *option_values: object) -> list[str]:
+    values: list[str] = []
+    for item in positional:
+        values.extend(parse_csv(item))
+    for option_value in option_values:
+        if isinstance(option_value, str):
+            values.extend(parse_csv(option_value))
+    return values
 
 
 def missing_argument(command: str, argument: str) -> AgentBridgeError:

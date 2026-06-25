@@ -15,6 +15,7 @@ class Permission(StrEnum):
     APPROVAL_VOTE = "approval.vote"
     TERMINAL_CONTROL = "terminal.control"
     AUDIT_VIEW = "audit.view"
+    GROUP_ROLE_MANAGE = "group.role.manage"
 
 
 ROLE_PERMISSIONS: dict[str, set[Permission]] = {
@@ -43,6 +44,7 @@ ROLE_PERMISSIONS: dict[str, set[Permission]] = {
         Permission.APPROVAL_VOTE,
         Permission.TERMINAL_CONTROL,
         Permission.AUDIT_VIEW,
+        Permission.GROUP_ROLE_MANAGE,
     },
     "admin": set(Permission),
 }

@@ -119,6 +119,80 @@ def test_command_idempotency_does_not_create_duplicate_session(tmp_path):
     assert len(control.repository.sessions) == 1
 
 
+def test_group_role_binding_grants_context_permissions(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    member = Actor(id="usr_member", roles={"member"})
+
+    execute(
+        commands,
+        f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+        maintainer,
+        context.id,
+        "role-project",
+    )
+
+    with pytest.raises(AgentBridgeError) as denied_before_grant:
+        execute(
+            commands,
+            "/agent session new Denied Session",
+            member,
+            context.id,
+            "role-denied-session",
+        )
+    assert denied_before_grant.value.code == ErrorCode.PERMISSION_DENIED
+
+    grant_result = execute(
+        commands,
+        "/agent role grant usr_member operator",
+        maintainer,
+        context.id,
+        "role-grant",
+    )
+    assert grant_result.canonical_command == "role.grant"
+    assert grant_result.data["binding"]["roles"] == ["operator"]
+    assert control.effective_actor(member, context.id).roles == {"member", "operator"}
+
+    list_result = execute(
+        commands,
+        "/agent role list",
+        maintainer,
+        context.id,
+        "role-list",
+    )
+    assert [binding["actor_id"] for binding in list_result.data["bindings"]] == ["usr_member"]
+
+    session_result = execute(
+        commands,
+        "/agent session new Granted Session",
+        member,
+        context.id,
+        "role-granted-session",
+    )
+    assert session_result.data["session"]["created_by"] == "usr_member"
+
+    revoke_result = execute(
+        commands,
+        "/agent role revoke usr_member operator",
+        maintainer,
+        context.id,
+        "role-revoke",
+    )
+    assert revoke_result.data["binding"] is None
+
+    with pytest.raises(AgentBridgeError) as denied_after_revoke:
+        execute(
+            commands,
+            "/agent ask after revoke",
+            member,
+            context.id,
+            "role-denied-turn",
+        )
+    assert denied_after_revoke.value.code == ErrorCode.PERMISSION_DENIED
+
+
 def test_unknown_ascii_command_is_rejected_but_non_command_text_becomes_prompt():
     control = ControlPlane()
     commands = CommandService(control)

@@ -82,6 +82,91 @@ def test_api_returns_product_error_payload_for_permission_denied():
     assert response.json()["side_effect"] == "未执行副作用。"
 
 
+def test_group_role_api_grants_command_permissions(tmp_path):
+    client = TestClient(create_app())
+    chat = {
+        "bot_instance_id": "bot-test",
+        "platform": "onebot.v11",
+        "chat_space_id": "group-roles-api",
+    }
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    member = {"id": "usr_member", "roles": ["member"]}
+    context = client.post("/api/v1/chat-contexts", json=chat).json()
+
+    project_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+            "actor": maintainer,
+            "chat_context_id": context["id"],
+            "idempotency_key": "role-api-project",
+        },
+    )
+    assert project_response.status_code == 200
+
+    denied_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": "/agent session new Denied",
+            "actor": member,
+            "chat_context_id": context["id"],
+            "idempotency_key": "role-api-denied",
+        },
+    )
+    assert denied_response.status_code == 403
+
+    grant_response = client.post(
+        f"/api/v1/chat-contexts/{context['id']}/roles/grant",
+        json={
+            "actor": maintainer,
+            "target_actor_id": "usr_member",
+            "roles": ["operator"],
+            "trace_id": "role-api-grant",
+        },
+    )
+    assert grant_response.status_code == 200
+    assert grant_response.json()["roles"] == ["operator"]
+
+    session_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": "/agent session new Granted",
+            "actor": member,
+            "chat_context_id": context["id"],
+            "idempotency_key": "role-api-granted",
+        },
+    )
+    assert session_response.status_code == 200
+    assert session_response.json()["data"]["session"]["created_by"] == "usr_member"
+
+    list_response = client.get(f"/api/v1/chat-contexts/{context['id']}/roles")
+    assert list_response.status_code == 200
+    assert [binding["actor_id"] for binding in list_response.json()] == ["usr_member"]
+
+    revoke_response = client.post(
+        f"/api/v1/chat-contexts/{context['id']}/roles/revoke",
+        json={
+            "actor": maintainer,
+            "target_actor_id": "usr_member",
+            "roles": ["operator"],
+            "trace_id": "role-api-revoke",
+        },
+    )
+    assert revoke_response.status_code == 200
+    assert revoke_response.json() is None
+
+    denied_turn = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": "/agent ask after revoke",
+            "actor": member,
+            "chat_context_id": context["id"],
+            "idempotency_key": "role-api-denied-turn",
+        },
+    )
+    assert denied_turn.status_code == 403
+
+
 def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
     client = TestClient(create_app())
     chat = {

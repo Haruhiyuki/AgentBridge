@@ -210,7 +210,16 @@ class OneBotEventRequest(BaseModel):
 
     event: dict[str, object]
     bot_instance_id: str = "onebot-http"
-    default_roles: set[str] = Field(default_factory=lambda: {"operator"})
+    default_roles: set[str] = Field(default_factory=lambda: {"member"})
+
+
+class GroupRoleChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    target_actor_id: str
+    roles: set[str]
+    trace_id: str = "api"
 
 
 def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
@@ -344,6 +353,50 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             trace_id=payload.trace_id,
         )
         return context.model_dump(mode="json")
+
+    @app.get("/api/v1/chat-contexts/{chat_context_id}/roles")
+    def list_group_roles(
+        chat_context_id: str,
+        control: ControlPlane = Depends(get_control),
+    ):
+        actor = Actor(id="api", roles={"admin"})
+        return [
+            binding.model_dump(mode="json")
+            for binding in control.list_group_role_bindings(
+                actor=actor,
+                chat_context_id=chat_context_id,
+            )
+        ]
+
+    @app.post("/api/v1/chat-contexts/{chat_context_id}/roles/grant")
+    def grant_group_roles(
+        chat_context_id: str,
+        payload: GroupRoleChangeRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        binding = control.grant_group_roles(
+            actor=payload.actor.to_actor(),
+            chat_context_id=chat_context_id,
+            target_actor_id=payload.target_actor_id,
+            roles=payload.roles,
+            trace_id=payload.trace_id,
+        )
+        return binding.model_dump(mode="json")
+
+    @app.post("/api/v1/chat-contexts/{chat_context_id}/roles/revoke")
+    def revoke_group_roles(
+        chat_context_id: str,
+        payload: GroupRoleChangeRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        binding = control.revoke_group_roles(
+            actor=payload.actor.to_actor(),
+            chat_context_id=chat_context_id,
+            target_actor_id=payload.target_actor_id,
+            roles=payload.roles,
+            trace_id=payload.trace_id,
+        )
+        return binding.model_dump(mode="json") if binding else None
 
     @app.get("/api/v1/sessions")
     def list_sessions(
@@ -585,6 +638,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
                 "session list/new/use/info/close",
                 "ask/send",
                 "control status/takeover/release",
+                "role list/grant/revoke",
             ]
         }
 

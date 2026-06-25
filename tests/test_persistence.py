@@ -70,6 +70,13 @@ def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
         payload={"text": "hello"},
         idempotency_key="persist-terminal-event",
     )
+    role_binding = first_control.grant_group_roles(
+        actor=maintainer,
+        chat_context_id=context.id,
+        target_actor_id="usr_member",
+        roles={"operator"},
+        trace_id="persist-role",
+    )
 
     second_repo = SQLAlchemyRepository(database_url)
     second_control = ControlPlane(repository=second_repo)
@@ -84,12 +91,17 @@ def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
     assert restored_session.name == "Persistent Session"
     assert second_repo.current_lease(session_id) == lease
     assert second_repo.lease_epochs[session_id] == lease.epoch
+    assert second_repo.list_group_role_bindings(context.id) == [role_binding]
+    assert second_control.effective_actor(
+        Actor(id="usr_member", roles={"member"}), context.id
+    ).roles == {"member", "operator"}
     assert [event.type for event in restored_events] == [
         "session.created",
         "turn.queued",
         "lease.acquired",
         "assistant.delta",
     ]
+    assert "group.role_granted" in [event.type for event in second_repo.semantic_events]
     assert len(second_repo.audit_events) >= 5
 
     duplicate_result = second_commands.execute(

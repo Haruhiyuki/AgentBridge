@@ -19,6 +19,7 @@ This repository currently contains the first executable backend slice:
 - Local Console Client that acquires human lease on first input and forwards terminal input.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
 - Bot Gateway delivery service with persistent idempotent delivery records, in-memory text transport, and OneBot V11 HTTP transport.
+- Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - REST API routes aligned with the design document's service interface.
 
 NoneBot integration, Admin Web, visible local console attachment, and real Claude/Codex adapters are planned next milestones.
@@ -115,6 +116,24 @@ curl -X POST http://127.0.0.1:8000/api/v1/onebot/events \
 ```
 
 Only `/agent` and `/ab` text commands are executed. Non-command messages are ignored.
+
+## Group Role Bindings
+
+Command actors can carry bootstrap roles in the request, and AgentBridge can persist extra roles scoped to a chat context. Maintainers can grant a OneBot user operator permissions in the current group:
+
+```text
+/agent role grant onebot:20002 operator
+/agent role list
+/agent role revoke onebot:20002 operator
+```
+
+The same capability is available through:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/chat-contexts/<chat-context-id>/roles/grant \
+  -H 'content-type: application/json' \
+  -d '{"actor":{"id":"usr_1","roles":["maintainer"]},"target_actor_id":"onebot:20002","roles":["operator"]}'
+```
 
 ## Console Client
 

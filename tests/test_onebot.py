@@ -262,3 +262,81 @@ def test_onebot_events_api_ignores_non_commands_and_executes_commands():
     assert handled.status_code == 200
     assert handled.json()["handled"] is True
     assert handled.json()["result"]["canonical_command"] == "health"
+
+
+def test_onebot_events_api_uses_group_role_bindings_for_permissions(tmp_path):
+    client = TestClient(create_app())
+    chat = {
+        "bot_instance_id": "onebot-http",
+        "platform": "onebot.v11",
+        "chat_space_id": "10009",
+    }
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    context = client.post("/api/v1/chat-contexts", json=chat).json()
+
+    project_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+            "actor": maintainer,
+            "chat_context_id": context["id"],
+            "idempotency_key": "onebot-role-project",
+        },
+    )
+    session_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": "/agent session new OneBot Roles",
+            "actor": maintainer,
+            "chat_context_id": context["id"],
+            "idempotency_key": "onebot-role-session",
+        },
+    )
+    assert project_response.status_code == 200
+    assert session_response.status_code == 200
+
+    denied = client.post(
+        "/api/v1/onebot/events",
+        json={
+            "default_roles": ["member"],
+            "event": {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 10009,
+                "user_id": 20002,
+                "message_id": 31001,
+                "raw_message": "/agent ask before grant",
+            },
+        },
+    )
+    assert denied.status_code == 403
+    assert denied.json()["error_code"] == "PERMISSION_DENIED"
+
+    grant_response = client.post(
+        f"/api/v1/chat-contexts/{context['id']}/roles/grant",
+        json={
+            "actor": maintainer,
+            "target_actor_id": "onebot:20002",
+            "roles": ["operator"],
+            "trace_id": "onebot-role-grant",
+        },
+    )
+    assert grant_response.status_code == 200
+
+    handled = client.post(
+        "/api/v1/onebot/events",
+        json={
+            "default_roles": ["member"],
+            "event": {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 10009,
+                "user_id": 20002,
+                "message_id": 31002,
+                "raw_message": "/agent ask after grant",
+            },
+        },
+    )
+    assert handled.status_code == 200
+    assert handled.json()["handled"] is True
+    assert handled.json()["result"]["canonical_command"] == "turn.enqueue"
