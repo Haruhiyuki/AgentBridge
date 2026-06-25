@@ -117,6 +117,7 @@ class CreateProjectRequest(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     description: str | None = None
     default_agent: AgentType = AgentType.CLAUDE
+    max_active_sessions: int = Field(default=10, ge=0)
     trace_id: str = "api"
 
 
@@ -582,6 +583,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             aliases=payload.aliases,
             description=payload.description,
             default_agent=payload.default_agent,
+            max_active_sessions=payload.max_active_sessions,
             trace_id=payload.trace_id,
         )
         return project.model_dump(mode="json")

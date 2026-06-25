@@ -123,6 +123,7 @@ class InMemoryRepository:
         aliases: list[str] | None = None,
         description: str | None = None,
         default_agent: AgentType = AgentType.CLAUDE,
+        max_active_sessions: int = 10,
     ) -> Project:
         with self._lock:
             project_id = new_id("prj")
@@ -134,6 +135,14 @@ class InMemoryRepository:
                     next_step="请使用不同的项目 slug。",
                     status_code=409,
                 )
+            if max_active_sessions < 0:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "项目最大活跃会话数不能为负。",
+                    next_step="请将 max_active_sessions 设置为 0 或更大的整数。",
+                    status_code=400,
+                    details={"max_active_sessions": max_active_sessions},
+                )
             project = Project(
                 id=project_id,
                 name=name.strip(),
@@ -141,6 +150,7 @@ class InMemoryRepository:
                 aliases=[alias.strip() for alias in aliases or [] if alias.strip()],
                 description=description,
                 default_agent=default_agent,
+                max_active_sessions=max_active_sessions,
                 created_by=actor.id,
             )
             self.projects[project.id] = project
@@ -773,6 +783,19 @@ class InMemoryRepository:
                     next_step="请恢复项目或选择其他项目。",
                     status_code=409,
                 )
+            active_session_count = self._count_active_project_sessions(project_id)
+            if active_session_count >= project.max_active_sessions:
+                raise AgentBridgeError(
+                    ErrorCode.QUOTA_EXCEEDED,
+                    "项目活跃会话数已达到配额上限。",
+                    next_step="请关闭不再使用的 Session，或提高项目 max_active_sessions 配额。",
+                    status_code=409,
+                    details={
+                        "project_id": project_id,
+                        "active_sessions": active_session_count,
+                        "max_active_sessions": project.max_active_sessions,
+                    },
+                )
             workspace = (
                 self.get_workspace(workspace_id)
                 if workspace_id
@@ -799,6 +822,18 @@ class InMemoryRepository:
             self.sessions[session.id] = session
             self.lease_epochs[session.id] = 0
             return session
+
+    def _count_active_project_sessions(self, project_id: str) -> int:
+        inactive_statuses = {
+            SessionStatus.CLOSED,
+            SessionStatus.ARCHIVED,
+            SessionStatus.ERROR,
+        }
+        return sum(
+            1
+            for session in self.sessions.values()
+            if session.project_id == project_id and session.status not in inactive_statuses
+        )
 
     def _select_default_workspace(self, project_id: str) -> Workspace:
         candidates = self.list_workspaces(project_id)

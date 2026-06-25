@@ -89,6 +89,7 @@ class ControlPlane:
         aliases: list[str] | None = None,
         description: str | None = None,
         default_agent: AgentType = AgentType.CLAUDE,
+        max_active_sessions: int = 10,
         trace_id: str,
         chat_context_id: str | None = None,
     ) -> Project:
@@ -102,6 +103,7 @@ class ControlPlane:
                 "name": name.strip(),
                 "slug": slug or "",
                 "default_agent": default_agent.value,
+                "max_active_sessions": max_active_sessions,
                 **self._chat_policy_attributes(chat_context_id),
             },
         )
@@ -112,6 +114,7 @@ class ControlPlane:
             aliases=aliases,
             description=description,
             default_agent=default_agent,
+            max_active_sessions=max_active_sessions,
         )
         self.audit(
             action="project.created",
@@ -126,7 +129,11 @@ class ControlPlane:
             source=SemanticEventSource.CONTROL_PLANE,
             trace_id=trace_id,
             project_id=project.id,
-            payload={"name": project.name, "slug": project.slug},
+            payload={
+                "name": project.name,
+                "slug": project.slug,
+                "max_active_sessions": project.max_active_sessions,
+            },
         )
         return project
 
@@ -1889,6 +1896,7 @@ class ControlPlane:
                     "project_slug": project.slug,
                     "project_status": project.status.value,
                     "default_agent": project.default_agent.value,
+                    "max_active_sessions": project.max_active_sessions,
                     "created_by": project.created_by,
                 }
             )

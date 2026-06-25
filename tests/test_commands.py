@@ -122,6 +122,50 @@ def test_command_idempotency_does_not_create_duplicate_session(tmp_path):
     assert len(control.repository.sessions) == 1
 
 
+def test_project_create_command_sets_active_session_quota(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+
+    project_result = execute(
+        commands,
+        (
+            f"/agent project create --name Backend --path {tmp_path} "
+            f"--root {tmp_path} --max-active-sessions 1"
+        ),
+        maintainer,
+        context.id,
+        "quota-project",
+    )
+    project_id = project_result.data["project_id"]
+
+    first = execute(
+        commands,
+        "/agent session new Quota One",
+        maintainer,
+        context.id,
+        "quota-session-one",
+    )
+    with pytest.raises(AgentBridgeError) as blocked:
+        execute(
+            commands,
+            "/agent session new Quota Two",
+            maintainer,
+            context.id,
+            "quota-session-two",
+        )
+
+    assert project_result.data["project"]["max_active_sessions"] == 1
+    assert first.canonical_command == "session.create"
+    assert blocked.value.code == ErrorCode.QUOTA_EXCEEDED
+    assert blocked.value.details == {
+        "project_id": project_id,
+        "active_sessions": 1,
+        "max_active_sessions": 1,
+    }
+
+
 def test_group_role_binding_grants_context_permissions(tmp_path):
     control = ControlPlane()
     commands = CommandService(control)

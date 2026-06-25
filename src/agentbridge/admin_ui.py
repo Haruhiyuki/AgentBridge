@@ -1304,6 +1304,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
               <th>Slug</th>
               <th>Status</th>
               <th>Agent</th>
+              <th>Max Sessions</th>
             </tr>
           </thead>
           <tbody id="projects"></tbody>
@@ -1329,6 +1330,10 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
         <label>
           Aliases
           <input id="project-aliases" autocomplete="off" placeholder="backend, api">
+        </label>
+        <label>
+          Max Active Sessions
+          <input id="project-max-active-sessions" type="number" min="0" step="1" value="10">
         </label>
         <label class="wide">
           Description
@@ -1473,6 +1478,11 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       return trimmed ? trimmed : null;
     }
 
+    function readProjectMaxActiveSessions() {
+      const parsed = Number.parseInt($("project-max-active-sessions").value || "10", 10);
+      return Number.isFinite(parsed) ? Math.max(0, parsed) : 10;
+    }
+
     function setStatus(text) {
       $("status").textContent = text;
     }
@@ -1505,7 +1515,13 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
         const tr = document.createElement("tr");
         tr.dataset.projectId = project.id;
         tr.className = project.id === selectedProjectId ? "selected" : "";
-        for (const value of [project.name, project.slug, project.status, project.default_agent]) {
+        for (const value of [
+          project.name,
+          project.slug,
+          project.status,
+          project.default_agent,
+          project.max_active_sessions,
+        ]) {
           appendCell(tr, value);
         }
         tr.addEventListener("click", () => selectProject(project.id));
@@ -1649,6 +1665,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
           aliases: csv($("project-aliases").value),
           description: optional($("project-description").value),
           default_agent: $("project-agent").value,
+          max_active_sessions: readProjectMaxActiveSessions(),
           trace_id: "admin-ui-project-create",
         }),
       });

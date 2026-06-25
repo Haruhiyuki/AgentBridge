@@ -1522,6 +1522,8 @@ def test_project_session_admin_ui_serves_dashboard():
     assert "async function createProject()" in html
     assert "async function createSession()" in html
     assert "async function closeSession()" in html
+    assert "project-max-active-sessions" in html
+    assert "function readProjectMaxActiveSessions()" in html
     assert "workspace-writable" in html
     assert "workspace-max-write-sessions" in html
     assert "function syncWorkspaceWritePolicy()" in html
@@ -1625,6 +1627,7 @@ def test_workspace_api_configures_read_only_write_policy(tmp_path):
             "trace_id": "test-read-only-workspace-project",
         },
     )
+    assert project_response.status_code == 200
     project = project_response.json()
     workspace_response = client.post(
         f"/api/v1/projects/{project['id']}/workspaces",
@@ -1705,6 +1708,81 @@ def test_workspace_api_rejects_zero_write_capacity_for_writable_workspace(tmp_pa
     assert workspace_response.json()["error_code"] == "COMMAND_ARGUMENT_INVALID"
 
 
+def test_project_active_session_quota_blocks_new_sessions_until_close(tmp_path):
+    client = TestClient(create_app())
+    actor = {"id": "admin-ui", "roles": ["admin"]}
+
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": actor,
+            "name": "Quota Backend",
+            "max_active_sessions": 1,
+            "trace_id": "test-project-quota-project",
+        },
+    )
+    project = project_response.json()
+    workspace_response = client.post(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        json={
+            "actor": actor,
+            "machine_id": "local",
+            "path": str(tmp_path / "repo"),
+            "allowed_root": str(tmp_path),
+            "trace_id": "test-project-quota-workspace",
+        },
+    )
+    assert workspace_response.status_code == 200
+    workspace = workspace_response.json()
+    first_session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": actor,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Quota One",
+            "trace_id": "test-project-quota-first-session",
+        },
+    )
+    blocked_session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": actor,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Quota Two Blocked",
+            "trace_id": "test-project-quota-blocked-session",
+        },
+    )
+    close_response = client.post(
+        f"/api/v1/sessions/{first_session_response.json()['id']}/close",
+        json=actor,
+    )
+    second_session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": actor,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Quota Two",
+            "trace_id": "test-project-quota-second-session",
+        },
+    )
+
+    assert project["max_active_sessions"] == 1
+    assert first_session_response.status_code == 200
+    assert blocked_session_response.status_code == 409
+    blocked_payload = blocked_session_response.json()
+    assert blocked_payload["error_code"] == "QUOTA_EXCEEDED"
+    assert blocked_payload["details"] == {
+        "project_id": project["id"],
+        "active_sessions": 1,
+        "max_active_sessions": 1,
+    }
+    assert close_response.status_code == 200
+    assert second_session_response.status_code == 200
+
+
 def test_project_session_rest_flow_supports_admin_operations(tmp_path):
     client = TestClient(create_app())
     actor = {"id": "admin-ui", "roles": ["admin"]}
@@ -1718,12 +1796,14 @@ def test_project_session_rest_flow_supports_admin_operations(tmp_path):
             "aliases": ["api"],
             "description": "Admin managed project",
             "default_agent": "codex",
+            "max_active_sessions": 3,
             "trace_id": "test-admin-project-create",
         },
     )
     assert project_response.status_code == 200
     project = project_response.json()
     assert project["slug"] == "backend"
+    assert project["max_active_sessions"] == 3
 
     workspace_path = tmp_path / "repo"
     workspace_response = client.post(

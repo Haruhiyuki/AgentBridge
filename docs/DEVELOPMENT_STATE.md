@@ -26,6 +26,7 @@ Implemented in this slice:
 - Idempotent command execution by idempotency key.
 - Optimistic locking for active project/session pointers.
 - Writer lease epoch handling with local human preemption over bot control.
+- Project create APIs, the Project/Session Admin UI, and `/agent project create` expose `max_active_sessions`; Session creation rejects over-quota projects with `QUOTA_EXCEEDED` until inactive sessions release capacity.
 - Workspace create APIs and the Project/Session Admin UI expose `is_writable` and `max_write_sessions`; `read_only` workspaces are normalized to non-writable with zero write slots, and writer lease acquisition enforces the resulting capacity across sessions sharing a Workspace.
 - Audit hash chain for command and domain state changes.
 - Filtered audit API through `GET /api/v1/audit`, backed by repository-level newest-first queries bounded by `limit` and supporting action, actor, trace, project, session, and interaction filters for operational review; SQLAlchemy uses indexed action/actor columns before payload-level filters.
@@ -188,6 +189,7 @@ Not implemented yet:
 - Semantic event replay and semantic event search are separate repository contracts. Replay APIs preserve per-stream ascending `seq` behavior for clients, while `/api/v1/events` and `list_semantic_events` provide bounded newest-first operational search across streams using SQLAlchemy routing columns. The current `q` search inspects serialized JSON payload/details after indexed filters, which is useful for operations but does not replace a normalized payload query layer.
 - SQLAlchemy persistence is currently a single-process write-through snapshot repository. Runtime connection pooling is configurable and migration deployment is documented, but multi-process production deployments still need row-level updates, stronger transaction boundaries, and explicit concurrent-writer policy.
 - Terminal input must pass through the AgentBridge gateway. Direct `tmux attach` remains outside the safety model because it bypasses writer leases and Workspace write-capacity checks.
+- Project `max_active_sessions` counts non-closed, non-archived, non-error sessions. It is enforced before Workspace selection so over-quota requests fail without allocating short codes, sessions, or leases.
 - `WorkspaceType.READ_ONLY` is a backend-enforced write-policy signal: creation requests are normalized to `is_writable=false` and `max_write_sessions=0` before lease enforcement.
 - The local Terminal Agent socket is token-gated, chmodded to `0600`, checks same-user Unix peer credentials by default, and can reread `AGENTBRIDGE_LOCAL_TOKEN_FILE` per request for local token rotation. Windows named-pipe parity and broader production credential lifecycle policy remain future hardening work.
 - Local console/daemon clients open a fresh socket per request and retry connection for short restart windows. Long offline periods still need explicit user-facing reconnect state during raw TTY passthrough.

@@ -255,6 +255,11 @@ class CommandService:
                 ),
                 "aliases": aliases,
                 "machine_id": options.get("machine") or "local",
+                "max_active_sessions": parse_optional_int(
+                    options.get("max-active-sessions")
+                    or options.get("max-active")
+                    or options.get("max-sessions")
+                ),
             }
         raise AgentBridgeError(
             ErrorCode.COMMAND_UNKNOWN,
@@ -836,6 +841,9 @@ class CommandService:
             name=str(args["name"]),
             slug=str(args["slug"]) if args.get("slug") else None,
             aliases=list(args.get("aliases") or []),
+            max_active_sessions=int(args["max_active_sessions"])
+            if args.get("max_active_sessions") is not None
+            else 10,
             trace_id=invocation.trace_id,
             chat_context_id=invocation.chat_context_id,
         )

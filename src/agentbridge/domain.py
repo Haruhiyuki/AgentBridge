@@ -242,6 +242,7 @@ class Project(BaseModel):
     description: str | None = None
     status: ProjectStatus = ProjectStatus.ACTIVE
     default_agent: AgentType = AgentType.CLAUDE
+    max_active_sessions: int = Field(default=10, ge=0)
     policy_id: str | None = None
     created_by: str
     created_at: datetime = Field(default_factory=utc_now)
