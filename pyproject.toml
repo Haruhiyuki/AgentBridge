@@ -27,6 +27,7 @@ dev = [
 agentbridge-api = "agentbridge.api:run"
 agentbridge-console = "agentbridge.console_client:run"
 agentbridge-terminal-agent = "agentbridge.terminal_daemon:run"
+agentbridge-pty-host = "agentbridge.pty_host:run"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

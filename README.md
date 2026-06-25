@@ -72,13 +72,25 @@ export AGENTBRIDGE_TERMINAL_PTY_OUTPUT_LIMIT_CHARS=1000000
 export AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH="$HOME/.agentbridge/pty-host-state.json"
 ```
 
+Run the PTY in an independent local host process when you want API/daemon restarts to reconnect to a still-owned PTY:
+
+```bash
+export AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET="$HOME/.agentbridge/pty-host.sock"
+export AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+uv run agentbridge-pty-host
+
+export AGENTBRIDGE_TERMINAL_BACKEND=pty_host
+export AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET="$HOME/.agentbridge/pty-host.sock"
+export AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN="<same-token>"
+```
+
 Use tmux when you want the MVP restart path to reuse an existing `agentbridge_<session-id>` session:
 
 ```bash
 export AGENTBRIDGE_TERMINAL_BACKEND=tmux
 ```
 
-Terminal input is accepted only when the request carries the current writer lease `epoch`, owner type, and owner ID. Stale Bot/Web inputs are rejected after human or higher-priority control preempts the lease. The PTY backend keeps a bounded cursor-addressable output window from the PTY master fd; stale readers receive a reset frame with the retained tail. When `AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH` is set, PTY start/status/termination updates an atomic JSON host-state registry containing session ID, cwd, command, host pid, child pid, status, exit code, and output cursor metadata for future host supervision. Fake and tmux remain test/MVP backends.
+Terminal input is accepted only when the request carries the current writer lease `epoch`, owner type, and owner ID. Stale Bot/Web inputs are rejected after human or higher-priority control preempts the lease. The PTY backend keeps a bounded cursor-addressable output window from the PTY master fd; stale readers receive a reset frame with the retained tail. When `AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH` is set, PTY start/status/termination updates an atomic JSON host-state registry containing session ID, cwd, command, host pid, child pid, status, exit code, and output cursor metadata for future host supervision. The `pty_host` backend talks to `agentbridge-pty-host` over a chmod `0600` Unix socket, so a restarted API/daemon process can recreate its backend client and continue reading/writing PTYs owned by the host process. Fake and tmux remain test/MVP backends.
 
 ## Local Terminal Agent
 

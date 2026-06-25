@@ -48,6 +48,7 @@ from agentbridge.onebot import (
 )
 from agentbridge.persistence import SQLAlchemyRepository
 from agentbridge.policy import ApprovalPolicy, Permission
+from agentbridge.pty_host import PtyHostTerminalBackend
 from agentbridge.renderer import (
     OneBotV11TextRenderer,
     RenderDocument,
@@ -1899,7 +1900,18 @@ def create_terminal_backend_from_env():
             max_output_chars=terminal_pty_output_limit_from_env(),
             host_state_path=Path(host_state_path).expanduser() if host_state_path else None,
         )
-    raise RuntimeError("AGENTBRIDGE_TERMINAL_BACKEND must be one of: fake, tmux, pty")
+    if backend in {"pty_host", "hosted_pty"}:
+        socket_path = Path(
+            os.environ.get(
+                "AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET",
+                str(Path.home() / ".agentbridge" / "pty-host.sock"),
+            )
+        ).expanduser()
+        return PtyHostTerminalBackend(
+            socket_path=socket_path,
+            auth_token=os.environ.get("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN", ""),
+        )
+    raise RuntimeError("AGENTBRIDGE_TERMINAL_BACKEND must be one of: fake, tmux, pty, pty_host")
 
 
 def create_terminal_lifecycle_policy_from_env() -> TerminalLifecyclePolicy:

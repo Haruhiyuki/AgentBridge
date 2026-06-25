@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
 import time
+from pathlib import Path
+from threading import Thread
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,6 +15,7 @@ from fastapi.testclient import TestClient
 from agentbridge.api import create_app, create_terminal_backend_from_env
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, LeaseOwnerType, Visibility
+from agentbridge.pty_host import PtyHostServer, PtyHostTerminalBackend
 from agentbridge.terminal_agent import (
     FakeTerminalBackend,
     PtyTerminalBackend,
@@ -632,6 +637,78 @@ def test_terminal_backend_env_selects_pty(monkeypatch):
     assert backend.max_output_chars == 2048
     assert backend.host_state_store is not None
     assert str(backend.host_state_store.path) == "/tmp/agentbridge-test-pty-host-state.json"
+
+
+def test_terminal_backend_env_selects_pty_host(monkeypatch, tmp_path):
+    socket_path = Path(f"/tmp/agentbridge-pty-host-{uuid4().hex}.sock")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_BACKEND", "pty_host")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET", str(socket_path))
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN", "secret-token")
+
+    backend = create_terminal_backend_from_env()
+
+    assert isinstance(backend, PtyHostTerminalBackend)
+    assert backend.socket_path == socket_path
+    assert backend.auth_token == "secret-token"
+
+
+def test_pty_host_backend_survives_client_recreation(tmp_path):
+    cat = shutil.which("cat")
+    if cat is None:
+        pytest.skip("cat executable is required for PTY host integration test")
+
+    socket_path = Path(f"/tmp/agentbridge-pty-host-{uuid4().hex}.sock")
+    host_backend = PtyTerminalBackend(host_state_path=tmp_path / "pty-host-state.json")
+    server = PtyHostServer(
+        socket_path=socket_path,
+        auth_token="secret-token",
+        backend=host_backend,
+    )
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    session_id = "pty-host-one"
+    try:
+        first_client = PtyHostTerminalBackend(
+            socket_path=socket_path,
+            auth_token="secret-token",
+        )
+        first_client.start(session_id=session_id, cwd=str(tmp_path), command=cat)
+        first_client.write(
+            session_id=session_id,
+            data="hello hosted pty\n",
+            kind=TerminalInputKind.TEXT,
+        )
+
+        second_client = PtyHostTerminalBackend(
+            socket_path=socket_path,
+            auth_token="secret-token",
+        )
+        deadline = time.monotonic() + 2
+        chunk = TerminalOutputChunk(cursor=0, data="", snapshot="")
+        while time.monotonic() < deadline:
+            chunk = second_client.read_output(session_id=session_id, after_cursor=0)
+            if "hello hosted pty" in chunk.snapshot:
+                break
+            time.sleep(0.05)
+
+        assert "hello hosted pty" in chunk.snapshot
+        status = second_client.status(session_id=session_id)
+        assert status.started is True
+        assert status.running is True
+        assert host_backend.host_state_store is not None
+        record = host_backend.host_state_store.get(session_id)
+        assert record is not None
+        assert record.host_pid == os.getpid()
+        assert record.child_pid == status.pid
+    finally:
+        with contextlib.suppress(Exception):
+            PtyHostTerminalBackend(
+                socket_path=socket_path,
+                auth_token="secret-token",
+            ).terminate(session_id=session_id)
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_pty_backend_streams_process_output(tmp_path):
