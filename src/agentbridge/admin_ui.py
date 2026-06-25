@@ -96,6 +96,10 @@ ADMIN_HOME_HTML = """<!doctype html>
       <strong>Terminal Lifecycle</strong>
       <span>Monitor status, backend supervision, run once</span>
     </a>
+    <a href="/admin/device-identities">
+      <strong>Device Identities</strong>
+      <span>Managed keys, rotation, revocation</span>
+    </a>
     <a href="/admin/bot-delivery">
       <strong>Bot Delivery</strong>
       <span>Records, retry worker, due retry, rate limits</span>
@@ -371,6 +375,7 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
       <a href="/admin/interactions">Interactions</a>
       <a href="/admin/access-policy">Access Policy</a>
       <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
+      <a href="/admin/device-identities">Device Identities</a>
       <a href="/admin/bot-delivery">Bot Delivery</a>
     </nav>
   </header>
@@ -956,6 +961,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       <a href="/admin/interactions">Interactions</a>
       <a href="/admin/audit">Audit & Events</a>
       <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
+      <a href="/admin/device-identities">Device Identities</a>
       <a href="/admin/bot-delivery">Bot Delivery</a>
     </nav>
   </header>
@@ -1591,6 +1597,7 @@ INTERACTION_ADMIN_HTML = """<!doctype html>
       <a href="/admin/access-policy">Access Policy</a>
       <a href="/admin/audit">Audit & Events</a>
       <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
+      <a href="/admin/device-identities">Device Identities</a>
       <a href="/admin/bot-delivery">Bot Delivery</a>
     </nav>
   </header>
@@ -2174,6 +2181,7 @@ ACCESS_POLICY_ADMIN_HTML = """<!doctype html>
       <a href="/admin/interactions">Interactions</a>
       <a href="/admin/audit">Audit & Events</a>
       <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
+      <a href="/admin/device-identities">Device Identities</a>
       <a href="/admin/bot-delivery">Bot Delivery</a>
     </nav>
     <div class="status" id="status">Ready</div>
@@ -2682,6 +2690,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
       <a href="/admin/access-policy">Access Policy</a>
       <a href="/admin/interactions">Interactions</a>
       <a href="/admin/audit">Audit & Events</a>
+      <a href="/admin/device-identities">Device Identities</a>
       <a href="/admin/bot-delivery">Bot Delivery</a>
     </nav>
   </header>
@@ -2836,6 +2845,436 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
     $("refresh").addEventListener("click", () => run(refresh));
     $("run-once").addEventListener("click", () => run(runOnce));
     refresh().catch((error) => setStatus(error.message));
+  </script>
+</body>
+</html>
+"""
+
+
+DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentBridge Device Identities</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --panel-muted: #f0f3f7;
+      --line: #d6dde6;
+      --text: #17202a;
+      --muted: #5b6878;
+      --accent: #0f766e;
+      --danger: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+    header {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-weight: 650;
+    }
+    nav a:hover { color: var(--accent); }
+    main {
+      display: grid;
+      grid-template-columns: minmax(480px, 1.1fr) minmax(420px, .9fr);
+      min-height: calc(100vh - 56px);
+    }
+    section {
+      min-width: 0;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+    }
+    section:last-child { border-right: 0; }
+    .toolbar {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-muted);
+      flex-wrap: wrap;
+    }
+    button, input {
+      min-height: 34px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+    button {
+      cursor: pointer;
+      font-weight: 650;
+    }
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+    button.danger {
+      border-color: var(--danger);
+      background: var(--danger);
+      color: #fff;
+    }
+    label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .compact { max-width: 180px; }
+    .status {
+      flex: 1;
+      min-width: 180px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding: 14px;
+    }
+    .field-grid label.full {
+      grid-column: 1 / -1;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    th, td {
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      color: var(--muted);
+      background: #f9fafb;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    tr { cursor: pointer; }
+    tr.selected td { background: #e8f5f3; }
+    .revoked { color: var(--danger); }
+    .table-wrap {
+      max-height: calc(100vh - 112px);
+      overflow: auto;
+    }
+    pre {
+      margin: 0 14px 14px;
+      padding: 10px;
+      min-height: 118px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfe;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow: auto;
+    }
+    .danger-text { color: var(--danger); }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+      section { border-right: 0; border-bottom: 1px solid var(--line); }
+      .field-grid { grid-template-columns: 1fr; }
+      .field-grid label.full { grid-column: auto; }
+      header { align-items: flex-start; flex-direction: column; }
+      .compact { max-width: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AgentBridge Device Identities</h1>
+    <nav>
+      <a href="/admin">Admin</a>
+      <a href="/admin/projects">Projects & Sessions</a>
+      <a href="/admin/access-policy">Access Policy</a>
+      <a href="/admin/interactions">Interactions</a>
+      <a href="/admin/audit">Audit & Events</a>
+      <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
+      <a href="/admin/bot-delivery">Bot Delivery</a>
+    </nav>
+  </header>
+  <main>
+    <section>
+      <div class="toolbar">
+        <button id="refresh" type="button">Refresh</button>
+        <label class="compact">
+          Include Revoked
+          <input id="include-revoked" type="checkbox">
+        </label>
+        <div class="status" id="status">Ready</div>
+      </div>
+      <div class="table-wrap">
+        <table aria-label="Device identities">
+          <thead>
+            <tr>
+              <th>Device ID</th>
+              <th>Name</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th>Last Used</th>
+            </tr>
+          </thead>
+          <tbody id="devices"></tbody>
+        </table>
+      </div>
+    </section>
+    <section>
+      <div class="toolbar">
+        <button id="new-device" type="button">New</button>
+        <button id="save-device" class="primary" type="button">Create / Rotate</button>
+        <button id="revoke-device" class="danger" type="button">Revoke</button>
+      </div>
+      <div class="field-grid">
+        <label>
+          Actor ID
+          <input id="actor-id" value="admin-ui">
+        </label>
+        <label>
+          Actor Roles
+          <input id="actor-roles" value="admin">
+        </label>
+        <label>
+          Auth Device ID
+          <input id="auth-device-id" autocomplete="off">
+        </label>
+        <label>
+          Auth Device Key
+          <input id="auth-device-key" type="password" autocomplete="off">
+        </label>
+        <label>
+          Device ID
+          <input id="device-id" autocomplete="off">
+        </label>
+        <label>
+          Display Name
+          <input id="display-name" autocomplete="off">
+        </label>
+        <label class="full">
+          New Device Key
+          <input
+            id="device-key"
+            type="password"
+            autocomplete="new-password"
+            placeholder="optional generated key"
+          >
+        </label>
+      </div>
+      <pre id="generated-key">{}</pre>
+      <pre id="selected">{}</pre>
+      <pre id="error" class="danger-text"></pre>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let selectedDeviceId = "";
+
+    function csv(value) {
+      return value.split(",").map((item) => item.trim()).filter(Boolean);
+    }
+
+    function actor() {
+      return {
+        id: $("actor-id").value.trim() || "admin-ui",
+        roles: csv($("actor-roles").value || "admin"),
+      };
+    }
+
+    function authHeaders() {
+      const headers = {"content-type": "application/json"};
+      const deviceId = $("auth-device-id").value.trim();
+      const deviceKey = $("auth-device-key").value.trim();
+      if (deviceId && deviceKey) {
+        headers["x-agentbridge-device-id"] = deviceId;
+        headers["x-agentbridge-device-key"] = deviceKey;
+      }
+      return headers;
+    }
+
+    function setStatus(text) {
+      $("status").textContent = text;
+    }
+
+    async function requestJson(url, options = {}) {
+      const response = await fetch(url, {
+        headers: authHeaders(),
+        ...options,
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || data.detail || response.statusText);
+      }
+      return data;
+    }
+
+    function devicesUrl() {
+      const params = new URLSearchParams();
+      if ($("include-revoked").checked) params.set("include_revoked", "true");
+      const suffix = params.toString();
+      return `/api/v1/device-identities${suffix ? `?${suffix}` : ""}`;
+    }
+
+    function renderDevices(devices) {
+      const rows = devices.map((device) => {
+        const tr = document.createElement("tr");
+        tr.dataset.deviceId = device.device_id;
+        tr.className = [
+          device.device_id === selectedDeviceId ? "selected" : "",
+          device.status === "revoked" ? "revoked" : "",
+        ].filter(Boolean).join(" ");
+        for (const value of [
+          device.device_id,
+          device.display_name || "",
+          device.status,
+          device.created_at || "",
+          device.last_used_at || "",
+        ]) {
+          const td = document.createElement("td");
+          td.textContent = String(value);
+          td.title = String(value);
+          tr.appendChild(td);
+        }
+        tr.addEventListener("click", () => selectDevice(device));
+        return tr;
+      });
+      $("devices").replaceChildren(...rows);
+      setStatus(`${devices.length} device identities`);
+    }
+
+    function selectDevice(device) {
+      selectedDeviceId = device.device_id;
+      $("device-id").value = device.device_id;
+      $("display-name").value = device.display_name || "";
+      $("device-key").value = "";
+      $("selected").textContent = JSON.stringify(device, null, 2);
+      document.querySelectorAll("#devices tr").forEach((row) => {
+        row.classList.toggle("selected", row.dataset.deviceId === selectedDeviceId);
+      });
+    }
+
+    function newDevice() {
+      selectedDeviceId = "";
+      $("device-id").value = "";
+      $("display-name").value = "";
+      $("device-key").value = "";
+      $("selected").textContent = "{}";
+      $("generated-key").textContent = "{}";
+      document.querySelectorAll("#devices tr").forEach((row) => row.classList.remove("selected"));
+      setStatus("New device identity");
+    }
+
+    async function loadDevices() {
+      setStatus("Loading");
+      const devices = await requestJson(devicesUrl());
+      renderDevices(devices);
+    }
+
+    async function upsertDevice() {
+      const deviceId = $("device-id").value.trim();
+      if (!deviceId) throw new Error("Device ID is required");
+      const payload = {
+        actor: actor(),
+        device_id: deviceId,
+        display_name: $("display-name").value.trim() || null,
+        device_key: $("device-key").value.trim() || null,
+        trace_id: "admin-ui-device-upsert",
+      };
+      const saved = await requestJson("/api/v1/device-identities", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      if (saved.device_key) {
+        $("auth-device-id").value = saved.device_id;
+        $("auth-device-key").value = saved.device_key;
+        $("generated-key").textContent = JSON.stringify({
+          device_id: saved.device_id,
+          device_key: saved.device_key,
+        }, null, 2);
+      }
+      $("device-key").value = "";
+      selectedDeviceId = saved.device_id;
+      await loadDevices();
+      setStatus(`Saved ${saved.device_id}`);
+    }
+
+    async function revokeDevice() {
+      const deviceId = $("device-id").value.trim();
+      if (!deviceId) throw new Error("Device ID is required");
+      const revoked = await requestJson(
+        `/api/v1/device-identities/${encodeURIComponent(deviceId)}/revoke`,
+        {
+          method: "POST",
+          body: JSON.stringify({actor: actor(), trace_id: "admin-ui-device-revoke"}),
+        },
+      );
+      selectedDeviceId = revoked.device_id;
+      $("include-revoked").checked = true;
+      await loadDevices();
+      setStatus(`Revoked ${revoked.device_id}`);
+    }
+
+    async function run(action) {
+      try {
+        $("error").textContent = "";
+        await action();
+      } catch (error) {
+        $("error").textContent = error.message;
+        setStatus(error.message);
+      }
+    }
+
+    $("refresh").addEventListener("click", () => run(loadDevices));
+    $("include-revoked").addEventListener("change", () => run(loadDevices));
+    $("new-device").addEventListener("click", newDevice);
+    $("save-device").addEventListener("click", () => run(upsertDevice));
+    $("revoke-device").addEventListener("click", () => run(revokeDevice));
+    loadDevices().catch((error) => {
+      $("error").textContent = error.message;
+      setStatus(error.message);
+    });
   </script>
 </body>
 </html>
@@ -3036,6 +3475,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
       <a href="/admin/interactions">Interactions</a>
       <a href="/admin/audit">Audit & Events</a>
       <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
+      <a href="/admin/device-identities">Device Identities</a>
     </nav>
   </header>
   <main>

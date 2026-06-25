@@ -20,6 +20,7 @@ from agentbridge.admin_ui import (
     ADMIN_HOME_HTML,
     AUDIT_EVENTS_ADMIN_HTML,
     BOT_DELIVERY_ADMIN_HTML,
+    DEVICE_IDENTITY_ADMIN_HTML,
     INTERACTION_ADMIN_HTML,
     PROJECT_SESSION_ADMIN_HTML,
     TERMINAL_LIFECYCLE_ADMIN_HTML,
@@ -520,6 +521,10 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     @app.get("/admin/terminal-lifecycle", response_class=HTMLResponse)
     def terminal_lifecycle_admin_ui(request: Request):
         return admin_html_response(request, TERMINAL_LIFECYCLE_ADMIN_HTML)
+
+    @app.get("/admin/device-identities", response_class=HTMLResponse)
+    def device_identity_admin_ui(request: Request):
+        return admin_html_response(request, DEVICE_IDENTITY_ADMIN_HTML)
 
     @app.get("/admin/bot-delivery", response_class=HTMLResponse)
     def bot_delivery_admin_ui(request: Request):

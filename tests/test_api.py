@@ -241,6 +241,23 @@ def test_interaction_admin_ui_serves_dashboard():
     assert "async function voteInteraction(approve)" in html
 
 
+def test_device_identity_admin_ui_serves_dashboard():
+    client = TestClient(create_app())
+
+    response = client.get("/admin/device-identities")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    html = response.text
+    assert "AgentBridge Device Identities" in html
+    assert "/api/v1/device-identities" in html
+    assert "async function loadDevices()" in html
+    assert "async function upsertDevice()" in html
+    assert "async function revokeDevice()" in html
+    assert "auth-device-key" in html
+    assert "generated-key" in html
+
+
 def test_audit_events_admin_ui_serves_dashboard():
     client = TestClient(create_app())
 

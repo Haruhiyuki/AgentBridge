@@ -29,7 +29,7 @@ This repository currently contains the first executable backend slice:
 - Project/chat-context approval quorum overrides through REST and `/agent policy`.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - Persistent access policy allow/deny rules with action/resource/actor/role/attribute matching and a simulation API.
-- Built-in Admin Web pages for project/session operations, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, and Bot delivery operations, with optional token-gated browser access.
+- Built-in Admin Web pages for project/session operations, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
 Production PTY supervision, mTLS/device certificate rotation, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
@@ -405,8 +405,8 @@ Rules are persisted by Alembic migration `0007_access_policy_rules`. The REST an
 
 The built-in admin entrypoint is available at `http://127.0.0.1:8000/admin`.
 It links to the project/session operations dashboard, interaction/approval dashboard,
-audit/event explorer, access policy editor, terminal lifecycle dashboard, and Bot
-delivery operations dashboard. The project/session page lists projects, adds
+audit/event explorer, access policy editor, terminal lifecycle dashboard, device
+identity dashboard, and Bot delivery operations dashboard. The project/session page lists projects, adds
 workspaces, creates sessions, and closes selected sessions through the same REST APIs
 used by external clients. The interaction page lists and filters questions/approvals,
 creates new interactions, answers questions, votes on approvals, and cancels pending
@@ -416,6 +416,8 @@ session semantic events, and can live-tail a selected session's event stream ove
 WebSocket.
 The policy editor lists rules, edits allow/deny match criteria, runs
 `/api/v1/access-policy/simulate`, and saves through the same audited REST APIs.
+The device identities page lists active/revoked managed devices, creates or rotates
+device keys, shows the generated key once, and revokes selected devices.
 
 Set `AGENTBRIDGE_ADMIN_TOKEN` to require a browser token before serving `/admin` pages.
 When `AGENTBRIDGE_API_TOKEN` is configured and `AGENTBRIDGE_ADMIN_TOKEN` is not, the
