@@ -91,6 +91,16 @@ class TerminalRestartResult:
         }
 
 
+@dataclass(frozen=True)
+class TerminalLifecyclePolicy:
+    auto_restart_on_lost: bool = False
+    auto_restart_max_attempts: int = 1
+
+    def __post_init__(self) -> None:
+        if self.auto_restart_max_attempts < 0:
+            raise ValueError("auto_restart_max_attempts must be non-negative")
+
+
 class TerminalBackend(Protocol):
     def start(self, *, session_id: str, cwd: str, command: str) -> None: ...
 
@@ -514,12 +524,20 @@ class PtyTerminalBackend:
 
 
 class TerminalAgentService:
-    def __init__(self, control: ControlPlane, backend: TerminalBackend | None = None) -> None:
+    def __init__(
+        self,
+        control: ControlPlane,
+        backend: TerminalBackend | None = None,
+        *,
+        lifecycle_policy: TerminalLifecyclePolicy | None = None,
+    ) -> None:
         self.control = control
         self.backend = backend or FakeTerminalBackend()
+        self.lifecycle_policy = lifecycle_policy or TerminalLifecyclePolicy()
         self._terminal_start_generations: dict[str, int] = {}
         self._reported_terminal_exits: set[tuple[str, int]] = set()
         self._reported_terminal_losses: set[tuple[str, int]] = set()
+        self._auto_restart_attempts: dict[str, int] = {}
         self._lifecycle_lock = RLock()
         self._lifecycle_stop_event = Event()
         self._lifecycle_thread: Thread | None = None
@@ -535,6 +553,8 @@ class TerminalAgentService:
         session_id: str,
         command: str = "sh",
         trace_id: str,
+        restart_of_generation: int | None = None,
+        restart_reason: str | None = None,
     ) -> int:
         session = self.control.repository.get_session(session_id)
         workspace = self.control.repository.get_workspace(session.workspace_id)
@@ -542,13 +562,18 @@ class TerminalAgentService:
         with self._lifecycle_lock:
             generation = self._terminal_start_generations.get(session_id, 0) + 1
             self._terminal_start_generations[session_id] = generation
+        payload = {"workspace_id": workspace.id, "command": command, "generation": generation}
+        if restart_of_generation is not None:
+            payload["restart_of_generation"] = restart_of_generation
+        if restart_reason is not None:
+            payload["restart_reason"] = restart_reason
         self.control.emit_event(
             event_type="terminal.started",
             source=SemanticEventSource.TERMINAL_AGENT,
             trace_id=trace_id,
             project_id=session.project_id,
             session_id=session_id,
-            payload={"workspace_id": workspace.id, "command": command, "generation": generation},
+            payload=payload,
         )
         return generation
 
@@ -558,6 +583,7 @@ class TerminalAgentService:
         session_id: str,
         command: str | None = None,
         trace_id: str,
+        restart_reason: str = "manual_restart",
     ) -> TerminalRestartResult:
         if command is None:
             start_spec = self.latest_start_spec(session_id=session_id)
@@ -590,6 +616,8 @@ class TerminalAgentService:
             session_id=session_id,
             command=restart_command,
             trace_id=trace_id,
+            restart_of_generation=start_spec.generation,
+            restart_reason=restart_reason,
         )
         return TerminalRestartResult(
             status="restarted",
@@ -750,7 +778,14 @@ class TerminalAgentService:
         errors: list[str] = []
         for session_id in session_ids:
             try:
-                observed[session_id] = self.status(session_id=session_id, trace_id=trace_id)
+                status = self.status(session_id=session_id, trace_id=trace_id)
+                observed[session_id] = status
+                if self._should_auto_restart_lost(session_id=session_id, status=status):
+                    self.restart_session(
+                        session_id=session_id,
+                        trace_id=f"{trace_id}:auto-restart",
+                        restart_reason="auto_lost_restart",
+                    )
             except Exception as exc:
                 errors.append(f"{session_id}: {exc}")
         with self._lifecycle_lock:
@@ -839,6 +874,11 @@ class TerminalAgentService:
                 "last_observed_count": self._lifecycle_last_observed_count,
                 "reported_exit_count": len(self._reported_terminal_exits),
                 "reported_lost_count": len(self._reported_terminal_losses),
+                "auto_restart_on_lost": self.lifecycle_policy.auto_restart_on_lost,
+                "auto_restart_max_attempts": (
+                    self.lifecycle_policy.auto_restart_max_attempts
+                ),
+                "auto_restart_attempt_count": sum(self._auto_restart_attempts.values()),
             }
 
     def _run_lifecycle_monitor_loop(self) -> None:
@@ -911,3 +951,19 @@ class TerminalAgentService:
         )
         with self._lifecycle_lock:
             self._reported_terminal_losses.add(loss_key)
+
+    def _should_auto_restart_lost(self, *, session_id: str, status: TerminalStatus) -> bool:
+        if not self.lifecycle_policy.auto_restart_on_lost:
+            return False
+        if status.started or status.running:
+            return False
+        if self.lifecycle_policy.auto_restart_max_attempts <= 0:
+            return False
+        with self._lifecycle_lock:
+            if self._terminal_start_generations.get(session_id, 0) <= 0:
+                return False
+            attempts = self._auto_restart_attempts.get(session_id, 0)
+            if attempts >= self.lifecycle_policy.auto_restart_max_attempts:
+                return False
+            self._auto_restart_attempts[session_id] = attempts + 1
+        return True

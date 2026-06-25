@@ -15,6 +15,7 @@ from agentbridge.terminal_agent import (
     PtyTerminalBackend,
     TerminalAgentService,
     TerminalInputKind,
+    TerminalLifecyclePolicy,
     TerminalOutputChunk,
     TerminalStatus,
     TmuxTerminalBackend,
@@ -295,6 +296,93 @@ def test_terminal_lifecycle_monitor_reports_lost_recovered_session_once(tmp_path
         if event.type == "terminal.lost"
     ]
     assert len(lost_events) == 1
+
+
+def test_terminal_lifecycle_monitor_auto_restarts_lost_session(tmp_path):
+    control = ControlPlane()
+    first_terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+    _, session = create_session(control, tmp_path)
+    first_terminal.start_session(
+        session_id=session.id,
+        command="fake-cli --resume",
+        trace_id="terminal-start-before-auto-restart",
+    )
+    recovered_backend = FakeTerminalBackend()
+    recovered_terminal = TerminalAgentService(
+        control,
+        backend=recovered_backend,
+        lifecycle_policy=TerminalLifecyclePolicy(
+            auto_restart_on_lost=True,
+            auto_restart_max_attempts=1,
+        ),
+    )
+
+    observed = recovered_terminal.run_lifecycle_monitor_once(
+        trace_id="terminal-monitor-auto-restart"
+    )
+
+    assert observed[session.id] == TerminalStatus(started=False, running=False)
+    assert recovered_backend.started[session.id] == (str(tmp_path), "fake-cli --resume")
+    assert [event.type for event in control.repository.list_events(session_id=session.id)] == [
+        "session.created",
+        "terminal.started",
+        "terminal.lost",
+        "terminal.started",
+    ]
+    started_events = [
+        event
+        for event in control.repository.list_events(session_id=session.id)
+        if event.type == "terminal.started"
+    ]
+    assert started_events[-1].payload == {
+        "workspace_id": session.workspace_id,
+        "command": "fake-cli --resume",
+        "generation": 2,
+        "restart_of_generation": 1,
+        "restart_reason": "auto_lost_restart",
+    }
+    assert recovered_terminal.lifecycle_monitor_status()["auto_restart_attempt_count"] == 1
+
+
+def test_terminal_lifecycle_auto_restart_attempts_are_bounded(tmp_path):
+    class AlwaysLostBackend(FakeTerminalBackend):
+        def status(self, *, session_id: str) -> TerminalStatus:
+            return TerminalStatus(started=False, running=False)
+
+    control = ControlPlane()
+    first_terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+    _, session = create_session(control, tmp_path)
+    first_terminal.start_session(
+        session_id=session.id,
+        command="fake-cli --resume",
+        trace_id="terminal-start-before-auto-restart-limit",
+    )
+    recovered_backend = AlwaysLostBackend()
+    recovered_terminal = TerminalAgentService(
+        control,
+        backend=recovered_backend,
+        lifecycle_policy=TerminalLifecyclePolicy(
+            auto_restart_on_lost=True,
+            auto_restart_max_attempts=1,
+        ),
+    )
+
+    recovered_terminal.run_lifecycle_monitor_once(trace_id="terminal-monitor-auto-restart-1")
+    recovered_terminal.run_lifecycle_monitor_once(trace_id="terminal-monitor-auto-restart-2")
+
+    started_events = [
+        event
+        for event in control.repository.list_events(session_id=session.id)
+        if event.type == "terminal.started"
+    ]
+    lost_events = [
+        event
+        for event in control.repository.list_events(session_id=session.id)
+        if event.type == "terminal.lost"
+    ]
+    assert len(started_events) == 2
+    assert len(lost_events) == 2
+    assert recovered_terminal.lifecycle_monitor_status()["auto_restart_attempt_count"] == 1
 
 
 def test_terminal_restart_uses_last_started_command_after_backend_state_loss(tmp_path):

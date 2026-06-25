@@ -54,6 +54,7 @@ Implemented in this slice:
 - Terminal lifecycle tracking is reconstructed from persisted semantic events at service startup, restoring known terminal start generations and already-reported exits after Control Plane or daemon process restarts.
 - Recovered terminal generations whose backend state is missing emit `terminal.lost` once per generation, with persisted de-duplication and an operator-visible renderer fallback.
 - Terminal restart can be requested through REST, Terminal WebSocket, and the local daemon; if no command is supplied, it reuses the latest persisted `terminal.started` command, records a new start generation, and avoids replacing an already-running backend.
+- Terminal lifecycle policy can automatically restart lost recovered terminals with `AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=true`, capped by `AGENTBRIDGE_TERMINAL_AUTO_RESTART_MAX_ATTEMPTS` to prevent restart loops.
 - Local Terminal Agent can open a visible desktop console after `start_session` through `AGENTBRIDGE_TERMINAL_AUTO_OPEN`, either with a custom `AGENTBRIDGE_TERMINAL_OPEN_COMMAND` template or built-in `AGENTBRIDGE_TERMINAL_OPEN_PRESET` values.
 - Built-in desktop terminal presets support `auto`, `macos-terminal`, `gnome-terminal`, `konsole`, `wezterm`, `alacritty`, `kitty`, and `xterm`; token/socket state is kept out of launched argv and supplied through environment variables or a short-lived local launcher script for macOS Terminal.
 - Terminal input request idempotency now prevents duplicate backend writes for repeated request IDs.
@@ -124,7 +125,7 @@ Implemented in this slice:
 
 Not implemented yet:
 
-- Automatic PTY process restart recovery, independent PTY host process supervision, and durable PTY host state that can preserve or reattach actual PTY process/FD state across Agent process restarts.
+- Independent PTY host process supervision and durable PTY host state that can preserve or reattach actual PTY process/FD state across Agent process restarts.
 - Richer OneBot renderer/action adapter and native NoneBot lifecycle registration helpers.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
@@ -148,7 +149,8 @@ Not implemented yet:
 - Console raw mode is still an input/control passthrough over the Terminal Agent socket, not a full terminal emulator. Its daemon output stream consumes backend cursor chunks; with `AGENTBRIDGE_TERMINAL_BACKEND=pty` those chunks come from a stdlib PTY reader loop, while fake/tmux remain snapshot-derived.
 - The stdlib PTY backend is opt-in for local experiments. Fake remains the default test backend, and tmux remains the resumable MVP backend after Agent process restarts.
 - The PTY backend uses a bounded retained-output window rather than recording all terminal output. Cursor values are absolute within the session lifetime; when a reader falls behind the retained window, `read_output`/`stream_output` returns `reset=True` with the retained tail so consoles can repaint deterministically.
-- Terminal exit observation can be driven by the in-process lifecycle monitor, so clients do not have to call `status` to produce `terminal.exited`. The monitor recovers tracked terminal generations from semantic events and emits `terminal.lost` when a recovered generation has no observable backend session. `restart_session` can explicitly recover a lost/exited backend from the latest persisted command, but production lifecycle supervision still needs an independent PTY host or persistent scheduler that keeps the actual CLI/PTY process alive across Agent process restarts.
+- Terminal exit observation can be driven by the in-process lifecycle monitor, so clients do not have to call `status` to produce `terminal.exited`. The monitor recovers tracked terminal generations from semantic events and emits `terminal.lost` when a recovered generation has no observable backend session. `restart_session` can explicitly recover a lost/exited backend from the latest persisted command, and the opt-in auto-restart policy can do that for lost recovered terminals with a bounded attempt count. Production lifecycle supervision still needs an independent PTY host or persistent scheduler that keeps the actual CLI/PTY process alive across Agent process restarts.
+- Automatic lost-terminal restart is disabled by default because restarting a native CLI can have side effects. Operators must opt in with `AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=true`, and `AGENTBRIDGE_TERMINAL_AUTO_RESTART_MAX_ATTEMPTS` bounds restart attempts per service process.
 - Desktop terminal auto-open is opt-in. Custom command templates remain supported, and built-in presets cover macOS Terminal plus common Linux terminal emulators. The daemon keeps sensitive local token/socket state out of launched argv; macOS Terminal uses a mode-0700 short-lived launcher script because AppleScript cannot directly propagate the daemon's environment into the new shell.
 - The tmux backend treats an existing `agentbridge_<session-id>` session as resumable state after Agent restart, matching the design's MVP recovery path.
 - Rendering is split into platform-neutral documents and platform renderers. The first renderer intentionally targets text fallback so unsupported Bot platforms still receive coherent output.
@@ -190,7 +192,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 
 ## Next Development Backlog
 
-1. Add production PTY lifecycle hardening, including automatic PTY process restart recovery, independent host process supervision, and durable PTY host state that can preserve or reattach live terminal processes.
+1. Add production PTY lifecycle hardening, including independent host process supervision and durable PTY host state that can preserve or reattach live terminal processes.
 2. Add an admin policy editor UI for access policy rules with simulation before save.
 3. Replace the MVP WebSocket token gate with mTLS/device-key auth.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.

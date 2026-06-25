@@ -60,6 +60,7 @@ from agentbridge.terminal_agent import (
     PtyTerminalBackend,
     TerminalAgentService,
     TerminalInputKind,
+    TerminalLifecyclePolicy,
     TmuxTerminalBackend,
 )
 
@@ -394,7 +395,11 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         approval_policy=create_approval_policy_from_env(),
     )
     commands = CommandService(control)
-    terminal = TerminalAgentService(control, backend=create_terminal_backend_from_env())
+    terminal = TerminalAgentService(
+        control,
+        backend=create_terminal_backend_from_env(),
+        lifecycle_policy=create_terminal_lifecycle_policy_from_env(),
+    )
     bot_gateway = BotGatewayService(
         control,
         transport=create_bot_transport_from_env(),
@@ -1890,6 +1895,19 @@ def create_terminal_backend_from_env():
     if backend in {"pty", "local_pty"}:
         return PtyTerminalBackend(max_output_chars=terminal_pty_output_limit_from_env())
     raise RuntimeError("AGENTBRIDGE_TERMINAL_BACKEND must be one of: fake, tmux, pty")
+
+
+def create_terminal_lifecycle_policy_from_env() -> TerminalLifecyclePolicy:
+    return TerminalLifecyclePolicy(
+        auto_restart_on_lost=env_bool(
+            "AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST",
+            default=False,
+        ),
+        auto_restart_max_attempts=max(
+            env_int("AGENTBRIDGE_TERMINAL_AUTO_RESTART_MAX_ATTEMPTS", default=1),
+            0,
+        ),
+    )
 
 
 def terminal_pty_output_limit_from_env() -> int:

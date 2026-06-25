@@ -20,10 +20,15 @@ from agentbridge.api import (
     create_terminal_backend_from_env,
     env_bool,
     env_float,
+    env_int,
 )
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, LeaseOwnerType
-from agentbridge.terminal_agent import TerminalAgentService, TerminalInputKind
+from agentbridge.terminal_agent import (
+    TerminalAgentService,
+    TerminalInputKind,
+    TerminalLifecyclePolicy,
+)
 
 
 @dataclass(frozen=True)
@@ -31,6 +36,8 @@ class LocalTerminalAgentConfig:
     socket_path: Path
     auth_token: str
     lifecycle_poll_interval_seconds: float = 1.0
+    terminal_auto_restart_on_lost: bool = False
+    terminal_auto_restart_max_attempts: int = 1
     desktop_auto_open_enabled: bool = False
     desktop_open_command: str | None = None
     desktop_open_preset: str | None = None
@@ -782,6 +789,14 @@ def config_from_env() -> LocalTerminalAgentConfig:
             "AGENTBRIDGE_TERMINAL_LIFECYCLE_POLL_INTERVAL_SECONDS",
             default=1.0,
         ),
+        terminal_auto_restart_on_lost=env_bool(
+            "AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST",
+            default=False,
+        ),
+        terminal_auto_restart_max_attempts=max(
+            env_int("AGENTBRIDGE_TERMINAL_AUTO_RESTART_MAX_ATTEMPTS", default=1),
+            0,
+        ),
         desktop_auto_open_enabled=env_bool("AGENTBRIDGE_TERMINAL_AUTO_OPEN", default=False),
         desktop_open_command=os.environ.get("AGENTBRIDGE_TERMINAL_OPEN_COMMAND"),
         desktop_open_preset=os.environ.get("AGENTBRIDGE_TERMINAL_OPEN_PRESET"),
@@ -792,7 +807,14 @@ async def async_main() -> None:
     config = config_from_env()
     repository = create_repository_from_env()
     control = ControlPlane(repository=repository)
-    terminal = TerminalAgentService(control, backend=create_terminal_backend_from_env())
+    terminal = TerminalAgentService(
+        control,
+        backend=create_terminal_backend_from_env(),
+        lifecycle_policy=TerminalLifecyclePolicy(
+            auto_restart_on_lost=config.terminal_auto_restart_on_lost,
+            auto_restart_max_attempts=config.terminal_auto_restart_max_attempts,
+        ),
+    )
     server = LocalTerminalAgentServer(
         control=control,
         terminal=terminal,
