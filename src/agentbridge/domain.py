@@ -183,6 +183,11 @@ class AccessPolicyEffect(StrEnum):
     DENY = "deny"
 
 
+class DeviceIdentityStatus(StrEnum):
+    ACTIVE = "active"
+    REVOKED = "revoked"
+
+
 class SemanticEventSource(StrEnum):
     CONTROL_PLANE = "control_plane"
     TERMINAL_AGENT = "terminal_agent"
@@ -327,6 +332,30 @@ class AccessPolicyRule(BaseModel):
     @classmethod
     def validate_non_empty_items(cls, value: list[str]) -> list[str]:
         return [item.strip() for item in value if item.strip()]
+
+
+class DeviceIdentity(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    device_id: str
+    display_name: str | None = None
+    key_hash: str
+    key_salt: str
+    key_iterations: int = 210000
+    status: DeviceIdentityStatus = DeviceIdentityStatus.ACTIVE
+    created_by: str
+    created_at: datetime = Field(default_factory=utc_now)
+    revoked_at: datetime | None = None
+    last_used_at: datetime | None = None
+
+    @field_validator("device_id")
+    @classmethod
+    def validate_device_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("device_id must not be empty")
+        return normalized
 
 
 class AgentSession(BaseModel):

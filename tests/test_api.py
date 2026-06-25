@@ -140,6 +140,72 @@ def test_device_key_gate_authorizes_rest_api_when_configured(monkeypatch):
     assert wrong_key_response.status_code == 403
 
 
+def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
+    client = TestClient(create_app())
+    actor = {"id": "security-admin", "roles": ["admin"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": actor,
+            "device_id": "laptop",
+            "display_name": "Maintainer laptop",
+            "device_key": "managed-secret",
+            "trace_id": "managed-device-create",
+        },
+    )
+    denied_response = client.get("/api/v1/projects")
+    authorized_response = client.get(
+        "/api/v1/projects",
+        headers={
+            "x-agentbridge-device-id": "laptop",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+    list_response = client.get(
+        "/api/v1/device-identities",
+        headers={
+            "x-agentbridge-device-id": "laptop",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+    revoke_response = client.post(
+        "/api/v1/device-identities/laptop/revoke",
+        json={"actor": actor, "trace_id": "managed-device-revoke"},
+        headers={
+            "x-agentbridge-device-id": "laptop",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+    revoked_key_response = client.get(
+        "/api/v1/projects",
+        headers={
+            "x-agentbridge-device-id": "laptop",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+    still_gated_response = client.get("/api/v1/projects")
+
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["device_id"] == "laptop"
+    assert created["display_name"] == "Maintainer laptop"
+    assert created["status"] == "active"
+    assert created["device_key"] == "managed-secret"
+    assert "key_hash" not in created
+    assert "key_salt" not in created
+    assert denied_response.status_code == 403
+    assert authorized_response.status_code == 200
+    assert authorized_response.json() == []
+    assert list_response.status_code == 200
+    assert list_response.json()[0]["device_id"] == "laptop"
+    assert "device_key" not in list_response.json()[0]
+    assert revoke_response.status_code == 200
+    assert revoke_response.json()["status"] == "revoked"
+    assert revoked_key_response.status_code == 403
+    assert still_gated_response.status_code == 403
+
+
 def test_project_session_admin_ui_serves_dashboard():
     client = TestClient(create_app())
 
@@ -1264,6 +1330,60 @@ def test_session_events_websocket_accepts_device_key(monkeypatch, tmp_path):
     with client.websocket_connect(
         f"/api/v1/sessions/{session.id}/events/ws"
         "?device_id=laptop&device_key=device-secret&idle_timeout_seconds=0"
+    ) as websocket:
+        message = websocket.receive_json()
+        idle = websocket.receive_json()
+
+    assert message["type"] == "semantic_event"
+    assert message["event"]["type"] == "session.created"
+    assert idle == {"type": "idle_timeout", "last_seq": message["event"]["seq"]}
+
+
+def test_session_events_websocket_accepts_managed_device_key(tmp_path):
+    control = ControlPlane()
+    admin = Actor(id="security-admin", roles={"admin"})
+    control.upsert_device_identity(
+        actor=admin,
+        device_id="laptop",
+        device_key="managed-secret",
+        trace_id="managed-device-ws-create",
+    )
+    actor = Actor(id="usr_1", roles={"maintainer"})
+    project = control.create_project(
+        actor=actor,
+        name="Managed Device Backend",
+        trace_id="managed-device-project",
+    )
+    workspace = control.add_workspace(
+        actor=actor,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="managed-device-workspace",
+    )
+    session = control.create_session(
+        actor=actor,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Managed Device Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="managed-device-session",
+    )
+    client = TestClient(create_app(control))
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session.id}/events/ws?idle_timeout_seconds=0"
+    ) as websocket:
+        denied = websocket.receive_json()
+
+    assert denied["type"] == "error"
+    assert denied["error"]["error_code"] == "PERMISSION_DENIED"
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session.id}/events/ws"
+        "?device_id=laptop&device_key=managed-secret&idle_timeout_seconds=0"
     ) as websocket:
         message = websocket.receive_json()
         idle = websocket.receive_json()

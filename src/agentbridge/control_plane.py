@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from agentbridge.device_auth import (
+    DEFAULT_DEVICE_KEY_ITERATIONS,
+    generate_device_key,
+    generate_device_key_salt,
+    hash_device_key,
+)
 from agentbridge.domain import (
     AccessPolicyEffect,
     AccessPolicyRule,
@@ -13,6 +19,7 @@ from agentbridge.domain import (
     AuditEvent,
     AuditOutcome,
     ChatContext,
+    DeviceIdentity,
     ErrorCode,
     GroupRoleBinding,
     Interaction,
@@ -1419,6 +1426,140 @@ class ControlPlane:
             },
         }
 
+    def list_device_identities(
+        self,
+        *,
+        actor: Actor,
+        include_revoked: bool = False,
+        chat_context_id: str | None = None,
+    ) -> list[DeviceIdentity]:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.DEVICE_MANAGE,
+            resource_type="device_identity",
+            attributes={
+                "operation": "list_device_identities",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
+        return self.repository.list_device_identities(include_revoked=include_revoked)
+
+    def upsert_device_identity(
+        self,
+        *,
+        actor: Actor,
+        device_id: str,
+        display_name: str | None = None,
+        device_key: str | None = None,
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> tuple[DeviceIdentity, str]:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        normalized_device_id = self._validated_device_id(device_id)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.DEVICE_MANAGE,
+            resource_type="device_identity",
+            resource_id=normalized_device_id,
+            attributes={
+                "operation": "upsert_device_identity",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
+        secret = device_key.strip() if device_key else generate_device_key()
+        if not secret:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "设备 key 不能为空。",
+                next_step="请提供非空 device_key，或省略该字段由服务端生成。",
+            )
+        salt = generate_device_key_salt()
+        identity = self.repository.upsert_device_identity(
+            device_id=normalized_device_id,
+            display_name=display_name,
+            key_hash=hash_device_key(
+                secret,
+                salt=salt,
+                iterations=DEFAULT_DEVICE_KEY_ITERATIONS,
+            ),
+            key_salt=salt,
+            key_iterations=DEFAULT_DEVICE_KEY_ITERATIONS,
+            updated_by=effective_actor.id,
+        )
+        self.audit(
+            action="device_identity.upserted",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            details={
+                "device_identity_id": identity.id,
+                "device_id": identity.device_id,
+                "display_name": identity.display_name,
+                "status": identity.status.value,
+            },
+        )
+        self.emit_event(
+            event_type="device_identity.upserted",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            payload={
+                "device_identity_id": identity.id,
+                "device_id": identity.device_id,
+                "display_name": identity.display_name,
+                "status": identity.status.value,
+                "updated_by": effective_actor.id,
+            },
+        )
+        return identity, secret
+
+    def revoke_device_identity(
+        self,
+        *,
+        actor: Actor,
+        device_id: str,
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> DeviceIdentity:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        normalized_device_id = self._validated_device_id(device_id)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.DEVICE_MANAGE,
+            resource_type="device_identity",
+            resource_id=normalized_device_id,
+            attributes={
+                "operation": "revoke_device_identity",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
+        identity = self.repository.revoke_device_identity(normalized_device_id)
+        self.audit(
+            action="device_identity.revoked",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            details={
+                "device_identity_id": identity.id,
+                "device_id": identity.device_id,
+                "status": identity.status.value,
+            },
+        )
+        self.emit_event(
+            event_type="device_identity.revoked",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            payload={
+                "device_identity_id": identity.id,
+                "device_id": identity.device_id,
+                "status": identity.status.value,
+                "revoked_by": effective_actor.id,
+            },
+        )
+        return identity
+
     def get_approval_policy_state(
         self,
         *,
@@ -1649,6 +1790,16 @@ class ControlPlane:
                     "maintainer 或 admin。"
                 ),
                 details={"allowed_roles": sorted(ROLE_PERMISSIONS)},
+            )
+        return normalized
+
+    def _validated_device_id(self, device_id: str) -> str:
+        normalized = device_id.strip()
+        if not normalized:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "设备 ID 不能为空。",
+                next_step="请提供稳定的 device_id，例如 macbook-pro。",
             )
         return normalized
 

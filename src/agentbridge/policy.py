@@ -27,6 +27,7 @@ class Permission(StrEnum):
     AUDIT_VIEW = "audit.view"
     GROUP_ROLE_MANAGE = "group.role.manage"
     POLICY_MANAGE = "policy.manage"
+    DEVICE_MANAGE = "device.manage"
 
 
 ROLE_PERMISSIONS: dict[str, set[Permission]] = {

@@ -26,6 +26,7 @@ from agentbridge.domain import (
     BotDeliveryRecord,
     ChatContext,
     CommandResult,
+    DeviceIdentity,
     GroupRoleBinding,
     Interaction,
     Project,
@@ -118,6 +119,16 @@ access_policy_rules_table = Table(
     Column("enabled", Boolean, nullable=False, index=True),
     Column("priority", Integer, nullable=False, index=True),
     Column("updated_at", String(64), nullable=False),
+    Column("payload", JSON, nullable=False),
+)
+
+device_identities_table = Table(
+    "device_identities",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("device_id", String(255), nullable=False, unique=True, index=True),
+    Column("status", String(64), nullable=False, index=True),
+    Column("created_at", String(64), nullable=False, index=True),
     Column("payload", JSON, nullable=False),
 )
 
@@ -243,6 +254,8 @@ class SQLAlchemyRepository(InMemoryRepository):
         "upsert_approval_policy_override",
         "upsert_access_policy_rule",
         "delete_access_policy_rule",
+        "upsert_device_identity",
+        "revoke_device_identity",
         "bind_project",
         "update_active_project",
         "update_active_session",
@@ -316,6 +329,12 @@ class SQLAlchemyRepository(InMemoryRepository):
             self.access_policy_rules = self._load_mapping(
                 connection, access_policy_rules_table, AccessPolicyRule
             )
+            self.device_identities = {
+                identity.device_id: identity
+                for identity in self._load_mapping(
+                    connection, device_identities_table, DeviceIdentity
+                ).values()
+            }
             self.chat_contexts = self._load_mapping(
                 connection, chat_contexts_table, ChatContext
             )
@@ -474,6 +493,7 @@ class SQLAlchemyRepository(InMemoryRepository):
                 interactions_table,
                 turns_table,
                 sessions_table,
+                device_identities_table,
                 access_policy_rules_table,
                 approval_policy_overrides_table,
                 group_role_bindings_table,
@@ -581,6 +601,20 @@ class SQLAlchemyRepository(InMemoryRepository):
                         "payload": rule.model_dump(mode="json"),
                     }
                     for rule in self.access_policy_rules.values()
+                ],
+            )
+            self._insert_many(
+                connection,
+                device_identities_table,
+                [
+                    {
+                        "id": identity.id,
+                        "device_id": identity.device_id,
+                        "status": identity.status.value,
+                        "created_at": identity.created_at.isoformat(),
+                        "payload": identity.model_dump(mode="json"),
+                    }
+                    for identity in self.device_identities.values()
                 ],
             )
             self._insert_many(

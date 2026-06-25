@@ -13,6 +13,7 @@ from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
     AccessPolicyEffect,
     Actor,
+    DeviceIdentityStatus,
     InteractionType,
     LeaseOwnerType,
     PolicyScope,
@@ -387,6 +388,47 @@ def test_sqlalchemy_repository_lists_filtered_semantic_events(tmp_path):
         == []
     )
     assert restored.list_semantic_events(trace_id="missing") == []
+
+
+def test_sqlalchemy_repository_persists_device_identities(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'device-identities.db'}"
+    admin = Actor(id="security-admin", roles={"admin"})
+
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    first_control = ControlPlane(repository=first_repo)
+    identity, device_key = first_control.upsert_device_identity(
+        actor=admin,
+        device_id="laptop",
+        display_name="Maintainer laptop",
+        device_key="managed-secret",
+        trace_id="device-identity-create",
+    )
+
+    assert device_key == "managed-secret"
+    assert identity.status == DeviceIdentityStatus.ACTIVE
+    assert identity.key_hash != "managed-secret"
+
+    restored = SQLAlchemyRepository(database_url)
+    [restored_identity] = restored.list_device_identities()
+    assert restored_identity.device_id == "laptop"
+    assert restored_identity.display_name == "Maintainer laptop"
+    assert restored_identity.status == DeviceIdentityStatus.ACTIVE
+    assert restored_identity.key_hash == identity.key_hash
+
+    restored_control = ControlPlane(repository=restored)
+    revoked = restored_control.revoke_device_identity(
+        actor=admin,
+        device_id="laptop",
+        trace_id="device-identity-revoke",
+    )
+    assert revoked.status == DeviceIdentityStatus.REVOKED
+
+    second_restore = SQLAlchemyRepository(database_url)
+    assert second_restore.list_device_identities() == []
+    [revoked_identity] = second_restore.list_device_identities(include_revoked=True)
+    assert revoked_identity.device_id == "laptop"
+    assert revoked_identity.status == DeviceIdentityStatus.REVOKED
+    assert revoked_identity.revoked_at is not None
 
 
 def test_terminal_lifecycle_tracking_recovers_from_persisted_events(tmp_path):

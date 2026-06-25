@@ -32,7 +32,7 @@ This repository currently contains the first executable backend slice:
 - Built-in Admin Web pages for project/session operations, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
-Production PTY supervision, mTLS/managed device identity, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
+Production PTY supervision, mTLS/device certificate rotation, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
 
 ## Development
 
@@ -165,6 +165,15 @@ For per-device keys without adding database state, set `AGENTBRIDGE_DEVICE_KEYS`
 JSON object mapping device IDs to secrets. REST clients present
 `X-AgentBridge-Device-ID` plus `X-AgentBridge-Device-Key`; WebSocket clients present
 `device_id` plus `device_key` query parameters.
+
+For persisted device identities, create or rotate a key through
+`POST /api/v1/device-identities` with `device_id`, optional `display_name`, and an
+optional caller-supplied `device_key`. If `device_key` is omitted, the server returns a
+generated key once in the creation response. Stored keys are salted PBKDF2 hashes, and
+list/revoke responses never include raw keys, hashes, or salts. Once any managed device
+identity exists, REST and WebSocket routes stay gated even if all managed devices are
+later revoked; use an admin/API token to create a new active device key and regain
+device-key access.
 
 Audit records can be queried through `GET /api/v1/audit` with optional `actor_id`,
 `action`, `project_id`, `session_id`, `interaction_id`, `trace_id`, `q`, and
@@ -422,7 +431,7 @@ scripted admin page access. `AGENTBRIDGE_ADMIN_COOKIE_MAX_AGE_SECONDS` controls 
 lifetime, and `AGENTBRIDGE_ADMIN_COOKIE_SECURE` can force Secure cookie behavior when
 AgentBridge is deployed behind TLS. The unlocked Admin Web cookie is also accepted by
 the optional REST API token gate and same-origin WebSocket event streams. These MVP gates do not replace the planned
-mTLS/managed-device authentication model.
+mTLS certificate and managed-device rotation model.
 
 ## Console Client
 

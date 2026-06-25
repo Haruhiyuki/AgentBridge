@@ -34,6 +34,7 @@ from agentbridge.bot_gateway import (
 )
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
+from agentbridge.device_auth import verify_device_key
 from agentbridge.domain import (
     AccessPolicyEffect,
     Actor,
@@ -41,6 +42,8 @@ from agentbridge.domain import (
     AgentType,
     BotDeliveryResultAction,
     BotDeliveryStatus,
+    DeviceIdentity,
+    DeviceIdentityStatus,
     ErrorCode,
     InteractionStatus,
     InteractionType,
@@ -357,6 +360,23 @@ class OneBotEventRequest(BaseModel):
     default_roles: set[str] = Field(default_factory=lambda: {"member"})
 
 
+class DeviceIdentityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    device_id: str
+    display_name: str | None = None
+    device_key: str | None = None
+    trace_id: str = "device-identity-api"
+
+
+class RevokeDeviceIdentityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    trace_id: str = "device-identity-api"
+
+
 class GroupRoleChangeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -473,7 +493,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def api_token_gate(request: Request, call_next):
-        if not http_api_request_authorized(request):
+        if not http_api_request_authorized(request, control=app.state.control):
             return http_api_auth_error_response()
         return await call_next(request)
 
@@ -811,6 +831,49 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             attributes=payload.attributes,
             chat_context_id=payload.chat_context_id,
         )
+
+    @app.get("/api/v1/device-identities")
+    def list_device_identities(
+        include_revoked: bool = False,
+        control: ControlPlane = Depends(get_control),
+    ):
+        actor = Actor(id="api", roles={"admin"})
+        return [
+            device_identity_public_payload(identity)
+            for identity in control.list_device_identities(
+                actor=actor,
+                include_revoked=include_revoked,
+            )
+        ]
+
+    @app.post("/api/v1/device-identities")
+    def upsert_device_identity(
+        payload: DeviceIdentityRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        identity, device_key = control.upsert_device_identity(
+            actor=payload.actor.to_actor(),
+            device_id=payload.device_id,
+            display_name=payload.display_name,
+            device_key=payload.device_key,
+            trace_id=payload.trace_id,
+        )
+        response = device_identity_public_payload(identity)
+        response["device_key"] = device_key
+        return response
+
+    @app.post("/api/v1/device-identities/{device_id}/revoke")
+    def revoke_device_identity(
+        device_id: str,
+        payload: RevokeDeviceIdentityRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        identity = control.revoke_device_identity(
+            actor=payload.actor.to_actor(),
+            device_id=device_id,
+            trace_id=payload.trace_id,
+        )
+        return device_identity_public_payload(identity)
 
     @app.get("/api/v1/sessions")
     def list_sessions(
@@ -1528,6 +1591,21 @@ def ensure_chat_context_id(payload: CommandRequest, control: ControlPlane) -> st
     return context.id
 
 
+def device_identity_public_payload(identity: DeviceIdentity) -> dict[str, object]:
+    return {
+        "id": identity.id,
+        "device_id": identity.device_id,
+        "display_name": identity.display_name,
+        "status": identity.status.value,
+        "created_by": identity.created_by,
+        "created_at": identity.created_at.isoformat(),
+        "revoked_at": identity.revoked_at.isoformat() if identity.revoked_at else None,
+        "last_used_at": (
+            identity.last_used_at.isoformat() if identity.last_used_at else None
+        ),
+    }
+
+
 async def stream_session_events(
     *,
     websocket: WebSocket,
@@ -1540,7 +1618,7 @@ async def stream_session_events(
     rendered: bool,
     token: str | None,
 ) -> None:
-    if not await accept_authenticated_websocket(websocket, token=token):
+    if not await accept_authenticated_websocket(websocket, token=token, control=control):
         return
     try:
         control.repository.get_session(session_id)
@@ -1612,7 +1690,7 @@ async def stream_bot_gateway_events(
     idle_timeout_seconds: float | None,
     token: str | None,
 ) -> None:
-    if not await accept_authenticated_websocket(websocket, token=token):
+    if not await accept_authenticated_websocket(websocket, token=token, control=control):
         return
     try:
         control.repository.get_session(session_id)
@@ -1717,7 +1795,7 @@ async def stream_terminal_commands(
     session_id: str,
     token: str | None,
 ) -> None:
-    if not await accept_authenticated_websocket(websocket, token=token):
+    if not await accept_authenticated_websocket(websocket, token=token, control=control):
         return
     try:
         control.repository.get_session(session_id)
@@ -2017,17 +2095,25 @@ def admin_cookie_secure(request: Request) -> bool:
     return request.url.scheme == "https"
 
 
-def http_api_request_authorized(request: Request) -> bool:
+def http_api_request_authorized(
+    request: Request,
+    *,
+    control: ControlPlane | None = None,
+) -> bool:
     if not request.url.path.startswith("/api/"):
         return True
     if request.url.path == "/api/v1/health":
         return True
     expected_tokens = http_api_expected_tokens()
     device_keys = configured_device_keys()
-    if not expected_tokens and not device_keys_configured():
+    if (
+        not expected_tokens
+        and not device_keys_configured()
+        and not managed_device_identities_configured(control)
+    ):
         return True
     presented_tokens = http_api_presented_tokens(request)
-    return http_device_key_authorized(request, device_keys) or any(
+    return http_device_key_authorized(request, device_keys, control=control) or any(
         matching_token(presented_token, expected_tokens)
         for presented_token in presented_tokens
     )
@@ -2063,7 +2149,12 @@ def http_api_presented_tokens(request: Request) -> list[str]:
     return [token for token in tokens if token]
 
 
-def http_device_key_authorized(request: Request, device_keys: dict[str, str]) -> bool:
+def http_device_key_authorized(
+    request: Request,
+    device_keys: dict[str, str],
+    *,
+    control: ControlPlane | None = None,
+) -> bool:
     device_id = request.headers.get("x-agentbridge-device-id")
     presented_key = request.headers.get("x-agentbridge-device-key")
     if not presented_key:
@@ -2075,7 +2166,11 @@ def http_device_key_authorized(request: Request, device_keys: dict[str, str]) ->
                 if authorization.startswith(prefix)
                 else authorization.strip()
             )
-    return matching_device_key(device_id, presented_key, device_keys)
+    return matching_device_key(
+        device_id,
+        presented_key,
+        device_keys,
+    ) or matching_managed_device_key(device_id, presented_key, control)
 
 
 def http_api_auth_error_response() -> JSONResponse:
@@ -2114,16 +2209,21 @@ async def accept_authenticated_websocket(
     websocket: WebSocket,
     *,
     token: str | None,
+    control: ControlPlane | None = None,
 ) -> bool:
     await websocket.accept()
     expected_tokens = websocket_expected_tokens()
     device_keys = configured_device_keys()
-    if not expected_tokens and not device_keys_configured():
+    if (
+        not expected_tokens
+        and not device_keys_configured()
+        and not managed_device_identities_configured(control)
+    ):
         return True
     presented_token = websocket_presented_token(websocket, token)
     if matching_token(presented_token, expected_tokens):
         return True
-    if websocket_device_key_authorized(websocket, device_keys):
+    if websocket_device_key_authorized(websocket, device_keys, control=control):
         return True
     if websocket_admin_cookie_authorized(websocket):
         return True
@@ -2161,11 +2261,19 @@ def websocket_expected_tokens() -> list[str]:
 def websocket_device_key_authorized(
     websocket: WebSocket,
     device_keys: dict[str, str],
+    *,
+    control: ControlPlane | None = None,
 ) -> bool:
+    device_id = websocket.query_params.get("device_id")
+    presented_key = websocket.query_params.get("device_key")
     return matching_device_key(
-        websocket.query_params.get("device_id"),
-        websocket.query_params.get("device_key"),
+        device_id,
+        presented_key,
         device_keys,
+    ) or matching_managed_device_key(
+        device_id,
+        presented_key,
+        control,
     )
 
 
@@ -2220,6 +2328,36 @@ def matching_device_key(
     if not expected_key:
         return False
     return hmac.compare_digest(presented_key.strip(), expected_key)
+
+
+def managed_device_identities_configured(control: ControlPlane | None) -> bool:
+    if control is None:
+        return False
+    return bool(control.repository.list_device_identities(include_revoked=True))
+
+
+def matching_managed_device_key(
+    device_id: str | None,
+    presented_key: str | None,
+    control: ControlPlane | None,
+) -> bool:
+    if control is None or not device_id or not presented_key:
+        return False
+    try:
+        identity = control.repository.get_device_identity(device_id.strip())
+    except AgentBridgeError:
+        return False
+    if identity.status != DeviceIdentityStatus.ACTIVE:
+        return False
+    try:
+        return verify_device_key(
+            presented_key.strip(),
+            expected_hash=identity.key_hash,
+            salt=identity.key_salt,
+            iterations=identity.key_iterations,
+        )
+    except ValueError:
+        return False
 
 
 def clamp_stream_limit(limit: int) -> int:

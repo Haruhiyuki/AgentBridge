@@ -22,6 +22,8 @@ from agentbridge.domain import (
     BotDeliveryStatus,
     ChatContext,
     CommandResult,
+    DeviceIdentity,
+    DeviceIdentityStatus,
     ErrorCode,
     GroupRoleBinding,
     Interaction,
@@ -95,6 +97,7 @@ class InMemoryRepository:
             tuple[PolicyScope, str], ApprovalPolicyOverride
         ] = {}
         self.access_policy_rules: dict[str, AccessPolicyRule] = {}
+        self.device_identities: dict[str, DeviceIdentity] = {}
         self.chat_contexts: dict[str, ChatContext] = {}
         self.sessions: dict[str, AgentSession] = {}
         self.turns: dict[str, Turn] = {}
@@ -497,6 +500,83 @@ class InMemoryRepository:
             if enabled is not None:
                 rules = [rule for rule in rules if rule.enabled == enabled]
             return sorted(rules, key=lambda rule: (rule.priority, rule.created_at, rule.id))
+
+    def upsert_device_identity(
+        self,
+        *,
+        device_id: str,
+        display_name: str | None,
+        key_hash: str,
+        key_salt: str,
+        key_iterations: int,
+        updated_by: str,
+    ) -> DeviceIdentity:
+        normalized_device_id = device_id.strip()
+        if not normalized_device_id:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "设备 ID 不能为空。",
+                next_step="请提供稳定的 device_id，例如 macbook-pro。",
+            )
+        with self._lock:
+            existing = self.device_identities.get(normalized_device_id)
+            now = utc_now()
+            identity = DeviceIdentity(
+                id=existing.id if existing else new_id("dev"),
+                device_id=normalized_device_id,
+                display_name=display_name.strip() if display_name else None,
+                key_hash=key_hash,
+                key_salt=key_salt,
+                key_iterations=key_iterations,
+                status=DeviceIdentityStatus.ACTIVE,
+                created_by=existing.created_by if existing else updated_by,
+                created_at=existing.created_at if existing else now,
+                revoked_at=None,
+                last_used_at=existing.last_used_at if existing else None,
+            )
+            self.device_identities[identity.device_id] = identity
+            return identity
+
+    def get_device_identity(self, device_id: str) -> DeviceIdentity:
+        with self._lock:
+            identity = self.device_identities.get(device_id.strip())
+            if not identity:
+                raise AgentBridgeError(
+                    ErrorCode.NOT_FOUND,
+                    f"设备身份不存在：{device_id}",
+                    next_step="请先创建设备身份，或检查 device_id。",
+                    status_code=404,
+                )
+            return identity
+
+    def list_device_identities(
+        self,
+        *,
+        include_revoked: bool = False,
+    ) -> list[DeviceIdentity]:
+        with self._lock:
+            identities = list(self.device_identities.values())
+            if not include_revoked:
+                identities = [
+                    identity
+                    for identity in identities
+                    if identity.status == DeviceIdentityStatus.ACTIVE
+                ]
+            return sorted(identities, key=lambda identity: identity.created_at)
+
+    def revoke_device_identity(self, device_id: str) -> DeviceIdentity:
+        with self._lock:
+            identity = self.get_device_identity(device_id)
+            if identity.status == DeviceIdentityStatus.REVOKED:
+                return identity
+            revoked = identity.model_copy(
+                update={
+                    "status": DeviceIdentityStatus.REVOKED,
+                    "revoked_at": utc_now(),
+                }
+            )
+            self.device_identities[revoked.device_id] = revoked
+            return revoked
 
     def _require_policy_scope(self, scope_type: PolicyScope, scope_id: str) -> None:
         if scope_type == PolicyScope.PROJECT:
