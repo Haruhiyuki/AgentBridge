@@ -54,6 +54,30 @@ The command must return a JSON object on stdout:
 included in the archive response so offline verifiers can select the correct public key
 or KMS key version.
 
+## Offline Verification
+
+Use `agentbridge-audit-verify` to validate a signed archive without running the
+AgentBridge API:
+
+```bash
+uv run agentbridge-audit-verify agentbridge-audit-archive.json \
+  --public-key-file /etc/agentbridge/audit-signing.pub \
+  --json
+```
+
+For HMAC archives:
+
+```bash
+uv run agentbridge-audit-verify agentbridge-audit-archive.json \
+  --hmac-key-file /etc/agentbridge/audit-hmac.key
+```
+
+The verifier canonicalizes the embedded `archive`, recomputes `archive_sha256`, checks
+the signature encoding/value, and verifies HMAC-SHA256, Ed25519, RSA-PSS-SHA256, or
+ECDSA-SHA256 signatures. KMS/HSM algorithm labels that contain RSA-PSS-SHA256 are
+recognized automatically; use `--signature-kind rsa-pss-sha256`, `ed25519`, or
+`ecdsa-sha256` when a provider-specific algorithm label is not self-describing.
+
 ## Local PEM Signing
 
 Set `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_FILE` to a PEM Ed25519, RSA, or ECDSA
@@ -78,6 +102,8 @@ to verify but does not provide asymmetric non-repudiation.
 - Prefer non-exportable KMS/HSM keys for production audit archives.
 - Keep `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID` stable enough for offline verifiers to
   select the right verification key.
+- Publish the expected public verification key or certificate separately from signed
+  archives, and keep old verification keys available for the archive retention period.
 - Log signer request IDs in the signer process and return `signature_id` when the
   provider supplies one.
 - Treat signer failures as release-blocking for environments where signed audit export is

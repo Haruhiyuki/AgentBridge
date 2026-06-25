@@ -339,8 +339,9 @@ Ed25519, RSA, or ECDSA PEM signing; `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY` or
 `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_FILE` remains the HMAC-SHA256 fallback.
 `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID` labels the signing key, and external or
 asymmetric signatures can include verifier key metadata such as `public_key_sha256`.
-See `docs/operations/AUDIT_ARCHIVE_SIGNING.md` for signer precedence, external signer
-I/O, and verification guidance.
+Use `agentbridge-audit-verify` for offline HMAC/public-key archive verification. See
+`docs/operations/AUDIT_ARCHIVE_SIGNING.md` for signer precedence, external signer I/O,
+and verification guidance.
 
 Semantic events can be searched across streams through `GET /api/v1/events` with
 optional `project_id`, `session_id`, `turn_id`, `interaction_id`, `event_type`,
