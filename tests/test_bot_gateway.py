@@ -7,6 +7,7 @@ from agentbridge.bot_gateway import BotDeliveryStatus, BotGatewayService, InMemo
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor
+from agentbridge.persistence import SQLAlchemyRepository
 
 
 def create_session_with_turn(control: ControlPlane, tmp_path):
@@ -90,6 +91,37 @@ def test_bot_gateway_can_resume_delivery_after_seq(tmp_path):
     assert len(records) == 1
     assert records[0].event_seq == 2
     assert "任务已排队" in records[0].text
+
+
+def test_bot_gateway_delivery_records_survive_repository_restart(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'bot-delivery.db'}"
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    first_control = ControlPlane(repository=first_repo)
+    context, session_id = create_session_with_turn(first_control, tmp_path)
+    first_transport = InMemoryBotTransport()
+    first_gateway = BotGatewayService(first_control, transport=first_transport)
+
+    first_records = first_gateway.deliver_session_events(
+        session_id=session_id,
+        chat_context_id=context.id,
+    )
+
+    second_repo = SQLAlchemyRepository(database_url)
+    second_control = ControlPlane(repository=second_repo)
+    second_transport = InMemoryBotTransport()
+    second_gateway = BotGatewayService(second_control, transport=second_transport)
+    replay_records = second_gateway.deliver_session_events(
+        session_id=session_id,
+        chat_context_id=context.id,
+    )
+
+    assert len(first_records) == 2
+    assert len(first_transport.sent) == 2
+    assert [record.status for record in replay_records] == [
+        BotDeliveryStatus.SKIPPED_DUPLICATE,
+        BotDeliveryStatus.SKIPPED_DUPLICATE,
+    ]
+    assert second_transport.sent == []
 
 
 def test_bot_gateway_api_delivers_and_lists_records(tmp_path):

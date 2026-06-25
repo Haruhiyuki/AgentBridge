@@ -21,6 +21,7 @@ from sqlalchemy.engine import Engine
 from agentbridge.domain import (
     AgentSession,
     AuditEvent,
+    BotDeliveryRecord,
     ChatContext,
     CommandResult,
     Interaction,
@@ -164,6 +165,19 @@ event_stream_offsets_table = Table(
     Column("seq", Integer, nullable=False),
 )
 
+bot_delivery_records_table = Table(
+    "bot_delivery_records",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("idempotency_key", String(512), nullable=False, unique=True),
+    Column("platform", String(64), nullable=False, index=True),
+    Column("chat_context_id", String(64), nullable=False, index=True),
+    Column("event_id", String(64), nullable=False, index=True),
+    Column("event_seq", Integer, nullable=False),
+    Column("status", String(64), nullable=False, index=True),
+    Column("payload", JSON, nullable=False),
+)
+
 
 class SQLAlchemyRepository(InMemoryRepository):
     """Write-through SQLAlchemy repository for single-process MVP persistence."""
@@ -185,6 +199,7 @@ class SQLAlchemyRepository(InMemoryRepository):
         "answer_interaction",
         "vote_interaction",
         "store_command_result",
+        "store_bot_delivery_record",
         "append_audit",
         "append_event",
     }
@@ -260,6 +275,10 @@ class SQLAlchemyRepository(InMemoryRepository):
                 row.stream_id: int(row.seq)
                 for row in connection.execute(select(event_stream_offsets_table)).all()
             }
+            self.bot_delivery_records = {
+                row.idempotency_key: BotDeliveryRecord.model_validate(row.payload)
+                for row in connection.execute(select(bot_delivery_records_table)).all()
+            }
 
         self._short_codes = {session.short_code for session in self.sessions.values()}
         self._chat_context_index = {
@@ -294,6 +313,7 @@ class SQLAlchemyRepository(InMemoryRepository):
         with self._lock, self.engine.begin() as connection:
             for table in (
                 event_stream_offsets_table,
+                bot_delivery_records_table,
                 semantic_events_table,
                 audit_events_table,
                 command_results_table,
@@ -473,6 +493,23 @@ class SQLAlchemyRepository(InMemoryRepository):
                 [
                     {"stream_id": stream_id, "seq": seq}
                     for stream_id, seq in self.event_stream_seq.items()
+                ],
+            )
+            self._insert_many(
+                connection,
+                bot_delivery_records_table,
+                [
+                    {
+                        "id": record.id,
+                        "idempotency_key": record.idempotency_key,
+                        "platform": record.platform.value,
+                        "chat_context_id": record.chat_context_id,
+                        "event_id": record.event_id,
+                        "event_seq": record.event_seq,
+                        "status": record.status.value,
+                        "payload": record.model_dump(mode="json"),
+                    }
+                    for record in self.bot_delivery_records.values()
                 ],
             )
 

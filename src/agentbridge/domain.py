@@ -140,6 +140,17 @@ class AuditOutcome(StrEnum):
     FAILED = "failed"
 
 
+class BotPlatform(StrEnum):
+    ONEBOT_V11 = "onebot.v11"
+    PLAIN_TEXT = "plain_text"
+
+
+class BotDeliveryStatus(StrEnum):
+    SENT = "sent"
+    SKIPPED_DUPLICATE = "skipped_duplicate"
+    FAILED = "failed"
+
+
 class SemanticEventSource(StrEnum):
     CONTROL_PLANE = "control_plane"
     TERMINAL_AGENT = "terminal_agent"
@@ -361,4 +372,20 @@ class SemanticEvent(BaseModel):
     turn_id: str | None = None
     interaction_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class BotDeliveryRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    idempotency_key: str
+    platform: BotPlatform
+    chat_context_id: str
+    event_id: str
+    event_seq: int
+    message_index: int
+    platform_message_id: str | None = None
+    text: str
+    status: BotDeliveryStatus
     created_at: datetime = Field(default_factory=utc_now)

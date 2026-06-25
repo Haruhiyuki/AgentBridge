@@ -47,6 +47,8 @@ Implemented in this slice:
 - Bot Gateway delivery service using the renderer.
 - In-memory Bot transport and idempotent delivery records keyed by platform, chat context, event, and message index.
 - Delivery APIs through `POST /api/v1/bot-gateway/deliver-session-events` and `GET /api/v1/bot-gateway/deliveries`.
+- Bot delivery records are now domain/repository state and persist through Alembic migration `0002_bot_delivery_records`.
+- Recovery tests prove replay after repository re-instantiation skips already delivered Bot messages.
 - Focused unit/API tests for the above.
 
 Not implemented yet:
@@ -58,7 +60,7 @@ Not implemented yet:
 - Full RBAC/ABAC policy editor and multi-person approval flows.
 - WebSocket transport for Terminal Agent and Bot Gateway event delivery.
 - Rich platform-specific renderer delivery state, message editing, and button/card support.
-- Persistent Bot delivery records and actual NoneBot/OneBot transport integration.
+- Actual NoneBot/OneBot transport integration.
 - Normalized relational query layer for large audit/event searches; the current SQLAlchemy repository persists Pydantic payload snapshots with indexed routing columns.
 - PostgreSQL-specific operational hardening, connection pooling policy, and migration deployment docs.
 
@@ -73,6 +75,7 @@ Not implemented yet:
 - The first Console Client is line-mode to validate the lease boundary. Raw mode and visible TUI passthrough remain separate work because they need careful terminal state restoration.
 - Rendering is split into platform-neutral documents and platform renderers. The first renderer intentionally targets text fallback so unsupported Bot platforms still receive coherent output.
 - Bot delivery idempotency is implemented before real platform integration so duplicate event replay cannot cause duplicate sends once a real transport is attached.
+- Bot delivery records are persisted separately from semantic events so replay, delivery retries, and platform message IDs can evolve without mutating event history.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
 
 ## Verification
@@ -91,5 +94,5 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 1. Add tmux lifecycle supervision tests around the local daemon, including restart/reconnect behavior.
 2. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
 3. Add real NoneBot/OneBot V11 transport integration behind the Bot transport protocol.
-4. Persist Bot delivery records and implement retry/backoff for platform delivery failures.
+4. Add delivery failure state, retry/backoff, and platform rate-limit handling.
 5. Expand policy engine to explicit role bindings, approval quorum, and risk levels.

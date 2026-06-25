@@ -1,38 +1,11 @@
 from __future__ import annotations
 
-from enum import StrEnum
 from typing import Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict
-
 from agentbridge.control_plane import ControlPlane
+from agentbridge.domain import BotDeliveryRecord, BotDeliveryStatus, BotPlatform
 from agentbridge.renderer import OneBotV11TextRenderer, RenderDocument, document_from_event
-
-
-class BotPlatform(StrEnum):
-    ONEBOT_V11 = "onebot.v11"
-    PLAIN_TEXT = "plain_text"
-
-
-class BotDeliveryStatus(StrEnum):
-    SENT = "sent"
-    SKIPPED_DUPLICATE = "skipped_duplicate"
-
-
-class BotDeliveryRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    idempotency_key: str
-    platform: BotPlatform
-    chat_context_id: str
-    event_id: str
-    event_seq: int
-    message_index: int
-    platform_message_id: str | None = None
-    text: str
-    status: BotDeliveryStatus
 
 
 class BotTransport(Protocol):
@@ -81,7 +54,6 @@ class BotGatewayService:
         self.control = control
         self.transport = transport or InMemoryBotTransport()
         self.renderer = renderer or OneBotV11TextRenderer()
-        self.delivery_records: dict[str, BotDeliveryRecord] = {}
 
     def deliver_session_events(
         self,
@@ -126,7 +98,7 @@ class BotGatewayService:
         records: list[BotDeliveryRecord] = []
         for index, text in enumerate(messages):
             idempotency_key = f"{platform.value}:{chat_context_id}:{event_id}:{index}"
-            existing = self.delivery_records.get(idempotency_key)
+            existing = self.control.repository.get_bot_delivery_record(idempotency_key)
             if existing:
                 duplicate = existing.model_copy(
                     update={"status": BotDeliveryStatus.SKIPPED_DUPLICATE}
@@ -151,12 +123,9 @@ class BotGatewayService:
                 text=text,
                 status=BotDeliveryStatus.SENT,
             )
-            self.delivery_records[idempotency_key] = record
+            self.control.repository.store_bot_delivery_record(record)
             records.append(record)
         return records
 
     def list_records(self, chat_context_id: str | None = None) -> list[BotDeliveryRecord]:
-        records = list(self.delivery_records.values())
-        if chat_context_id:
-            records = [record for record in records if record.chat_context_id == chat_context_id]
-        return records
+        return self.control.repository.list_bot_delivery_records(chat_context_id)

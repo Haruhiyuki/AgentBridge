@@ -14,6 +14,7 @@ from agentbridge.domain import (
     AgentType,
     AuditEvent,
     AuditOutcome,
+    BotDeliveryRecord,
     ChatContext,
     CommandResult,
     ErrorCode,
@@ -71,6 +72,7 @@ class InMemoryRepository:
         self.lease_epochs: dict[str, int] = {}
         self.audit_events: list[AuditEvent] = []
         self.semantic_events: list[SemanticEvent] = []
+        self.bot_delivery_records: dict[str, BotDeliveryRecord] = {}
         self.command_results: dict[str, CommandResult] = {}
         self.event_idempotency: dict[str, SemanticEvent] = {}
         self.event_stream_seq: dict[str, int] = {}
@@ -798,3 +800,22 @@ class InMemoryRepository:
         if project_id:
             return f"project:{project_id}"
         return "system"
+
+    def get_bot_delivery_record(self, idempotency_key: str) -> BotDeliveryRecord | None:
+        with self._lock:
+            return self.bot_delivery_records.get(idempotency_key)
+
+    def store_bot_delivery_record(self, record: BotDeliveryRecord) -> None:
+        with self._lock:
+            self.bot_delivery_records[record.idempotency_key] = record
+
+    def list_bot_delivery_records(
+        self, chat_context_id: str | None = None
+    ) -> list[BotDeliveryRecord]:
+        with self._lock:
+            records = list(self.bot_delivery_records.values())
+            if chat_context_id:
+                records = [
+                    record for record in records if record.chat_context_id == chat_context_id
+                ]
+            return sorted(records, key=lambda record: record.created_at)
