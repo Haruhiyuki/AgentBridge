@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -2018,10 +2019,11 @@ def http_api_request_authorized(request: Request) -> bool:
     if request.url.path == "/api/v1/health":
         return True
     expected_tokens = http_api_expected_tokens()
-    if not expected_tokens:
+    device_keys = configured_device_keys()
+    if not expected_tokens and not device_keys_configured():
         return True
     presented_tokens = http_api_presented_tokens(request)
-    return any(
+    return http_device_key_authorized(request, device_keys) or any(
         matching_token(presented_token, expected_tokens)
         for presented_token in presented_tokens
     )
@@ -2057,12 +2059,28 @@ def http_api_presented_tokens(request: Request) -> list[str]:
     return [token for token in tokens if token]
 
 
+def http_device_key_authorized(request: Request, device_keys: dict[str, str]) -> bool:
+    device_id = request.headers.get("x-agentbridge-device-id")
+    presented_key = request.headers.get("x-agentbridge-device-key")
+    if not presented_key:
+        authorization = request.headers.get("authorization")
+        if authorization:
+            prefix = "Bearer "
+            presented_key = (
+                authorization[len(prefix) :].strip()
+                if authorization.startswith(prefix)
+                else authorization.strip()
+            )
+    return matching_device_key(device_id, presented_key, device_keys)
+
+
 def http_api_auth_error_response() -> JSONResponse:
     error = AgentBridgeError(
         ErrorCode.PERMISSION_DENIED,
         "HTTP API token 无效。",
         next_step=(
             "请设置 Authorization: Bearer <token>、X-AgentBridge-API-Token，"
+            "X-AgentBridge-Device-ID/X-AgentBridge-Device-Key，"
             "或使用已解锁的 Admin Web cookie。"
         ),
         status_code=403,
@@ -2094,18 +2112,24 @@ async def accept_authenticated_websocket(
     token: str | None,
 ) -> bool:
     await websocket.accept()
-    expected_token = os.environ.get("AGENTBRIDGE_WS_TOKEN", "").strip()
-    if not expected_token:
+    expected_tokens = websocket_expected_tokens()
+    device_keys = configured_device_keys()
+    if not expected_tokens and not device_keys_configured():
         return True
     presented_token = websocket_presented_token(websocket, token)
-    if presented_token and hmac.compare_digest(presented_token, expected_token):
+    if matching_token(presented_token, expected_tokens):
+        return True
+    if websocket_device_key_authorized(websocket, device_keys):
         return True
     if websocket_admin_cookie_authorized(websocket):
         return True
     error = AgentBridgeError(
         ErrorCode.PERMISSION_DENIED,
         "WebSocket token 无效。",
-        next_step="请使用当前 AGENTBRIDGE_WS_TOKEN 重新连接，或先解锁 Admin Web。",
+        next_step=(
+            "请使用当前 AGENTBRIDGE_WS_TOKEN，"
+            "或通过 device_id/device_key 重新连接，或先解锁 Admin Web。"
+        ),
         status_code=403,
     )
     await websocket.send_json({"type": "error", "error": error.to_payload()})
@@ -2125,6 +2149,22 @@ def websocket_presented_token(websocket: WebSocket, token: str | None) -> str | 
     return authorization.strip()
 
 
+def websocket_expected_tokens() -> list[str]:
+    token = os.environ.get("AGENTBRIDGE_WS_TOKEN", "").strip()
+    return [token] if token else []
+
+
+def websocket_device_key_authorized(
+    websocket: WebSocket,
+    device_keys: dict[str, str],
+) -> bool:
+    return matching_device_key(
+        websocket.query_params.get("device_id"),
+        websocket.query_params.get("device_key"),
+        device_keys,
+    )
+
+
 def websocket_admin_cookie_authorized(websocket: WebSocket) -> bool:
     path = websocket.url.path
     if not (
@@ -2139,6 +2179,43 @@ def websocket_admin_cookie_authorized(websocket: WebSocket) -> bool:
             admin_expected_tokens(),
         )
     )
+
+
+def device_keys_configured() -> bool:
+    return bool(os.environ.get("AGENTBRIDGE_DEVICE_KEYS", "").strip())
+
+
+def configured_device_keys() -> dict[str, str]:
+    raw_value = os.environ.get("AGENTBRIDGE_DEVICE_KEYS", "").strip()
+    if not raw_value:
+        return {}
+    try:
+        payload = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    keys: dict[str, str] = {}
+    for device_id, device_key in payload.items():
+        if isinstance(device_id, str) and isinstance(device_key, str):
+            normalized_device_id = device_id.strip()
+            normalized_device_key = device_key.strip()
+            if normalized_device_id and normalized_device_key:
+                keys[normalized_device_id] = normalized_device_key
+    return keys
+
+
+def matching_device_key(
+    device_id: str | None,
+    presented_key: str | None,
+    device_keys: dict[str, str],
+) -> bool:
+    if not device_id or not presented_key:
+        return False
+    expected_key = device_keys.get(device_id.strip())
+    if not expected_key:
+        return False
+    return hmac.compare_digest(presented_key.strip(), expected_key)
 
 
 def clamp_stream_limit(limit: int) -> int:

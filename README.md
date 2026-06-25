@@ -151,7 +151,7 @@ wscat -c 'ws://127.0.0.1:8000/api/v1/sessions/<session-id>/rendered-events/ws?af
 
 Both streams emit replayed events first, then poll for new events. `after_seq`, `limit`, `poll_interval_seconds`, and `idle_timeout_seconds` are accepted as query parameters.
 
-Set `AGENTBRIDGE_WS_TOKEN` to require WebSocket clients to pass either `?token=...` or `Authorization: Bearer ...`. A browser session unlocked through Admin Web can also use its HttpOnly admin cookie for same-origin WebSocket streams. If the variable is unset, WebSocket routes stay open for local MVP development.
+Set `AGENTBRIDGE_WS_TOKEN` to require WebSocket clients to pass either `?token=...` or `Authorization: Bearer ...`. A browser session unlocked through Admin Web can also use its HttpOnly admin cookie for same-origin WebSocket streams. If the variable is unset and no device keys are configured, WebSocket routes stay open for local MVP development.
 
 Set `AGENTBRIDGE_API_TOKEN` to require REST API clients to pass either
 `Authorization: Bearer <token>` or `X-AgentBridge-API-Token: <token>` for `/api/*`
@@ -159,7 +159,12 @@ routes other than `/api/v1/health`. If `AGENTBRIDGE_ADMIN_TOKEN` is configured, 
 same token and the unlocked Admin Web cookie can also authorize REST API calls so the
 built-in admin pages continue to work after browser unlock. If only `AGENTBRIDGE_API_TOKEN`
 is configured, it also gates and unlocks the built-in admin pages. If neither variable is
-set, REST routes stay open for local MVP development.
+set and no device keys are configured, REST routes stay open for local MVP development.
+
+For per-device keys without adding database state, set `AGENTBRIDGE_DEVICE_KEYS` to a
+JSON object mapping device IDs to secrets. REST clients present
+`X-AgentBridge-Device-ID` plus `X-AgentBridge-Device-Key`; WebSocket clients present
+`device_id` plus `device_key` query parameters.
 
 Audit records can be queried through `GET /api/v1/audit` with optional `actor_id`,
 `action`, `project_id`, `session_id`, `interaction_id`, `trace_id`, and `limit`

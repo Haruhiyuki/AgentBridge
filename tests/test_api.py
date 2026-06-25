@@ -5,6 +5,8 @@ import threading
 from fastapi.testclient import TestClient
 
 from agentbridge.api import create_app
+from agentbridge.control_plane import ControlPlane
+from agentbridge.domain import Actor, Visibility
 from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService
 
 
@@ -98,6 +100,44 @@ def test_admin_cookie_authorizes_rest_api_when_admin_token_configured(monkeypatc
     assert "AgentBridge Admin" in unlock_response.text
     assert api_response.status_code == 200
     assert api_response.json() == []
+
+
+def test_device_key_gate_authorizes_rest_api_when_configured(monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_KEYS", '{"laptop":"device-secret"}')
+    client = TestClient(create_app())
+
+    health_response = client.get("/api/v1/health")
+    denied_response = client.get("/api/v1/projects")
+    header_response = client.get(
+        "/api/v1/projects",
+        headers={
+            "x-agentbridge-device-id": "laptop",
+            "x-agentbridge-device-key": "device-secret",
+        },
+    )
+    bearer_response = client.get(
+        "/api/v1/projects",
+        headers={
+            "x-agentbridge-device-id": "laptop",
+            "authorization": "Bearer device-secret",
+        },
+    )
+    wrong_key_response = client.get(
+        "/api/v1/projects",
+        headers={
+            "x-agentbridge-device-id": "laptop",
+            "x-agentbridge-device-key": "wrong",
+        },
+    )
+
+    assert health_response.status_code == 200
+    assert denied_response.status_code == 403
+    assert denied_response.json()["error_code"] == "PERMISSION_DENIED"
+    assert header_response.status_code == 200
+    assert header_response.json() == []
+    assert bearer_response.status_code == 200
+    assert bearer_response.json() == []
+    assert wrong_key_response.status_code == 403
 
 
 def test_project_session_admin_ui_serves_dashboard():
@@ -1148,6 +1188,54 @@ def test_session_events_websocket_requires_token_when_configured(monkeypatch, tm
 
     with client.websocket_connect(
         f"/api/v1/sessions/{session_id}/events/ws?token=secret&idle_timeout_seconds=0"
+    ) as websocket:
+        message = websocket.receive_json()
+        idle = websocket.receive_json()
+
+    assert message["type"] == "semantic_event"
+    assert message["event"]["type"] == "session.created"
+    assert idle == {"type": "idle_timeout", "last_seq": message["event"]["seq"]}
+
+
+def test_session_events_websocket_accepts_device_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_KEYS", '{"laptop":"device-secret"}')
+    control = ControlPlane()
+    actor = Actor(id="usr_1", roles={"maintainer"})
+    project = control.create_project(
+        actor=actor,
+        name="Device Key Backend",
+        trace_id="device-key-project",
+    )
+    workspace = control.add_workspace(
+        actor=actor,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="device-key-workspace",
+    )
+    session = control.create_session(
+        actor=actor,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Device Key Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="device-key-session",
+    )
+    client = TestClient(create_app(control))
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session.id}/events/ws?idle_timeout_seconds=0"
+    ) as websocket:
+        denied = websocket.receive_json()
+
+    assert denied["type"] == "error"
+    assert denied["error"]["error_code"] == "PERMISSION_DENIED"
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session.id}/events/ws"
+        "?device_id=laptop&device_key=device-secret&idle_timeout_seconds=0"
     ) as websocket:
         message = websocket.receive_json()
         idle = websocket.receive_json()
