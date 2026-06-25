@@ -341,3 +341,32 @@ def test_admin_home_and_terminal_lifecycle_ui_routes():
     assert "/api/v1/terminal/lifecycle-monitor" in html
     assert "/api/v1/terminal/lifecycle-monitor/run-once" in html
     assert "async function runOnce()" in html
+
+
+def test_admin_ui_requires_token_when_configured(monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_ADMIN_TOKEN", "secret-token")
+    monkeypatch.setenv("AGENTBRIDGE_ADMIN_COOKIE_SECURE", "false")
+    client = TestClient(create_app())
+
+    locked_response = client.get("/admin")
+    bad_response = client.get("/admin?admin_token=bad-token")
+    unlock_response = client.get("/admin?admin_token=secret-token", follow_redirects=False)
+    cookie_response = client.get("/admin/interactions")
+    header_response = TestClient(create_app()).get(
+        "/admin/projects",
+        headers={"authorization": "Bearer secret-token"},
+    )
+
+    assert locked_response.status_code == 401
+    assert "AgentBridge Admin Login" in locked_response.text
+    assert bad_response.status_code == 401
+    assert unlock_response.status_code == 303
+    assert unlock_response.headers["location"] == "/admin"
+    set_cookie = unlock_response.headers["set-cookie"]
+    assert "agentbridge_admin_token=secret-token" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "samesite=strict" in set_cookie.lower()
+    assert cookie_response.status_code == 200
+    assert "AgentBridge Interactions" in cookie_response.text
+    assert header_response.status_code == 200
+    assert "AgentBridge Projects & Sessions" in header_response.text

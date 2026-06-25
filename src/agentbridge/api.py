@@ -9,12 +9,13 @@ from pathlib import Path
 from time import monotonic
 
 import uvicorn
-from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from agentbridge.admin_ui import (
     ACCESS_POLICY_ADMIN_HTML,
+    ADMIN_AUTH_REQUIRED_HTML,
     ADMIN_HOME_HTML,
     BOT_DELIVERY_ADMIN_HTML,
     INTERACTION_ADMIN_HTML,
@@ -469,28 +470,28 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         return JSONResponse(status_code=exc.status_code, content=exc.to_payload())
 
     @app.get("/admin", response_class=HTMLResponse)
-    def admin_home_ui():
-        return HTMLResponse(ADMIN_HOME_HTML)
+    def admin_home_ui(request: Request):
+        return admin_html_response(request, ADMIN_HOME_HTML)
 
     @app.get("/admin/access-policy", response_class=HTMLResponse)
-    def access_policy_admin_ui():
-        return HTMLResponse(ACCESS_POLICY_ADMIN_HTML)
+    def access_policy_admin_ui(request: Request):
+        return admin_html_response(request, ACCESS_POLICY_ADMIN_HTML)
 
     @app.get("/admin/projects", response_class=HTMLResponse)
-    def project_session_admin_ui():
-        return HTMLResponse(PROJECT_SESSION_ADMIN_HTML)
+    def project_session_admin_ui(request: Request):
+        return admin_html_response(request, PROJECT_SESSION_ADMIN_HTML)
 
     @app.get("/admin/interactions", response_class=HTMLResponse)
-    def interaction_admin_ui():
-        return HTMLResponse(INTERACTION_ADMIN_HTML)
+    def interaction_admin_ui(request: Request):
+        return admin_html_response(request, INTERACTION_ADMIN_HTML)
 
     @app.get("/admin/terminal-lifecycle", response_class=HTMLResponse)
-    def terminal_lifecycle_admin_ui():
-        return HTMLResponse(TERMINAL_LIFECYCLE_ADMIN_HTML)
+    def terminal_lifecycle_admin_ui(request: Request):
+        return admin_html_response(request, TERMINAL_LIFECYCLE_ADMIN_HTML)
 
     @app.get("/admin/bot-delivery", response_class=HTMLResponse)
-    def bot_delivery_admin_ui():
-        return HTMLResponse(BOT_DELIVERY_ADMIN_HTML)
+    def bot_delivery_admin_ui(request: Request):
+        return admin_html_response(request, BOT_DELIVERY_ADMIN_HTML)
 
     def get_control() -> ControlPlane:
         return app.state.control
@@ -1877,6 +1878,72 @@ def terminal_error_frame(request_id: object, exc: AgentBridgeError) -> dict[str,
         "ok": False,
         "error": exc.to_payload(),
     }
+
+
+ADMIN_AUTH_COOKIE_NAME = "agentbridge_admin_token"
+ADMIN_AUTH_QUERY_PARAM = "admin_token"
+
+
+def admin_html_response(request: Request, html: str):
+    expected_token = os.environ.get("AGENTBRIDGE_ADMIN_TOKEN", "").strip()
+    if not expected_token:
+        return HTMLResponse(html)
+
+    presented_token = admin_presented_token(request)
+    if presented_token and hmac.compare_digest(presented_token, expected_token):
+        query_token = request.query_params.get(ADMIN_AUTH_QUERY_PARAM)
+        response = (
+            RedirectResponse(url=request.url.path, status_code=303)
+            if query_token
+            else HTMLResponse(html)
+        )
+        response.set_cookie(
+            ADMIN_AUTH_COOKIE_NAME,
+            expected_token,
+            max_age=admin_cookie_max_age_seconds(),
+            httponly=True,
+            secure=admin_cookie_secure(request),
+            samesite="strict",
+        )
+        return response
+
+    return HTMLResponse(ADMIN_AUTH_REQUIRED_HTML, status_code=401)
+
+
+def admin_presented_token(request: Request) -> str | None:
+    query_token = request.query_params.get(ADMIN_AUTH_QUERY_PARAM)
+    if query_token:
+        return query_token
+    cookie_token = request.cookies.get(ADMIN_AUTH_COOKIE_NAME)
+    if cookie_token:
+        return cookie_token
+    header_token = request.headers.get("x-agentbridge-admin-token")
+    if header_token:
+        return header_token.strip()
+    authorization = request.headers.get("authorization")
+    if not authorization:
+        return None
+    prefix = "Bearer "
+    if authorization.startswith(prefix):
+        return authorization[len(prefix) :].strip()
+    return authorization.strip()
+
+
+def admin_cookie_max_age_seconds() -> int:
+    raw_value = os.environ.get("AGENTBRIDGE_ADMIN_COOKIE_MAX_AGE_SECONDS", "43200").strip()
+    try:
+        return max(60, int(raw_value))
+    except ValueError:
+        return 43200
+
+
+def admin_cookie_secure(request: Request) -> bool:
+    override = os.environ.get("AGENTBRIDGE_ADMIN_COOKIE_SECURE", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    return request.url.scheme == "https"
 
 
 def invalid_terminal_frame(reason: str) -> AgentBridgeError:

@@ -29,10 +29,10 @@ This repository currently contains the first executable backend slice:
 - Project/chat-context approval quorum overrides through REST and `/agent policy`.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - Persistent access policy allow/deny rules with action/resource/actor/role/attribute matching and a simulation API.
-- Built-in Admin Web pages for project/session operations, interaction/approval operations, access policy editing, terminal lifecycle inspection, and Bot delivery operations.
+- Built-in Admin Web pages for project/session operations, interaction/approval operations, access policy editing, terminal lifecycle inspection, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
-Production PTY supervision, hardened browser authentication, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
+Production PTY supervision, API/device-key authentication, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
 
 ## Development
 
@@ -363,6 +363,19 @@ interaction page lists and filters questions/approvals, creates new interactions
 answers questions, votes on approvals, and cancels pending items. The policy editor
 lists rules, edits allow/deny match criteria, runs `/api/v1/access-policy/simulate`,
 and saves through the same audited REST APIs.
+
+Set `AGENTBRIDGE_ADMIN_TOKEN` to require a browser token before serving `/admin` pages:
+
+```bash
+export AGENTBRIDGE_ADMIN_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+```
+
+Open `/admin?admin_token=<token>` once to set a short-lived HttpOnly, SameSite cookie,
+or pass `Authorization: Bearer <token>` / `X-AgentBridge-Admin-Token: <token>` for
+scripted admin page access. `AGENTBRIDGE_ADMIN_COOKIE_MAX_AGE_SECONDS` controls cookie
+lifetime, and `AGENTBRIDGE_ADMIN_COOKIE_SECURE` can force Secure cookie behavior when
+AgentBridge is deployed behind TLS. This gates the built-in browser pages; broader
+API/device-key authentication remains a production hardening item.
 
 ## Console Client
 

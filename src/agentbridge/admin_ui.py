@@ -102,6 +102,105 @@ ADMIN_HOME_HTML = """<!doctype html>
 """
 
 
+ADMIN_AUTH_REQUIRED_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentBridge Admin Login</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --line: #d6dde6;
+      --text: #17202a;
+      --muted: #5b6878;
+      --accent: #0f766e;
+      --danger: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+    main {
+      width: min(420px, calc(100vw - 32px));
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0 0 16px;
+      color: var(--muted);
+    }
+    form {
+      display: grid;
+      gap: 12px;
+    }
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    input {
+      min-height: 38px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--text);
+      font: inherit;
+    }
+    button {
+      min-height: 38px;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 650;
+    }
+    .error {
+      min-height: 20px;
+      color: var(--danger);
+      font-size: 12px;
+      font-weight: 650;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>AgentBridge Admin</h1>
+    <p>Enter the configured admin token to unlock this browser session.</p>
+    <form method="get">
+      <label>
+        Admin Token
+        <input name="admin_token" type="password" autocomplete="current-password" autofocus>
+      </label>
+      <button type="submit">Unlock</button>
+      <div class="error" id="error"></div>
+    </form>
+  </main>
+</body>
+</html>
+"""
+
+
 PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
 <html lang="en">
 <head>
