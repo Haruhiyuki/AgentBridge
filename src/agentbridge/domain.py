@@ -190,6 +190,7 @@ class DeviceIdentityStatus(StrEnum):
 
 class DeviceIdentityScope(StrEnum):
     HTTP_API = "http_api"
+    AUDIT_READ = "audit_read"
     COMMAND_PARSE = "command_parse"
     COMMAND_EXECUTE = "command_execute"
     DEVICE_MANAGE = "device_manage"

@@ -3435,6 +3435,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
     const $ = (id) => document.getElementById(id);
     const defaultScopes = [
       "http_api",
+      "audit_read",
       "bot_gateway_manage",
       "onebot_event_ingest",
       "command_parse",

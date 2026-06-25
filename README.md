@@ -205,13 +205,14 @@ JSON object mapping device IDs to secrets. REST clients present
 For persisted device identities, create or rotate a key through
 `POST /api/v1/device-identities` with `device_id`, optional `display_name`, and an
 optional caller-supplied `device_key`. `allowed_scopes` can narrow the key or managed
-certificate fingerprint to one or more scopes: `http_api`, `bot_gateway_manage`,
-`onebot_event_ingest`, `command_parse`, `command_execute`, `device_manage`,
+certificate fingerprint to one or more scopes: `http_api`, `audit_read`,
+`bot_gateway_manage`, `onebot_event_ingest`, `command_parse`, `command_execute`, `device_manage`,
 `policy_manage`, `group_role_manage`, `chat_context_manage`, `project_manage`,
 `session_manage`, `session_send`, `session_event_ingest`, `interaction_manage`,
 `terminal_read`, `terminal_control`, `session_events_ws`, `rendered_events_ws`,
 `terminal_ws`, and `bot_gateway_ws`; omitting it grants all current scopes.
-Managed device credentials need `bot_gateway_manage` to call Bot Gateway HTTP mutation APIs,
+Managed device credentials need `audit_read` to call audit and event history HTTP read APIs,
+`bot_gateway_manage` to call Bot Gateway HTTP mutation APIs,
 `onebot_event_ingest` to receive OneBot inbound events, `command_parse` to call
 `/api/v1/commands/parse`, `command_execute` to call `/api/v1/commands/execute`,
 `device_manage` to call `/api/v1/device-identities` and its child routes,

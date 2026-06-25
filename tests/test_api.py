@@ -1101,7 +1101,7 @@ def test_managed_device_identity_requires_session_event_ingest_scope_for_event_w
     )
 
     assert create_identity_response.status_code == 200
-    assert replay_response.status_code == 200
+    assert replay_response.status_code == 403
     assert key_ingest_response.status_code == 403
     assert cert_ingest_response.status_code == 403
 
@@ -1154,11 +1154,134 @@ def test_managed_device_identity_session_event_ingest_scope_allows_event_writes(
     assert ingest_response.json()["type"] == "assistant.delta"
     assert ingest_response.json()["source"] == "terminal_agent"
     assert ingest_response.json()["payload"] == {"text": "hello"}
-    assert replay_response.status_code == 200
-    assert any(
-        event["id"] == ingest_response.json()["id"]
-        for event in replay_response.json()
+    assert replay_response.status_code == 403
+
+
+def test_managed_device_identity_requires_audit_read_scope_for_audit_event_http_reads(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-audit-read-scope",
+        prefix="audit-read-scope",
+        name="Audit Read Scope",
     )
+    event_response = client.post(
+        f"/api/v1/sessions/{session_id}/events",
+        json={
+            "type": "assistant.delta",
+            "source": "terminal_agent",
+            "trace_id": "audit-read-scope-event",
+            "idempotency_key": "audit-read-scope-event",
+            "payload": {"text": "audit read denied"},
+        },
+    )
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-audit-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "audit-read-scope-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-audit-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    regular_http_response = client.get("/api/v1/projects", headers=key_headers)
+    audit_response = client.get("/api/v1/audit", headers=key_headers)
+    event_search_response = client.get("/api/v1/events", headers=key_headers)
+    event_replay_response = client.get(
+        f"/api/v1/sessions/{session_id}/events",
+        headers=key_headers,
+    )
+    rendered_response = client.get(
+        f"/api/v1/sessions/{session_id}/rendered-events",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert event_response.status_code == 200
+    assert create_response.status_code == 200
+    assert regular_http_response.status_code == 200
+    assert audit_response.status_code == 403
+    assert event_search_response.status_code == 403
+    assert event_replay_response.status_code == 403
+    assert rendered_response.status_code == 403
+
+
+def test_managed_device_identity_audit_read_scope_allows_audit_event_http_reads(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-audit-read-manager",
+        prefix="audit-read-manager",
+        name="Audit Read Manager",
+    )
+    event_response = client.post(
+        f"/api/v1/sessions/{session_id}/events",
+        json={
+            "type": "assistant.delta",
+            "source": "terminal_agent",
+            "trace_id": "audit-read-manager-event",
+            "idempotency_key": "audit-read-manager-event",
+            "payload": {"text": "audit read allowed"},
+        },
+    )
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "audit-read-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "audit_read"],
+            "trace_id": "audit-read-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "audit-read-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    audit_response = client.get("/api/v1/audit", headers=headers)
+    event_search_response = client.get(
+        "/api/v1/events",
+        params={"trace_id": "audit-read-manager-event"},
+        headers=headers,
+    )
+    event_replay_response = client.get(
+        f"/api/v1/sessions/{session_id}/events",
+        headers=headers,
+    )
+    rendered_response = client.get(
+        f"/api/v1/sessions/{session_id}/rendered-events",
+        headers=headers,
+    )
+
+    assert event_response.status_code == 200
+    assert create_response.status_code == 200
+    assert audit_response.status_code == 200
+    assert event_search_response.status_code == 200
+    assert [event["id"] for event in event_search_response.json()] == [
+        event_response.json()["id"]
+    ]
+    assert event_replay_response.status_code == 200
+    assert any(
+        event["id"] == event_response.json()["id"]
+        for event in event_replay_response.json()
+    )
+    assert rendered_response.status_code == 200
+    assert rendered_response.json()
 
 
 def test_project_session_admin_ui_serves_dashboard():
@@ -1211,6 +1334,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "async function revokeDevice()" in html
     assert "auth-device-key" in html
     assert "allowed-scopes" in html
+    assert "audit_read" in html
     assert "bot_gateway_manage" in html
     assert "onebot_event_ingest" in html
     assert "command_parse" in html
