@@ -29,7 +29,7 @@ This repository currently contains the first executable backend slice:
 - Project/chat-context approval quorum overrides through REST and `/agent policy`.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - Persistent access policy allow/deny rules with action/resource/actor/role/attribute matching and a simulation API.
-- Built-in Admin Web pages for project/session operations, interaction/approval operations, access policy editing, terminal lifecycle inspection, and Bot delivery operations, with optional token-gated browser access.
+- Built-in Admin Web pages for project/session operations, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
 Production PTY supervision, mTLS/device-key authentication, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
@@ -154,6 +154,10 @@ same token and the unlocked Admin Web cookie can also authorize REST API calls s
 built-in admin pages continue to work after browser unlock. If only `AGENTBRIDGE_API_TOKEN`
 is configured, it also gates and unlocks the built-in admin pages. If neither variable is
 set, REST routes stay open for local MVP development.
+
+Audit records can be queried through `GET /api/v1/audit` with optional `actor_id`,
+`action`, `project_id`, `session_id`, `interaction_id`, `trace_id`, and `limit`
+filters. Results are bounded and returned newest first for operational review.
 
 ## Terminal WebSocket
 
@@ -364,13 +368,14 @@ Rules are persisted by Alembic migration `0007_access_policy_rules`. The REST an
 
 The built-in admin entrypoint is available at `http://127.0.0.1:8000/admin`.
 It links to the project/session operations dashboard, interaction/approval dashboard,
-access policy editor, terminal lifecycle dashboard, and Bot delivery operations
-dashboard. The project/session page lists projects, adds workspaces, creates sessions,
-and closes selected sessions through the same REST APIs used by external clients. The
-interaction page lists and filters questions/approvals, creates new interactions,
-answers questions, votes on approvals, and cancels pending items. The policy editor
-lists rules, edits allow/deny match criteria, runs `/api/v1/access-policy/simulate`,
-and saves through the same audited REST APIs.
+audit/event explorer, access policy editor, terminal lifecycle dashboard, and Bot
+delivery operations dashboard. The project/session page lists projects, adds
+workspaces, creates sessions, and closes selected sessions through the same REST APIs
+used by external clients. The interaction page lists and filters questions/approvals,
+creates new interactions, answers questions, votes on approvals, and cancels pending
+items. The audit/event page filters audit records and replays session semantic events.
+The policy editor lists rules, edits allow/deny match criteria, runs
+`/api/v1/access-policy/simulate`, and saves through the same audited REST APIs.
 
 Set `AGENTBRIDGE_ADMIN_TOKEN` to require a browser token before serving `/admin` pages.
 When `AGENTBRIDGE_API_TOKEN` is configured and `AGENTBRIDGE_ADMIN_TOKEN` is not, the

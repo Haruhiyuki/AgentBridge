@@ -135,6 +135,21 @@ def test_interaction_admin_ui_serves_dashboard():
     assert "async function voteInteraction(approve)" in html
 
 
+def test_audit_events_admin_ui_serves_dashboard():
+    client = TestClient(create_app())
+
+    response = client.get("/admin/audit")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    html = response.text
+    assert "AgentBridge Audit & Events" in html
+    assert "/api/v1/audit" in html
+    assert "/api/v1/sessions/${encodeURIComponent(sessionId)}/events" in html
+    assert "async function refreshAudit()" in html
+    assert "async function refreshEvents()" in html
+
+
 def test_project_session_rest_flow_supports_admin_operations(tmp_path):
     client = TestClient(create_app())
     actor = {"id": "admin-ui", "roles": ["admin"]}
@@ -198,6 +213,68 @@ def test_project_session_rest_flow_supports_admin_operations(tmp_path):
     )
     assert close_response.status_code == 200
     assert close_response.json()["status"] == "closed"
+
+
+def test_audit_api_filters_and_limits_records(tmp_path):
+    client = TestClient(create_app())
+    actor = {"id": "admin-ui", "roles": ["admin"]}
+
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": actor,
+            "name": "Audit Backend",
+            "slug": "audit-backend",
+            "trace_id": "test-audit-project",
+        },
+    )
+    project = project_response.json()
+    workspace_response = client.post(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        json={
+            "actor": actor,
+            "machine_id": "local",
+            "path": str(tmp_path),
+            "allowed_root": str(tmp_path),
+            "trace_id": "test-audit-workspace",
+        },
+    )
+    workspace = workspace_response.json()
+    session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": actor,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Audit Session",
+            "trace_id": "test-audit-session",
+        },
+    )
+    session = session_response.json()
+
+    filtered_response = client.get(
+        "/api/v1/audit",
+        params={
+            "action": "session.created",
+            "actor_id": "admin-ui",
+            "session_id": session["id"],
+            "limit": 1,
+        },
+    )
+    missing_response = client.get(
+        "/api/v1/audit",
+        params={"action": "session.created", "actor_id": "other"},
+    )
+
+    assert filtered_response.status_code == 200
+    assert len(filtered_response.json()) == 1
+    [audit_event] = filtered_response.json()
+    assert audit_event["action"] == "session.created"
+    assert audit_event["actor_id"] == "admin-ui"
+    assert audit_event["project_id"] == project["id"]
+    assert audit_event["session_id"] == session["id"]
+    assert missing_response.status_code == 200
+    assert missing_response.json() == []
 
 
 def test_command_execute_api_creates_project_session_and_turn(tmp_path):

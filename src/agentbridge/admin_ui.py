@@ -88,6 +88,10 @@ ADMIN_HOME_HTML = """<!doctype html>
       <strong>Interactions</strong>
       <span>Questions, approvals, votes, cancellations</span>
     </a>
+    <a href="/admin/audit">
+      <strong>Audit & Events</strong>
+      <span>Audit chain filters and session event replay</span>
+    </a>
     <a href="/admin/terminal-lifecycle">
       <strong>Terminal Lifecycle</strong>
       <span>Monitor status, backend supervision, run once</span>
@@ -196,6 +200,386 @@ ADMIN_AUTH_REQUIRED_HTML = """<!doctype html>
       <div class="error" id="error"></div>
     </form>
   </main>
+</body>
+</html>
+"""
+
+
+AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentBridge Audit & Events</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --panel-muted: #f0f3f7;
+      --line: #d6dde6;
+      --text: #17202a;
+      --muted: #5b6878;
+      --accent: #0f766e;
+      --danger: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+    header {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-weight: 650;
+    }
+    nav a:hover { color: var(--accent); }
+    main {
+      display: grid;
+      grid-template-columns: minmax(520px, 1fr) minmax(460px, 1fr);
+      min-height: calc(100vh - 56px);
+    }
+    section {
+      min-width: 0;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+    }
+    section:last-child { border-right: 0; }
+    .toolbar {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-muted);
+      flex-wrap: wrap;
+    }
+    button, input {
+      min-height: 34px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+    button {
+      cursor: pointer;
+      font-weight: 650;
+    }
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+    label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .compact { max-width: 180px; }
+    .status {
+      flex: 1;
+      min-width: 180px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .table-wrap {
+      max-height: calc(50vh - 56px);
+      overflow: auto;
+      border-bottom: 1px solid var(--line);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    th, td {
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      color: var(--muted);
+      background: #f9fafb;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    tr { cursor: pointer; }
+    tr.selected td { background: #e8f5f3; }
+    pre {
+      margin: 14px;
+      min-height: 180px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfe;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow: auto;
+    }
+    .danger { color: var(--danger); }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+      section { border-right: 0; border-bottom: 1px solid var(--line); }
+      .compact { max-width: none; }
+      header { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AgentBridge Audit & Events</h1>
+    <nav>
+      <a href="/admin">Admin</a>
+      <a href="/admin/projects">Projects & Sessions</a>
+      <a href="/admin/interactions">Interactions</a>
+      <a href="/admin/access-policy">Access Policy</a>
+      <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
+      <a href="/admin/bot-delivery">Bot Delivery</a>
+    </nav>
+  </header>
+  <main>
+    <section>
+      <div class="toolbar">
+        <button id="audit-refresh" type="button">Refresh Audit</button>
+        <label class="compact">
+          Action
+          <input id="audit-action" autocomplete="off" placeholder="session.created">
+        </label>
+        <label class="compact">
+          Actor
+          <input id="audit-actor" autocomplete="off" placeholder="usr_1">
+        </label>
+        <label class="compact">
+          Session
+          <input id="audit-session" autocomplete="off" placeholder="optional">
+        </label>
+        <label class="compact">
+          Limit
+          <input id="audit-limit" type="number" value="100" min="1" max="500">
+        </label>
+        <div class="status" id="audit-status">Ready</div>
+      </div>
+      <div class="table-wrap">
+        <table aria-label="Audit records">
+          <thead>
+            <tr>
+              <th>Action</th>
+              <th>Actor</th>
+              <th>Outcome</th>
+              <th>Session</th>
+              <th>Trace</th>
+            </tr>
+          </thead>
+          <tbody id="audit-records"></tbody>
+        </table>
+      </div>
+      <pre id="audit-selected">{}</pre>
+    </section>
+    <section>
+      <div class="toolbar">
+        <button id="event-refresh" type="button">Load Events</button>
+        <label class="compact">
+          Session ID
+          <input id="event-session" autocomplete="off">
+        </label>
+        <label class="compact">
+          After Seq
+          <input id="event-after" type="number" min="0" placeholder="optional">
+        </label>
+        <label class="compact">
+          Limit
+          <input id="event-limit" type="number" value="100" min="1" max="500">
+        </label>
+        <div class="status" id="event-status">Ready</div>
+      </div>
+      <div class="table-wrap">
+        <table aria-label="Semantic events">
+          <thead>
+            <tr>
+              <th>Seq</th>
+              <th>Type</th>
+              <th>Source</th>
+              <th>Turn</th>
+              <th>Trace</th>
+            </tr>
+          </thead>
+          <tbody id="events"></tbody>
+        </table>
+      </div>
+      <pre id="event-selected">{}</pre>
+      <pre id="error" class="danger"></pre>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let selectedAuditId = "";
+    let selectedEventId = "";
+
+    function setText(id, value) {
+      $(id).textContent = String(value ?? "");
+    }
+
+    async function requestJson(url, options = {}) {
+      const response = await fetch(url, {
+        headers: {"content-type": "application/json"},
+        ...options,
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || data.detail || response.statusText);
+      }
+      return data;
+    }
+
+    function appendCell(row, value) {
+      const td = document.createElement("td");
+      td.textContent = String(value ?? "");
+      td.title = String(value ?? "");
+      row.appendChild(td);
+    }
+
+    function paramsFrom(fields) {
+      const params = new URLSearchParams();
+      for (const [name, id] of fields) {
+        const value = $(id).value.trim();
+        if (value) params.set(name, value);
+      }
+      const suffix = params.toString();
+      return suffix ? `?${suffix}` : "";
+    }
+
+    function renderAudit(records) {
+      const rows = records.map((record) => {
+        const tr = document.createElement("tr");
+        tr.dataset.auditId = record.id;
+        tr.className = record.id === selectedAuditId ? "selected" : "";
+        for (const value of [
+          record.action,
+          record.actor_id,
+          record.outcome,
+          record.session_id || "",
+          record.trace_id,
+        ]) {
+          appendCell(tr, value);
+        }
+        tr.addEventListener("click", () => {
+          selectedAuditId = record.id;
+          $("audit-selected").textContent = JSON.stringify(record, null, 2);
+          document.querySelectorAll("#audit-records tr").forEach((row) => {
+            row.classList.toggle("selected", row.dataset.auditId === selectedAuditId);
+          });
+          if (record.session_id) $("event-session").value = record.session_id;
+        });
+        return tr;
+      });
+      $("audit-records").replaceChildren(...rows);
+      setText("audit-status", `${records.length} audit records`);
+    }
+
+    function renderEvents(events) {
+      const rows = events.map((event) => {
+        const tr = document.createElement("tr");
+        tr.dataset.eventId = event.id;
+        tr.className = event.id === selectedEventId ? "selected" : "";
+        for (const value of [
+          event.seq,
+          event.type,
+          event.source,
+          event.turn_id || "",
+          event.trace_id,
+        ]) {
+          appendCell(tr, value);
+        }
+        tr.addEventListener("click", () => {
+          selectedEventId = event.id;
+          $("event-selected").textContent = JSON.stringify(event, null, 2);
+          document.querySelectorAll("#events tr").forEach((row) => {
+            row.classList.toggle("selected", row.dataset.eventId === selectedEventId);
+          });
+        });
+        return tr;
+      });
+      $("events").replaceChildren(...rows);
+      setText("event-status", `${events.length} events`);
+    }
+
+    async function refreshAudit() {
+      setText("audit-status", "Loading");
+      const records = await requestJson(`/api/v1/audit${paramsFrom([
+        ["action", "audit-action"],
+        ["actor_id", "audit-actor"],
+        ["session_id", "audit-session"],
+        ["limit", "audit-limit"],
+      ])}`);
+      renderAudit(records);
+    }
+
+    async function refreshEvents() {
+      const sessionId = $("event-session").value.trim();
+      if (!sessionId) throw new Error("Session ID is required");
+      setText("event-status", "Loading");
+      const events = await requestJson(
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/events${paramsFrom([
+          ["after_seq", "event-after"],
+          ["limit", "event-limit"],
+        ])}`,
+      );
+      renderEvents(events);
+    }
+
+    async function run(action) {
+      try {
+        $("error").textContent = "";
+        await action();
+      } catch (error) {
+        $("error").textContent = error.message;
+      }
+    }
+
+    $("audit-refresh").addEventListener("click", () => run(refreshAudit));
+    $("event-refresh").addEventListener("click", () => run(refreshEvents));
+    refreshAudit().catch((error) => {
+      $("error").textContent = error.message;
+      setText("audit-status", error.message);
+    });
+  </script>
 </body>
 </html>
 """
@@ -419,6 +803,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       <a href="/admin">Admin</a>
       <a href="/admin/access-policy">Access Policy</a>
       <a href="/admin/interactions">Interactions</a>
+      <a href="/admin/audit">Audit & Events</a>
       <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
       <a href="/admin/bot-delivery">Bot Delivery</a>
     </nav>
@@ -1053,6 +1438,7 @@ INTERACTION_ADMIN_HTML = """<!doctype html>
       <a href="/admin">Admin</a>
       <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/access-policy">Access Policy</a>
+      <a href="/admin/audit">Audit & Events</a>
       <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
       <a href="/admin/bot-delivery">Bot Delivery</a>
     </nav>
@@ -1635,6 +2021,7 @@ ACCESS_POLICY_ADMIN_HTML = """<!doctype html>
       <a href="/admin">Admin</a>
       <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/interactions">Interactions</a>
+      <a href="/admin/audit">Audit & Events</a>
       <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
       <a href="/admin/bot-delivery">Bot Delivery</a>
     </nav>
@@ -2143,6 +2530,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
       <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/access-policy">Access Policy</a>
       <a href="/admin/interactions">Interactions</a>
+      <a href="/admin/audit">Audit & Events</a>
       <a href="/admin/bot-delivery">Bot Delivery</a>
     </nav>
   </header>
@@ -2495,6 +2883,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
       <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/access-policy">Access Policy</a>
       <a href="/admin/interactions">Interactions</a>
+      <a href="/admin/audit">Audit & Events</a>
       <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
     </nav>
   </header>

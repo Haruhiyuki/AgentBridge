@@ -27,6 +27,7 @@ Implemented in this slice:
 - Optimistic locking for active project/session pointers.
 - Writer lease epoch handling with local human preemption over bot control.
 - Audit hash chain for command and domain state changes.
+- Filtered audit API through `GET /api/v1/audit`, bounded by `limit` and supporting action, actor, trace, project, session, and interaction filters for operational review.
 - Ordered semantic event streams for project/session state changes.
 - REST event replay through `GET /api/v1/sessions/{id}/events`.
 - Idempotent Terminal Agent event ingestion through `POST /api/v1/sessions/{id}/events`.
@@ -127,7 +128,7 @@ Implemented in this slice:
 - PolicyEngine evaluates enabled access policy rules before RBAC fallback; explicit deny rules win over allow rules.
 - Access policy management REST APIs through `GET/POST/PUT /api/v1/access-policy/rules` and `POST /api/v1/access-policy/rules/{id}/delete`.
 - Policy simulation REST API through `POST /api/v1/access-policy/simulate`, returning decision source, reason, required permission, roles, and matched rule ID.
-- Built-in admin entrypoint at `/admin`, project/session operations dashboard at `/admin/projects`, interaction/approval operations dashboard at `/admin/interactions`, access policy editor at `/admin/access-policy`, terminal lifecycle dashboard at `/admin/terminal-lifecycle`, and Bot delivery operations dashboard at `/admin/bot-delivery`; focused route coverage verifies the admin pages link to the underlying operational APIs.
+- Built-in admin entrypoint at `/admin`, project/session operations dashboard at `/admin/projects`, interaction/approval operations dashboard at `/admin/interactions`, audit/event exploration dashboard at `/admin/audit`, access policy editor at `/admin/access-policy`, terminal lifecycle dashboard at `/admin/terminal-lifecycle`, and Bot delivery operations dashboard at `/admin/bot-delivery`; focused route coverage verifies the admin pages link to the underlying operational APIs.
 - Optional `AGENTBRIDGE_ADMIN_TOKEN` browser gate for `/admin*` pages, accepting one-time `admin_token` query unlock, HttpOnly/SameSite cookie sessions, bearer tokens, or `X-AgentBridge-Admin-Token` headers.
 - Alembic migration `0007_access_policy_rules` persists access policy rules.
 - Project, session, interaction, approval, group-role, policy-management, and terminal checks now pass resource type/id plus stable attributes into access policy evaluation.
@@ -139,7 +140,7 @@ Not implemented yet:
 - Remaining PTY host hardening: true process-preserving recovery across host-process death, cross-platform stale socket/pipe cleanup, and Windows ConPTY/Named Pipe parity.
 - Richer OneBot renderer/action adapter and native NoneBot lifecycle registration helpers.
 - Real Claude Code/Codex adapters.
-- Broader Admin Web UI beyond project/session operations, interaction/approval operations, access policy, terminal lifecycle, and Bot delivery operations.
+- Broader Admin Web UI beyond project/session operations, interaction/approval operations, audit/event exploration, access policy, terminal lifecycle, and Bot delivery operations.
 - Production API/WebSocket hardening with mTLS/device keys.
 - Platform-specific rich card/button transport adapters and outbound message edit extensions beyond standard OneBot V11.
 - Native action/callback support for platforms that expose buttons or interactions.
@@ -183,7 +184,7 @@ Not implemented yet:
 - Access policy rules are stored separately from approval quorum overrides. Approval policy answers "how many votes"; access policy answers "who may do which action".
 - Access policy evaluation is deny-first and then allow-before-RBAC. This makes temporary freezes explicit while preserving the existing role matrix as the default baseline.
 - Access policy enforcement uses stable resource attributes only: IDs, status, project/session linkage, visibility, agent type, chat context, operation, risk level, and owner metadata. It intentionally avoids volatile or sensitive filesystem path values as policy attributes.
-- The Admin Web UI is intentionally API-backed and build-free for now. It has a small `/admin` entrypoint, project/session operations for project inventory, workspace registration, session creation, and session closure, interaction/approval operations for listing, filtering, creating, answering, voting, and cancelling interactions, access policy editing, terminal lifecycle inspection/run-once, and Bot delivery operations for records, retry worker status, due retry, and rate limits. `AGENTBRIDGE_ADMIN_TOKEN` gates the built-in browser pages with token unlock plus an HttpOnly/SameSite cookie while preserving zero-config local development when unset. The optional REST API token gate accepts that unlocked admin cookie so browser-admin API calls are covered by the same gate, and `AGENTBRIDGE_API_TOKEN` can serve as the admin unlock token when no separate admin token is configured. Full device-key authentication and richer live dashboards remain future work.
+- The Admin Web UI is intentionally API-backed and build-free for now. It has a small `/admin` entrypoint, project/session operations for project inventory, workspace registration, session creation, and session closure, interaction/approval operations for listing, filtering, creating, answering, voting, and cancelling interactions, audit/event exploration for filtered audit records and per-session semantic event replay, access policy editing, terminal lifecycle inspection/run-once, and Bot delivery operations for records, retry worker status, due retry, and rate limits. `AGENTBRIDGE_ADMIN_TOKEN` gates the built-in browser pages with token unlock plus an HttpOnly/SameSite cookie while preserving zero-config local development when unset. The optional REST API token gate accepts that unlocked admin cookie so browser-admin API calls are covered by the same gate, and `AGENTBRIDGE_API_TOKEN` can serve as the admin unlock token when no separate admin token is configured. Full device-key authentication and richer live dashboards remain future work.
 - Session creation is evaluated against the target project because the session resource ID does not exist yet. Terminal control is evaluated as `resource_type=terminal` with the session ID so terminal-specific rules do not have to overmatch ordinary session sends.
 - WebSocket session streams are read-side transports over immutable semantic events. They use `after_seq` cursors for replay/reconnect and do not mutate Bot delivery records.
 - Bot Gateway WebSocket subscriptions fan out render frames for external platform adapters, but do not store delivery records. Platform adapters report delivery acknowledgements, edits, and deletes explicitly through the delivery-result API keyed by message idempotency key.
@@ -207,7 +208,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 ## Next Development Backlog
 
 1. Harden PTY host recovery beyond watchdog plus command restart, including cross-platform socket/pipe cleanup, Windows ConPTY/Named Pipe parity, and clearer operator policy for non-idempotent CLI restarts.
-2. Expand the Admin Web UI beyond project/session operations, interaction/approval operations, access policy, terminal lifecycle, and Bot delivery operations, including live event dashboards and richer audit/event exploration.
+2. Expand the Admin Web UI beyond project/session operations, interaction/approval operations, audit/event exploration, access policy, terminal lifecycle, and Bot delivery operations, including live event dashboards and richer relational search.
 3. Replace the MVP HTTP API/WebSocket/admin token gates with mTLS/device-key auth.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.
 5. Add platform-specific rich card/button transport adapters and outbound edit extensions.

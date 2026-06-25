@@ -17,6 +17,7 @@ from agentbridge.admin_ui import (
     ACCESS_POLICY_ADMIN_HTML,
     ADMIN_AUTH_REQUIRED_HTML,
     ADMIN_HOME_HTML,
+    AUDIT_EVENTS_ADMIN_HTML,
     BOT_DELIVERY_ADMIN_HTML,
     INTERACTION_ADMIN_HTML,
     PROJECT_SESSION_ADMIN_HTML,
@@ -37,6 +38,7 @@ from agentbridge.domain import (
     Actor,
     AgentBridgeError,
     AgentType,
+    AuditEvent,
     BotDeliveryResultAction,
     BotDeliveryStatus,
     ErrorCode,
@@ -490,6 +492,10 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     @app.get("/admin/interactions", response_class=HTMLResponse)
     def interaction_admin_ui(request: Request):
         return admin_html_response(request, INTERACTION_ADMIN_HTML)
+
+    @app.get("/admin/audit", response_class=HTMLResponse)
+    def audit_events_admin_ui(request: Request):
+        return admin_html_response(request, AUDIT_EVENTS_ADMIN_HTML)
 
     @app.get("/admin/terminal-lifecycle", response_class=HTMLResponse)
     def terminal_lifecycle_admin_ui(request: Request):
@@ -1458,8 +1464,27 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
 
     @app.get("/api/v1/audit")
-    def list_audit(control: ControlPlane = Depends(get_control)):
-        return [event.model_dump(mode="json") for event in control.repository.audit_events]
+    def list_audit(
+        control: ControlPlane = Depends(get_control),
+        actor_id: str | None = None,
+        action: str | None = None,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        interaction_id: str | None = None,
+        trace_id: str | None = None,
+        limit: int = 100,
+    ):
+        events = filter_audit_events(
+            control.repository.audit_events,
+            actor_id=actor_id,
+            action=action,
+            project_id=project_id,
+            session_id=session_id,
+            interaction_id=interaction_id,
+            trace_id=trace_id,
+            limit=limit,
+        )
+        return [event.model_dump(mode="json") for event in events]
 
     return app
 
@@ -1884,6 +1909,34 @@ def terminal_error_frame(request_id: object, exc: AgentBridgeError) -> dict[str,
         "ok": False,
         "error": exc.to_payload(),
     }
+
+
+def filter_audit_events(
+    events: list[AuditEvent],
+    *,
+    actor_id: str | None,
+    action: str | None,
+    project_id: str | None,
+    session_id: str | None,
+    interaction_id: str | None,
+    trace_id: str | None,
+    limit: int,
+) -> list[AuditEvent]:
+    filtered = [
+        event
+        for event in events
+        if (actor_id is None or event.actor_id == actor_id)
+        and (action is None or event.action == action)
+        and (project_id is None or event.project_id == project_id)
+        and (session_id is None or event.session_id == session_id)
+        and (interaction_id is None or event.interaction_id == interaction_id)
+        and (trace_id is None or event.trace_id == trace_id)
+    ]
+    return list(reversed(filtered[-clamp_audit_limit(limit) :]))
+
+
+def clamp_audit_limit(limit: int) -> int:
+    return max(1, min(limit, 500))
 
 
 ADMIN_AUTH_COOKIE_NAME = "agentbridge_admin_token"
