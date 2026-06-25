@@ -7,7 +7,7 @@ from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from agentbridge.bot_gateway import BotGatewayService, BotPlatform
+from agentbridge.bot_gateway import BotGatewayService, BotPlatform, InMemoryBotTransport
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
@@ -19,6 +19,7 @@ from agentbridge.domain import (
     Visibility,
     WorkspaceType,
 )
+from agentbridge.onebot import OneBotV11HTTPTransport
 from agentbridge.persistence import SQLAlchemyRepository
 from agentbridge.policy import Permission
 from agentbridge.renderer import OneBotV11TextRenderer, document_from_event
@@ -201,7 +202,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     control = control_plane or ControlPlane(repository=create_repository_from_env())
     commands = CommandService(control)
     terminal = TerminalAgentService(control, backend=create_terminal_backend_from_env())
-    bot_gateway = BotGatewayService(control)
+    bot_gateway = BotGatewayService(control, transport=create_bot_transport_from_env())
     app.state.control = control
     app.state.commands = commands
     app.state.terminal = terminal
@@ -626,6 +627,19 @@ def create_terminal_backend_from_env():
     if backend == "tmux":
         return TmuxTerminalBackend()
     return FakeTerminalBackend()
+
+
+def create_bot_transport_from_env():
+    transport = os.environ.get("AGENTBRIDGE_BOT_TRANSPORT", "memory").lower()
+    if transport in {"onebot", "onebot.v11"}:
+        endpoint = os.environ.get("AGENTBRIDGE_ONEBOT_HTTP_URL")
+        if not endpoint:
+            raise RuntimeError("AGENTBRIDGE_ONEBOT_HTTP_URL is required for onebot.v11 transport")
+        return OneBotV11HTTPTransport(
+            endpoint=endpoint,
+            access_token=os.environ.get("AGENTBRIDGE_ONEBOT_ACCESS_TOKEN"),
+        )
+    return InMemoryBotTransport()
 
 
 def run() -> None:

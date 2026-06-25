@@ -4,7 +4,7 @@ from typing import Protocol
 from uuid import uuid4
 
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import BotDeliveryRecord, BotDeliveryStatus, BotPlatform
+from agentbridge.domain import BotDeliveryRecord, BotDeliveryStatus, BotPlatform, ChatContext
 from agentbridge.renderer import OneBotV11TextRenderer, RenderDocument, document_from_event
 
 
@@ -14,6 +14,7 @@ class BotTransport(Protocol):
         *,
         platform: BotPlatform,
         chat_context_id: str,
+        chat_context: ChatContext,
         text: str,
         idempotency_key: str,
     ) -> str: ...
@@ -28,6 +29,7 @@ class InMemoryBotTransport:
         *,
         platform: BotPlatform,
         chat_context_id: str,
+        chat_context: ChatContext,
         text: str,
         idempotency_key: str,
     ) -> str:
@@ -36,6 +38,7 @@ class InMemoryBotTransport:
             {
                 "platform": platform.value,
                 "chat_context_id": chat_context_id,
+                "chat_space_id": chat_context.chat_space_id,
                 "text": text,
                 "idempotency_key": idempotency_key,
                 "platform_message_id": message_id,
@@ -95,6 +98,7 @@ class BotGatewayService:
         platform: BotPlatform,
     ) -> list[BotDeliveryRecord]:
         messages = self.renderer.render(document)
+        chat_context = self.control.repository.get_chat_context(chat_context_id)
         records: list[BotDeliveryRecord] = []
         for index, text in enumerate(messages):
             idempotency_key = f"{platform.value}:{chat_context_id}:{event_id}:{index}"
@@ -108,6 +112,7 @@ class BotGatewayService:
             platform_message_id = self.transport.send_text(
                 platform=platform,
                 chat_context_id=chat_context_id,
+                chat_context=chat_context,
                 text=text,
                 idempotency_key=idempotency_key,
             )

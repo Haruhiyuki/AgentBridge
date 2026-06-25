@@ -49,6 +49,8 @@ Implemented in this slice:
 - Delivery APIs through `POST /api/v1/bot-gateway/deliver-session-events` and `GET /api/v1/bot-gateway/deliveries`.
 - Bot delivery records are now domain/repository state and persist through Alembic migration `0002_bot_delivery_records`.
 - Recovery tests prove replay after repository re-instantiation skips already delivered Bot messages.
+- OneBot V11 HTTP transport with group/private payload routing, bearer token support, and idempotency header.
+- Bot transport selection through `AGENTBRIDGE_BOT_TRANSPORT=onebot.v11` and `AGENTBRIDGE_ONEBOT_HTTP_URL`.
 - Focused unit/API tests for the above.
 
 Not implemented yet:
@@ -60,7 +62,7 @@ Not implemented yet:
 - Full RBAC/ABAC policy editor and multi-person approval flows.
 - WebSocket transport for Terminal Agent and Bot Gateway event delivery.
 - Rich platform-specific renderer delivery state, message editing, and button/card support.
-- Actual NoneBot/OneBot transport integration.
+- NoneBot plugin wrapper around the OneBot transport and inbound command/action event handling.
 - Normalized relational query layer for large audit/event searches; the current SQLAlchemy repository persists Pydantic payload snapshots with indexed routing columns.
 - PostgreSQL-specific operational hardening, connection pooling policy, and migration deployment docs.
 
@@ -76,6 +78,7 @@ Not implemented yet:
 - Rendering is split into platform-neutral documents and platform renderers. The first renderer intentionally targets text fallback so unsupported Bot platforms still receive coherent output.
 - Bot delivery idempotency is implemented before real platform integration so duplicate event replay cannot cause duplicate sends once a real transport is attached.
 - Bot delivery records are persisted separately from semantic events so replay, delivery retries, and platform message IDs can evolve without mutating event history.
+- OneBot outbound delivery is implemented as a transport contract first. Full NoneBot integration still needs inbound event parsing, lifecycle registration, and adapter-specific rate-limit handling.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
 
 ## Verification
@@ -93,6 +96,6 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 
 1. Add tmux lifecycle supervision tests around the local daemon, including restart/reconnect behavior.
 2. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
-3. Add real NoneBot/OneBot V11 transport integration behind the Bot transport protocol.
+3. Add NoneBot plugin wrapper for OneBot V11 inbound messages, commands, and action callbacks.
 4. Add delivery failure state, retry/backoff, and platform rate-limit handling.
 5. Expand policy engine to explicit role bindings, approval quorum, and risk levels.

@@ -18,7 +18,7 @@ This repository currently contains the first executable backend slice:
 - Local Terminal Agent daemon over a token-protected Unix socket.
 - Local Console Client that acquires human lease on first input and forwards terminal input.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
-- Bot Gateway delivery service with persistent idempotent delivery records and in-memory text transport.
+- Bot Gateway delivery service with persistent idempotent delivery records, in-memory text transport, and OneBot V11 HTTP transport.
 - REST API routes aligned with the design document's service interface.
 
 NoneBot integration, Admin Web, visible local console attachment, and real Claude/Codex adapters are planned next milestones.
@@ -95,6 +95,16 @@ curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/deliver-session-events \
 ```
 
 Delivery records are idempotent by platform, chat context, event, and message index, and can be persisted through the SQLAlchemy repository. The current transport is in-memory and intended for contract tests; real NoneBot/OneBot delivery is the next integration layer.
+
+To send through a OneBot V11 HTTP endpoint:
+
+```bash
+export AGENTBRIDGE_BOT_TRANSPORT=onebot.v11
+export AGENTBRIDGE_ONEBOT_HTTP_URL=http://127.0.0.1:5700
+export AGENTBRIDGE_ONEBOT_ACCESS_TOKEN=...
+```
+
+The OneBot transport maps chat contexts with `user_id` to `send_private_msg`; other contexts use `send_group_msg` with `chat_space_id` as `group_id`.
 
 ## Console Client
 
