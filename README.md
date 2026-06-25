@@ -11,7 +11,7 @@ This repository currently contains the first executable backend slice:
 - Python/FastAPI Control Plane skeleton.
 - Shared domain models for projects, workspaces, sessions, turns, interactions, writer leases, chat contexts, and audit events.
 - In-memory repository suitable for contract tests and local MVP prototyping.
-- `/agent` command parser and executor for project/session routing, turn enqueueing, lease control, and idempotent invocation handling.
+- `/agent` command parser and executor for project/session routing, turn enqueueing, queue list/remove/clear, lease control, and idempotent invocation handling.
 - Project active-session, running-Turn, queued-Turn, and daily per-user Turn quotas plus Workspace write-capacity enforcement for multi-session safety.
 - Ordered semantic event streams with replay and idempotent Terminal Agent event ingestion.
 - Optional SQLAlchemy persistence with an Alembic-managed schema.
@@ -228,9 +228,10 @@ revoke chat-context roles,
 `chat_context_manage` to create chat contexts or update their active project/session
 pointers, `project_read` to list projects, show project details, or list workspaces,
 `project_manage` to create projects, add workspaces, or bind projects to
-chat spaces, `session_read` to list or show sessions, `session_manage` to create
-or close sessions and acquire or release writer leases, `session_send` to enqueue
-session turns, `session_event_ingest` to ingest Terminal Agent session events,
+chat spaces, `session_read` to list or show sessions or queued Turns,
+`session_manage` to create or close sessions, acquire or release writer leases,
+or clear queues, `session_send` to enqueue session turns or remove queued Turns,
+`session_event_ingest` to ingest Terminal Agent session events,
 `interaction_read` to list or show interactions,
 `interaction_manage` to create interactions or answer, cancel, and vote on them,
 `terminal_read` to call terminal snapshot, terminal status,

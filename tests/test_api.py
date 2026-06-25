@@ -1000,6 +1000,7 @@ def test_managed_device_identity_session_read_scope_allows_session_read_apis(
     client = TestClient(create_app())
     admin = {"id": "security-admin", "roles": ["admin"]}
     maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
 
     project = client.post(
         "/api/v1/projects",
@@ -1029,6 +1030,14 @@ def test_managed_device_identity_session_read_scope_allows_session_read_apis(
             "trace_id": "session-read-manager-existing-session",
         },
     ).json()
+    queued_turn = client.post(
+        f"/api/v1/sessions/{existing_session['id']}/turns",
+        json={
+            "actor": operator,
+            "prompt": "Queue read scope fixture",
+            "trace_id": "session-read-manager-turn",
+        },
+    ).json()
 
     create_identity_response = client.post(
         "/api/v1/device-identities",
@@ -1054,6 +1063,10 @@ def test_managed_device_identity_session_read_scope_allows_session_read_apis(
         f"/api/v1/sessions/{existing_session['id']}",
         headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
     )
+    queue_response = client.get(
+        f"/api/v1/sessions/{existing_session['id']}/queue",
+        headers=key_headers,
+    )
     create_session_response = client.post(
         "/api/v1/sessions",
         json={
@@ -1073,15 +1086,19 @@ def test_managed_device_identity_session_read_scope_allows_session_read_apis(
     ]
     assert detail_response.status_code == 200
     assert detail_response.json()["id"] == existing_session["id"]
+    assert queue_response.status_code == 200
+    assert [turn["id"] for turn in queue_response.json()] == [queued_turn["id"]]
     assert create_session_response.status_code == 403
 
 
 def test_managed_device_identity_session_manage_scope_allows_session_write_apis(
     tmp_path,
 ):
-    client = TestClient(create_app())
+    control = ControlPlane()
+    client = TestClient(create_app(control))
     admin = {"id": "security-admin", "roles": ["admin"]}
     maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
 
     project = client.post(
         "/api/v1/projects",
@@ -1128,6 +1145,12 @@ def test_managed_device_identity_session_manage_scope_allows_session_write_apis(
         headers=headers,
     )
     session_id = create_session_response.json().get("id")
+    queued_turn = control.enqueue_turn(
+        actor=Actor(id=operator["id"], roles=set(operator["roles"])),
+        session_id=session_id,
+        prompt="Queue clear scope fixture",
+        trace_id="session-manager-queued-turn",
+    )
     lease_response = client.post(
         f"/api/v1/sessions/{session_id}/lease/acquire",
         json={
@@ -1147,6 +1170,14 @@ def test_managed_device_identity_session_manage_scope_allows_session_write_apis(
         },
         headers=headers,
     )
+    clear_queue_response = client.post(
+        f"/api/v1/sessions/{session_id}/queue/clear",
+        json={
+            "actor": maintainer,
+            "trace_id": "session-manager-clear-queue",
+        },
+        headers=headers,
+    )
     close_response = client.post(
         f"/api/v1/sessions/{session_id}/close",
         json=maintainer,
@@ -1160,6 +1191,10 @@ def test_managed_device_identity_session_manage_scope_allows_session_write_apis(
     assert lease_response.json()["owner_id"] == "usr_maintainer"
     assert release_response.status_code == 200
     assert release_response.json()["next_epoch"] == lease_response.json()["epoch"] + 1
+    assert clear_queue_response.status_code == 200
+    assert [turn["id"] for turn in clear_queue_response.json()["turns"]] == [
+        queued_turn.id
+    ]
     assert close_response.status_code == 200
     assert close_response.json()["status"] == "closed"
 
@@ -1259,12 +1294,23 @@ def test_managed_device_identity_session_send_scope_allows_turn_writes(
         },
         headers=headers,
     )
+    remove_response = client.request(
+        "DELETE",
+        f"/api/v1/sessions/{session_id}/queue/{turn_response.json().get('id')}",
+        json={
+            "actor": operator,
+            "trace_id": "session-send-manager-remove-turn",
+        },
+        headers=headers,
+    )
 
     assert create_identity_response.status_code == 200
     assert turn_response.status_code == 200
     assert turn_response.json()["actor_id"] == "usr_operator"
     assert turn_response.json()["prompt"] == "Run the focused test suite."
     assert turn_response.json()["status"] == "queued"
+    assert remove_response.status_code == 200
+    assert remove_response.json()["status"] == "cancelled"
 
 
 def test_managed_device_identity_requires_session_event_ingest_scope_for_event_writes(
@@ -1936,6 +1982,103 @@ def test_project_daily_turn_quota_blocks_same_user_only(tmp_path):
     assert blocked_payload["details"]["daily_turns_per_user"] == 1
     assert "reset_at" in blocked_payload["details"]
     assert other_user_turn_response.status_code == 200
+
+
+def test_session_queue_api_lists_removes_and_clears_queued_turns(tmp_path):
+    control = ControlPlane()
+    client = TestClient(create_app(control))
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    operator_one = {"id": "usr_operator_one", "roles": ["operator"]}
+    operator_two = {"id": "usr_operator_two", "roles": ["operator"]}
+
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": maintainer,
+            "name": "Queue Backend",
+            "trace_id": "test-queue-project",
+        },
+    )
+    assert project_response.status_code == 200
+    project = project_response.json()
+    workspace_response = client.post(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        json={
+            "actor": maintainer,
+            "machine_id": "local",
+            "path": str(tmp_path / "repo"),
+            "allowed_root": str(tmp_path),
+            "trace_id": "test-queue-workspace",
+        },
+    )
+    assert workspace_response.status_code == 200
+    workspace = workspace_response.json()
+    session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": maintainer,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Queue Session",
+            "trace_id": "test-queue-session",
+        },
+    )
+    assert session_response.status_code == 200
+    session = session_response.json()
+    first_turn_response = client.post(
+        f"/api/v1/sessions/{session['id']}/turns",
+        json={
+            "actor": operator_one,
+            "prompt": "First queued turn",
+            "trace_id": "test-queue-first-turn",
+        },
+    )
+    second_turn_response = client.post(
+        f"/api/v1/sessions/{session['id']}/turns",
+        json={
+            "actor": operator_two,
+            "prompt": "Second queued turn",
+            "trace_id": "test-queue-second-turn",
+        },
+    )
+    assert first_turn_response.status_code == 200
+    assert second_turn_response.status_code == 200
+    first_turn = first_turn_response.json()
+    second_turn = second_turn_response.json()
+
+    list_response = client.get(f"/api/v1/sessions/{session['id']}/queue")
+    denied_remove_response = client.request(
+        "DELETE",
+        f"/api/v1/sessions/{session['id']}/queue/{first_turn['id']}",
+        json={"actor": operator_two, "trace_id": "test-queue-denied-remove"},
+    )
+    own_remove_response = client.request(
+        "DELETE",
+        f"/api/v1/sessions/{session['id']}/queue/{first_turn['id']}",
+        json={"actor": operator_one, "trace_id": "test-queue-own-remove"},
+    )
+    clear_response = client.post(
+        f"/api/v1/sessions/{session['id']}/queue/clear",
+        json={"actor": maintainer, "trace_id": "test-queue-clear"},
+    )
+    final_list_response = client.get(f"/api/v1/sessions/{session['id']}/queue")
+
+    assert list_response.status_code == 200
+    assert [turn["id"] for turn in list_response.json()] == [
+        first_turn["id"],
+        second_turn["id"],
+    ]
+    assert denied_remove_response.status_code == 403
+    assert denied_remove_response.json()["error_code"] == "PERMISSION_DENIED"
+    assert own_remove_response.status_code == 200
+    assert own_remove_response.json()["status"] == "cancelled"
+    assert clear_response.status_code == 200
+    assert clear_response.json()["count"] == 1
+    assert [turn["id"] for turn in clear_response.json()["turns"]] == [second_turn["id"]]
+    assert final_list_response.status_code == 200
+    assert final_list_response.json() == []
+    assert control.repository.turns[first_turn["id"]].status == TurnStatus.CANCELLED
+    assert control.repository.turns[second_turn["id"]].status == TurnStatus.CANCELLED
 
 
 def test_project_session_rest_flow_supports_admin_operations(tmp_path):

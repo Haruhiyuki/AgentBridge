@@ -1055,6 +1055,60 @@ class InMemoryRepository:
         with self._lock:
             return [turn for turn in self.turns.values() if turn.session_id == session_id]
 
+    def list_queue(self, session_id: str) -> list[Turn]:
+        with self._lock:
+            self.get_session(session_id)
+            return sorted(
+                [
+                    turn
+                    for turn in self.turns.values()
+                    if turn.session_id == session_id and turn.status == TurnStatus.QUEUED
+                ],
+                key=lambda turn: turn.queued_at,
+            )
+
+    def get_turn(self, turn_id: str) -> Turn:
+        with self._lock:
+            turn = self.turns.get(turn_id)
+            if not turn:
+                raise AgentBridgeError(
+                    ErrorCode.NOT_FOUND,
+                    f"Turn 不存在：{turn_id}",
+                    next_step="请执行 /agent queue list 查看可操作的 Turn。",
+                    status_code=404,
+                    details={"turn_id": turn_id},
+                )
+            return turn
+
+    def cancel_queued_turn(self, *, session_id: str, turn_id: str) -> Turn:
+        with self._lock:
+            turn = self._get_session_turn(session_id=session_id, turn_id=turn_id)
+            if turn.status != TurnStatus.QUEUED:
+                raise AgentBridgeError(
+                    ErrorCode.RESOURCE_CONFLICT,
+                    f"只能移除尚未开始的 queued Turn，当前状态：{turn.status.value}",
+                    next_step="已进入执行的 Turn 请使用 stop/interrupt 控制流。",
+                    status_code=409,
+                    details={"turn_id": turn_id, "status": turn.status.value},
+                )
+            updated = turn.model_copy(
+                update={"status": TurnStatus.CANCELLED, "completed_at": utc_now()}
+            )
+            self.turns[turn.id] = updated
+            return updated
+
+    def clear_queued_turns(self, session_id: str) -> list[Turn]:
+        with self._lock:
+            self.get_session(session_id)
+            cancelled: list[Turn] = []
+            for turn in self.list_queue(session_id):
+                updated = turn.model_copy(
+                    update={"status": TurnStatus.CANCELLED, "completed_at": utc_now()}
+                )
+                self.turns[turn.id] = updated
+                cancelled.append(updated)
+            return cancelled
+
     def start_turn(self, *, session_id: str, turn_id: str) -> Turn:
         with self._lock:
             session = self.get_session(session_id)

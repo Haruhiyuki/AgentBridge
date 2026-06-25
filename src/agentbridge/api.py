@@ -185,6 +185,13 @@ class CreateTurnRequest(BaseModel):
     trace_id: str = "api"
 
 
+class QueueMutationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    trace_id: str = "api"
+
+
 class AcquireLeaseRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -945,6 +952,45 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             trace_id=payload.trace_id,
         )
         return turn.model_dump(mode="json")
+
+    @app.get("/api/v1/sessions/{session_id}/queue")
+    def list_turn_queue(session_id: str, control: ControlPlane = Depends(get_control)):
+        turns = control.list_turn_queue(
+            actor=Actor(id="api", roles={"admin"}),
+            session_id=session_id,
+        )
+        return [turn.model_dump(mode="json") for turn in turns]
+
+    @app.delete("/api/v1/sessions/{session_id}/queue/{turn_id}")
+    def remove_queued_turn(
+        session_id: str,
+        turn_id: str,
+        payload: QueueMutationRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        turn = control.remove_queued_turn(
+            actor=payload.actor.to_actor(),
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=payload.trace_id,
+        )
+        return turn.model_dump(mode="json")
+
+    @app.post("/api/v1/sessions/{session_id}/queue/clear")
+    def clear_turn_queue(
+        session_id: str,
+        payload: QueueMutationRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        turns = control.clear_turn_queue(
+            actor=payload.actor.to_actor(),
+            session_id=session_id,
+            trace_id=payload.trace_id,
+        )
+        return {
+            "count": len(turns),
+            "turns": [turn.model_dump(mode="json") for turn in turns],
+        }
 
     @app.post("/api/v1/sessions/{session_id}/close")
     def close_session(
@@ -2248,6 +2294,11 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
             len(path_segments) == 5
             and path_segments[:4] == ["", "api", "v1", "sessions"]
         )
+        or (
+            len(path_segments) == 6
+            and path_segments[:4] == ["", "api", "v1", "sessions"]
+            and path_segments[5] == "queue"
+        )
     ):
         return DeviceIdentityScope.SESSION_READ
     if method == "POST" and path == "/api/v1/sessions":
@@ -2259,6 +2310,21 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         and path_segments[5] == "turns"
     ):
         return DeviceIdentityScope.SESSION_SEND
+    if (
+        method == "DELETE"
+        and len(path_segments) == 7
+        and path_segments[:4] == ["", "api", "v1", "sessions"]
+        and path_segments[5] == "queue"
+    ):
+        return DeviceIdentityScope.SESSION_SEND
+    if (
+        method == "POST"
+        and len(path_segments) == 7
+        and path_segments[:4] == ["", "api", "v1", "sessions"]
+        and path_segments[5] == "queue"
+        and path_segments[6] == "clear"
+    ):
+        return DeviceIdentityScope.SESSION_MANAGE
     if (
         method == "POST"
         and len(path_segments) >= 6

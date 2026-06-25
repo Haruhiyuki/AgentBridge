@@ -499,6 +499,135 @@ class ControlPlane:
         )
         return turn
 
+    def list_turn_queue(
+        self,
+        *,
+        actor: Actor,
+        session_id: str,
+        chat_context_id: str | None = None,
+    ) -> list[Turn]:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.require_session_permission(
+            effective_actor,
+            Permission.SESSION_VIEW,
+            session_id=session_id,
+            chat_context_id=chat_context_id,
+            attributes={"operation": "queue_list"},
+        )
+        return self.repository.list_queue(session_id)
+
+    def remove_queued_turn(
+        self,
+        *,
+        actor: Actor,
+        session_id: str,
+        turn_id: str,
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> Turn:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        session = self.require_session_permission(
+            effective_actor,
+            Permission.SESSION_SEND,
+            session_id=session_id,
+            chat_context_id=chat_context_id,
+            attributes={"operation": "queue_remove", "turn_id": turn_id},
+        )
+        turn = self.repository.get_turn(turn_id)
+        if turn.session_id != session_id:
+            raise AgentBridgeError(
+                ErrorCode.RESOURCE_CONFLICT,
+                "Turn 不属于目标 Session。",
+                next_step="请确认 session_id 与 turn_id 匹配。",
+                status_code=409,
+                details={
+                    "turn_id": turn_id,
+                    "turn_session_id": turn.session_id,
+                    "session_id": session_id,
+                },
+            )
+        if turn.actor_id != effective_actor.id:
+            self.require_session_permission(
+                effective_actor,
+                Permission.SESSION_MANAGE,
+                session_id=session_id,
+                chat_context_id=chat_context_id,
+                attributes={
+                    "operation": "queue_remove_any",
+                    "turn_id": turn_id,
+                    "turn_actor_id": turn.actor_id,
+                },
+            )
+        cancelled = self.repository.cancel_queued_turn(
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+        self.audit(
+            action="turn.cancelled",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            details={"turn_id": turn_id, "reason": "queue_remove"},
+        )
+        self.emit_event(
+            event_type="turn.cancelled",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            payload={
+                "actor_id": effective_actor.id,
+                "reason": "queue_remove",
+            },
+        )
+        return cancelled
+
+    def clear_turn_queue(
+        self,
+        *,
+        actor: Actor,
+        session_id: str,
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> list[Turn]:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        session = self.require_session_permission(
+            effective_actor,
+            Permission.SESSION_MANAGE,
+            session_id=session_id,
+            chat_context_id=chat_context_id,
+            attributes={"operation": "queue_clear"},
+        )
+        cancelled = self.repository.clear_queued_turns(session_id)
+        turn_ids = [turn.id for turn in cancelled]
+        self.audit(
+            action="turn.queue_cleared",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            details={"turn_ids": turn_ids, "count": len(turn_ids)},
+        )
+        self.emit_event(
+            event_type="turn.queue_cleared",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            payload={
+                "actor_id": effective_actor.id,
+                "turn_ids": turn_ids,
+                "count": len(turn_ids),
+            },
+        )
+        return cancelled
+
     def close_session(
         self,
         *,

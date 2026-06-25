@@ -203,6 +203,8 @@ class CommandService:
             return self._parse_project(tokens)
         if root == "session":
             return self._parse_session(tokens)
+        if root == "queue":
+            return self._parse_queue(tokens)
         if root == "control":
             return self._parse_control(tokens)
         if root == "role":
@@ -310,6 +312,26 @@ class CommandService:
             ErrorCode.COMMAND_UNKNOWN,
             f"未知 session 子命令：{action}",
             next_step="可用子命令：list、new、use、info、close。",
+        )
+
+    def _parse_queue(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
+        if not tokens:
+            return "queue.list", {}
+        action = self._canonical_token(tokens[0])
+        positional, options = parse_options(tokens[1:])
+        session = options.get("session") or options.get("s")
+        if action == "list":
+            return "queue.list", {"session": session}
+        if action == "remove":
+            if not positional:
+                raise missing_argument("queue remove", "<turn>")
+            return "queue.remove", {"turn": positional[0], "session": session}
+        if action == "clear":
+            return "queue.clear", {"session": session}
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_UNKNOWN,
+            f"未知 queue 子命令：{action}",
+            next_step="当前可用子命令：list、remove、clear。",
         )
 
     def _parse_control(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
@@ -594,6 +616,77 @@ class CommandService:
                     "session_id": session.id,
                     "turn_id": turn.id,
                     "turn": turn.model_dump(mode="json"),
+                },
+            )
+        if command == "queue.list":
+            session = self._resolve_session_arg(invocation)
+            turns = self.control.list_turn_queue(
+                actor=invocation.actor,
+                session_id=session.id,
+                chat_context_id=invocation.chat_context_id,
+            )
+            return self._result(
+                invocation,
+                "Queue",
+                f"[{session.short_code}] queued Turns：{len(turns)}。",
+                {
+                    "project_id": session.project_id,
+                    "session_id": session.id,
+                    "turns": [turn.model_dump(mode="json") for turn in turns],
+                },
+            )
+        if command == "queue.remove":
+            turn = self.control.repository.get_turn(str(args["turn"]))
+            session = self.control.repository.get_session(turn.session_id)
+            if args.get("session"):
+                requested_session = self._resolve_session_arg(invocation)
+                if requested_session.id != session.id:
+                    raise AgentBridgeError(
+                        ErrorCode.RESOURCE_CONFLICT,
+                        "Turn 不属于指定 Session。",
+                        next_step="请执行 /agent queue list --session <session> 后重试。",
+                        status_code=409,
+                        details={
+                            "turn_id": turn.id,
+                            "turn_session_id": turn.session_id,
+                            "session_id": requested_session.id,
+                        },
+                    )
+            cancelled = self.control.remove_queued_turn(
+                actor=invocation.actor,
+                session_id=session.id,
+                turn_id=turn.id,
+                trace_id=invocation.trace_id,
+                chat_context_id=invocation.chat_context_id,
+            )
+            return self._result(
+                invocation,
+                "Turn Removed",
+                f"已从 [{session.short_code}] 队列移除 Turn {cancelled.id}。",
+                {
+                    "project_id": session.project_id,
+                    "session_id": session.id,
+                    "turn_id": cancelled.id,
+                    "turn": cancelled.model_dump(mode="json"),
+                },
+            )
+        if command == "queue.clear":
+            session = self._resolve_session_arg(invocation)
+            cancelled = self.control.clear_turn_queue(
+                actor=invocation.actor,
+                session_id=session.id,
+                trace_id=invocation.trace_id,
+                chat_context_id=invocation.chat_context_id,
+            )
+            return self._result(
+                invocation,
+                "Queue Cleared",
+                f"已清空 [{session.short_code}] 队列，移除 {len(cancelled)} 个 Turn。",
+                {
+                    "project_id": session.project_id,
+                    "session_id": session.id,
+                    "turns": [turn.model_dump(mode="json") for turn in cancelled],
+                    "count": len(cancelled),
                 },
             )
         if command == "control.status":

@@ -221,6 +221,82 @@ def test_project_create_command_sets_queued_turn_quota(tmp_path):
     }
 
 
+def test_queue_commands_list_remove_and_clear_queued_turns(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+
+    execute(
+        commands,
+        f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+        maintainer,
+        context.id,
+        "queue-command-project",
+    )
+    execute(
+        commands,
+        "/agent session new Queue Commands",
+        maintainer,
+        context.id,
+        "queue-command-session",
+    )
+    first_turn = execute(
+        commands,
+        "/agent ask first queued command",
+        maintainer,
+        context.id,
+        "queue-command-turn-one",
+    )
+    second_turn = execute(
+        commands,
+        "/agent ask second queued command",
+        maintainer,
+        context.id,
+        "queue-command-turn-two",
+    )
+    listed = execute(
+        commands,
+        "/agent queue list",
+        maintainer,
+        context.id,
+        "queue-command-list",
+    )
+    removed = execute(
+        commands,
+        f"/agent queue remove {first_turn.data['turn_id']}",
+        maintainer,
+        context.id,
+        "queue-command-remove",
+    )
+    cleared = execute(
+        commands,
+        "/agent queue clear",
+        maintainer,
+        context.id,
+        "queue-command-clear",
+    )
+    listed_after_clear = execute(
+        commands,
+        "/agent queue list",
+        maintainer,
+        context.id,
+        "queue-command-list-empty",
+    )
+
+    assert listed.canonical_command == "queue.list"
+    assert [turn["id"] for turn in listed.data["turns"]] == [
+        first_turn.data["turn_id"],
+        second_turn.data["turn_id"],
+    ]
+    assert removed.canonical_command == "queue.remove"
+    assert removed.data["turn"]["status"] == "cancelled"
+    assert cleared.canonical_command == "queue.clear"
+    assert cleared.data["count"] == 1
+    assert [turn["id"] for turn in cleared.data["turns"]] == [second_turn.data["turn_id"]]
+    assert listed_after_clear.data["turns"] == []
+
+
 def test_group_role_binding_grants_context_permissions(tmp_path):
     control = ControlPlane()
     commands = CommandService(control)
