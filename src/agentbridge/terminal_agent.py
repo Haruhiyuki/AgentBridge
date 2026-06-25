@@ -66,6 +66,31 @@ class TerminalStatus:
         }
 
 
+@dataclass(frozen=True)
+class TerminalStartSpec:
+    command: str
+    workspace_id: str | None
+    generation: int
+
+
+@dataclass(frozen=True)
+class TerminalRestartResult:
+    status: str
+    restarted: bool
+    command: str
+    previous_generation: int
+    generation: int
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "restarted": self.restarted,
+            "command": self.command,
+            "previous_generation": self.previous_generation,
+            "generation": self.generation,
+        }
+
+
 class TerminalBackend(Protocol):
     def start(self, *, session_id: str, cwd: str, command: str) -> None: ...
 
@@ -510,22 +535,107 @@ class TerminalAgentService:
         session_id: str,
         command: str = "sh",
         trace_id: str,
-    ) -> None:
+    ) -> int:
         session = self.control.repository.get_session(session_id)
         workspace = self.control.repository.get_workspace(session.workspace_id)
         self.backend.start(session_id=session_id, cwd=workspace.path, command=command)
         with self._lifecycle_lock:
-            self._terminal_start_generations[session_id] = (
-                self._terminal_start_generations.get(session_id, 0) + 1
-            )
+            generation = self._terminal_start_generations.get(session_id, 0) + 1
+            self._terminal_start_generations[session_id] = generation
         self.control.emit_event(
             event_type="terminal.started",
             source=SemanticEventSource.TERMINAL_AGENT,
             trace_id=trace_id,
             project_id=session.project_id,
             session_id=session_id,
-            payload={"workspace_id": workspace.id, "command": command},
+            payload={"workspace_id": workspace.id, "command": command, "generation": generation},
         )
+        return generation
+
+    def restart_session(
+        self,
+        *,
+        session_id: str,
+        command: str | None = None,
+        trace_id: str,
+    ) -> TerminalRestartResult:
+        if command is None:
+            start_spec = self.latest_start_spec(session_id=session_id)
+            restart_command = start_spec.command
+        else:
+            restart_command = self.resolve_restart_command(
+                session_id=session_id,
+                command=command,
+            )
+            try:
+                start_spec = self.latest_start_spec(session_id=session_id)
+            except AgentBridgeError:
+                with self._lifecycle_lock:
+                    current_generation = self._terminal_start_generations.get(session_id, 0)
+                start_spec = TerminalStartSpec(
+                    command=restart_command,
+                    workspace_id=None,
+                    generation=current_generation,
+                )
+        status = self.status(session_id=session_id, trace_id=trace_id)
+        if status.started and status.running:
+            return TerminalRestartResult(
+                status="already_running",
+                restarted=False,
+                command=start_spec.command,
+                previous_generation=start_spec.generation,
+                generation=start_spec.generation,
+            )
+        generation = self.start_session(
+            session_id=session_id,
+            command=restart_command,
+            trace_id=trace_id,
+        )
+        return TerminalRestartResult(
+            status="restarted",
+            restarted=True,
+            command=restart_command,
+            previous_generation=start_spec.generation,
+            generation=generation,
+        )
+
+    def resolve_restart_command(self, *, session_id: str, command: str | None = None) -> str:
+        if command is not None:
+            stripped = command.strip()
+            if not stripped:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "终端重启命令不能为空。",
+                    next_step="请提供非空命令，或省略 command 以复用上次启动命令。",
+                )
+            return command
+        return self.latest_start_spec(session_id=session_id).command
+
+    def latest_start_spec(self, *, session_id: str) -> TerminalStartSpec:
+        self.control.repository.get_session(session_id)
+        generation = 0
+        latest: TerminalStartSpec | None = None
+        for event in self.control.repository.list_events(session_id=session_id, limit=1_000_000):
+            if event.type != "terminal.started":
+                continue
+            generation += 1
+            command = event.payload.get("command")
+            if not isinstance(command, str) or not command.strip():
+                continue
+            workspace_id = event.payload.get("workspace_id")
+            latest = TerminalStartSpec(
+                command=command,
+                workspace_id=workspace_id if isinstance(workspace_id, str) else None,
+                generation=generation,
+            )
+        if latest is None:
+            raise AgentBridgeError(
+                ErrorCode.RESOURCE_CONFLICT,
+                "找不到可用于重启的终端启动记录。",
+                next_step="请先启动终端，或在重启请求中显式提供 command。",
+                status_code=409,
+            )
+        return latest
 
     def submit_input(
         self,

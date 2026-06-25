@@ -597,6 +597,26 @@ class LocalTerminalAgentServer:
             )
             launch_result = self.desktop_launcher.launch(session_id=session_id)
             return {"status": "started", "desktop": launch_result.to_payload()}
+        if action == "restart_session":
+            session_id = required_str(payload, "session_id")
+            command = payload.get("command")
+            if command is not None and not isinstance(command, str):
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "command 必须是字符串。",
+                    next_step="请省略 command 以复用上次启动命令，或提供字符串命令。",
+                )
+            result = self.terminal.restart_session(
+                session_id=session_id,
+                command=command,
+                trace_id=str(payload.get("trace_id") or "local-terminal"),
+            )
+            launch_result = (
+                self.desktop_launcher.launch(session_id=session_id)
+                if result.restarted
+                else DesktopTerminalLaunchResult(launched=False)
+            )
+            return {**result.to_payload(), "desktop": launch_result.to_payload()}
         if action == "acquire_human_lease":
             actor = actor_from_payload(payload)
             lease = self.control.acquire_lease(
@@ -656,8 +676,8 @@ class LocalTerminalAgentServer:
             ErrorCode.COMMAND_UNKNOWN,
             f"未知本地 Terminal Agent action：{action}",
             next_step=(
-                "请使用 health、start_session、acquire_human_lease、release_lease、"
-                "submit_input、snapshot、status、read_output 或 stream_output。"
+                "请使用 health、start_session、restart_session、acquire_human_lease、"
+                "release_lease、submit_input、snapshot、status、read_output 或 stream_output。"
             ),
         )
 

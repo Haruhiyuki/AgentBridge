@@ -237,6 +237,14 @@ class StartTerminalRequest(BaseModel):
     trace_id: str = "api"
 
 
+class RestartTerminalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    command: str | None = None
+    trace_id: str = "api"
+
+
 class TerminalInputRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1048,6 +1056,33 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         return {"status": "started"}
 
+    @app.post("/api/v1/sessions/{session_id}/terminal/restart")
+    def restart_terminal(
+        session_id: str,
+        payload: RestartTerminalRequest,
+        control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
+    ):
+        actor = payload.actor.to_actor()
+        command = terminal_service.resolve_restart_command(
+            session_id=session_id,
+            command=payload.command,
+        )
+        control.require_terminal_control(
+            actor,
+            session_id=session_id,
+            attributes={
+                "operation": "terminal_restart",
+                "command": command,
+                "uses_previous_command": payload.command is None,
+            },
+        )
+        return terminal_service.restart_session(
+            session_id=session_id,
+            command=command,
+            trace_id=payload.trace_id,
+        ).to_payload()
+
     @app.post("/api/v1/sessions/{session_id}/terminal/input")
     def submit_terminal_input(
         session_id: str,
@@ -1613,6 +1648,29 @@ def handle_terminal_ws_action(
             trace_id=str(payload.get("trace_id") or "terminal-ws"),
         )
         return {"status": "started"}
+    if action == "restart_session":
+        actor = actor_from_terminal_ws_payload(payload)
+        command_payload = payload.get("command")
+        if command_payload is not None and not isinstance(command_payload, str):
+            raise TypeError("command must be a string")
+        command = terminal_service.resolve_restart_command(
+            session_id=session_id,
+            command=command_payload,
+        )
+        control.require_terminal_control(
+            actor,
+            session_id=session_id,
+            attributes={
+                "operation": "terminal_ws_restart",
+                "command": command,
+                "uses_previous_command": command_payload is None,
+            },
+        )
+        return terminal_service.restart_session(
+            session_id=session_id,
+            command=command,
+            trace_id=str(payload.get("trace_id") or "terminal-ws"),
+        ).to_payload()
     if action == "acquire_lease":
         actor = actor_from_terminal_ws_payload(payload)
         lease = control.acquire_lease(
@@ -1690,7 +1748,7 @@ def handle_terminal_ws_action(
         ErrorCode.COMMAND_UNKNOWN,
         f"未知 Terminal WebSocket action：{action}",
         next_step=(
-            "请使用 health、start_session、acquire_lease、release_lease、"
+            "请使用 health、start_session、restart_session、acquire_lease、release_lease、"
             "submit_input、snapshot 或 status。"
         ),
     )

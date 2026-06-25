@@ -417,6 +417,54 @@ def test_local_terminal_daemon_auto_opens_desktop_terminal(monkeypatch, tmp_path
     asyncio.run(scenario())
 
 
+def test_local_terminal_daemon_restarts_from_last_started_command(tmp_path):
+    async def scenario():
+        control = ControlPlane()
+        first_terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+        session = create_session(control, tmp_path)
+        first_terminal.start_session(
+            session_id=session.id,
+            command="fake-cli --resume",
+            trace_id="daemon-restart-history-start",
+        )
+
+        recovered_backend = FakeTerminalBackend()
+        recovered_terminal = TerminalAgentService(control, backend=recovered_backend)
+        socket_path = Path(f"/tmp/agentbridge-restart-history-{uuid4().hex}.sock")
+        server = LocalTerminalAgentServer(
+            control=control,
+            terminal=recovered_terminal,
+            auth_token="secret-token",
+        )
+        await server.start(socket_path)
+        try:
+            client = LocalTerminalAgentClient(socket_path, "secret-token")
+            restarted = await client.request(
+                "restart_session",
+                {
+                    "session_id": session.id,
+                    "trace_id": "daemon-restart-history",
+                },
+            )
+
+            assert restarted == {
+                "ok": True,
+                "data": {
+                    "status": "restarted",
+                    "restarted": True,
+                    "command": "fake-cli --resume",
+                    "previous_generation": 1,
+                    "generation": 2,
+                    "desktop": {"launched": False, "pid": None, "error": None},
+                },
+            }
+            assert recovered_backend.started[session.id] == (str(tmp_path), "fake-cli --resume")
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
 def test_local_terminal_daemon_client_reconnects_after_socket_restart(tmp_path):
     async def scenario():
         control = ControlPlane()

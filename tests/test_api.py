@@ -5,6 +5,7 @@ import threading
 from fastapi.testclient import TestClient
 
 from agentbridge.api import create_app
+from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService
 
 
 def _create_session_with_project(
@@ -992,6 +993,46 @@ def test_terminal_lifecycle_monitor_can_autostart_from_api_env(monkeypatch):
     assert app.state.terminal.is_lifecycle_monitor_running() is False
 
 
+def test_terminal_restart_api_uses_last_started_command_after_backend_state_loss(tmp_path):
+    app = create_app()
+    client = TestClient(app)
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-terminal-restart",
+        prefix="terminal-restart",
+        name="Terminal Restart",
+    )
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/terminal/start",
+        json={
+            "actor": actor,
+            "command": "fake-cli --resume",
+            "trace_id": "terminal-restart-api-start",
+        },
+    )
+    assert start_response.status_code == 200
+
+    recovered_backend = FakeTerminalBackend()
+    app.state.terminal = TerminalAgentService(app.state.control, backend=recovered_backend)
+
+    restart_response = client.post(
+        f"/api/v1/sessions/{session_id}/terminal/restart",
+        json={"actor": actor, "trace_id": "terminal-restart-api"},
+    )
+
+    assert restart_response.status_code == 200
+    assert restart_response.json() == {
+        "status": "restarted",
+        "restarted": True,
+        "command": "fake-cli --resume",
+        "previous_generation": 1,
+        "generation": 2,
+    }
+    assert recovered_backend.started[session_id] == (str(tmp_path), "fake-cli --resume")
+
+
 def test_terminal_websocket_returns_error_frames_for_bad_lease(tmp_path):
     client = TestClient(create_app())
     actor = {"id": "usr_1", "roles": ["maintainer"]}
@@ -1026,3 +1067,53 @@ def test_terminal_websocket_returns_error_frames_for_bad_lease(tmp_path):
     assert error["id"] == "stale-input"
     assert error["ok"] is False
     assert error["error"]["error_code"] == "LEASE_CONFLICT"
+
+
+def test_terminal_websocket_restart_uses_last_started_command(tmp_path):
+    app = create_app()
+    client = TestClient(app)
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-terminal-ws-restart",
+        prefix="terminal-ws-restart",
+        name="Terminal WS Restart",
+    )
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/terminal/start",
+        json={
+            "actor": actor,
+            "command": "fake-cli --resume",
+            "trace_id": "terminal-ws-restart-start",
+        },
+    )
+    assert start_response.status_code == 200
+
+    recovered_backend = FakeTerminalBackend()
+    app.state.terminal = TerminalAgentService(app.state.control, backend=recovered_backend)
+
+    with client.websocket_connect(f"/api/v1/sessions/{session_id}/terminal/ws") as websocket:
+        websocket.send_json(
+            {
+                "id": "restart",
+                "type": "restart_session",
+                "payload": {"actor": actor, "trace_id": "terminal-ws-restart"},
+            }
+        )
+        result = websocket.receive_json()
+
+    assert result == {
+        "type": "terminal.result",
+        "id": "restart",
+        "action": "restart_session",
+        "ok": True,
+        "data": {
+            "status": "restarted",
+            "restarted": True,
+            "command": "fake-cli --resume",
+            "previous_generation": 1,
+            "generation": 2,
+        },
+    }
+    assert recovered_backend.started[session_id] == (str(tmp_path), "fake-cli --resume")

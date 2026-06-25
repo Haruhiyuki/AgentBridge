@@ -297,6 +297,100 @@ def test_terminal_lifecycle_monitor_reports_lost_recovered_session_once(tmp_path
     assert len(lost_events) == 1
 
 
+def test_terminal_restart_uses_last_started_command_after_backend_state_loss(tmp_path):
+    control = ControlPlane()
+    first_terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+    _, session = create_session(control, tmp_path)
+    first_generation = first_terminal.start_session(
+        session_id=session.id,
+        command="fake-cli --resume",
+        trace_id="terminal-start-before-restart",
+    )
+    assert first_generation == 1
+
+    recovered_backend = FakeTerminalBackend()
+    recovered_terminal = TerminalAgentService(control, backend=recovered_backend)
+
+    result = recovered_terminal.restart_session(
+        session_id=session.id,
+        trace_id="terminal-restart-after-loss",
+    )
+
+    assert result.to_payload() == {
+        "status": "restarted",
+        "restarted": True,
+        "command": "fake-cli --resume",
+        "previous_generation": 1,
+        "generation": 2,
+    }
+    assert recovered_backend.started[session.id] == (str(tmp_path), "fake-cli --resume")
+    assert [event.type for event in control.repository.list_events(session_id=session.id)] == [
+        "session.created",
+        "terminal.started",
+        "terminal.lost",
+        "terminal.started",
+    ]
+    started_events = [
+        event
+        for event in control.repository.list_events(session_id=session.id)
+        if event.type == "terminal.started"
+    ]
+    assert started_events[-1].payload["generation"] == 2
+
+
+def test_terminal_restart_does_not_replace_running_backend(tmp_path):
+    control = ControlPlane()
+    backend = FakeTerminalBackend()
+    terminal = TerminalAgentService(control, backend=backend)
+    _, session = create_session(control, tmp_path)
+    terminal.start_session(
+        session_id=session.id,
+        command="fake-cli",
+        trace_id="terminal-start-before-running-restart",
+    )
+
+    result = terminal.restart_session(
+        session_id=session.id,
+        trace_id="terminal-restart-running",
+    )
+
+    assert result.to_payload() == {
+        "status": "already_running",
+        "restarted": False,
+        "command": "fake-cli",
+        "previous_generation": 1,
+        "generation": 1,
+    }
+    assert [
+        event.type for event in control.repository.list_events(session_id=session.id)
+    ] == ["session.created", "terminal.started"]
+
+
+def test_terminal_restart_can_use_explicit_command_without_start_history(tmp_path):
+    control = ControlPlane()
+    backend = FakeTerminalBackend()
+    terminal = TerminalAgentService(control, backend=backend)
+    _, session = create_session(control, tmp_path)
+
+    result = terminal.restart_session(
+        session_id=session.id,
+        command="fake-cli --fresh",
+        trace_id="terminal-restart-explicit",
+    )
+
+    assert result.to_payload() == {
+        "status": "restarted",
+        "restarted": True,
+        "command": "fake-cli --fresh",
+        "previous_generation": 0,
+        "generation": 1,
+    }
+    assert backend.started[session.id] == (str(tmp_path), "fake-cli --fresh")
+    assert [
+        event.type for event in control.repository.list_events(session_id=session.id)
+    ] == ["session.created", "terminal.started"]
+
+
 def test_terminal_api_writes_to_fake_backend_after_lease(tmp_path):
     client = TestClient(create_app())
     actor = {"id": "usr_1", "roles": ["maintainer"]}
