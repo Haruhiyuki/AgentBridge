@@ -1,0 +1,16 @@
+[Unit]
+Description=AgentBridge PTY Host
+After=default.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/agentbridge/pty-host.env
+ExecStart=__AGENTBRIDGE_PTY_HOST_BIN__
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=agentbridge
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

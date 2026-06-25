@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.agentbridge.pty-host</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__AGENTBRIDGE_PTY_HOST_BIN__</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET</key>
+    <string>__HOME__/Library/Application Support/AgentBridge/pty-host.sock</string>
+    <key>AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN</key>
+    <string>__GENERATE_STRONG_TOKEN__</string>
+    <key>AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH</key>
+    <string>__HOME__/Library/Application Support/AgentBridge/pty-host-state.json</string>
+    <key>AGENTBRIDGE_TERMINAL_PTY_OUTPUT_LIMIT_CHARS</key>
+    <string>1000000</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/AgentBridge/pty-host.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/AgentBridge/pty-host.err.log</string>
+</dict>
+</plist>
