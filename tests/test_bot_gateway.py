@@ -373,6 +373,73 @@ def test_bot_gateway_api_delivers_and_lists_records(tmp_path):
     assert len(records_response.json()) == 1
 
 
+def test_bot_gateway_websocket_fans_out_rendered_events(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    client = TestClient(create_app(control))
+
+    with client.websocket_connect(
+        "/api/v1/bot-gateway/session-events/ws"
+        f"?session_id={session_id}&chat_context_id={context.id}"
+        "&after_seq=1&idle_timeout_seconds=0"
+    ) as websocket:
+        frame = websocket.receive_json()
+        idle = websocket.receive_json()
+
+    assert frame["type"] == "bot.render.create"
+    assert frame["seq"] == 2
+    assert frame["session_id"] == session_id
+    assert frame["chat_context_id"] == context.id
+    assert frame["platform"] == "onebot.v11"
+    assert frame["chat"]["chat_space_id"] == "group-bot"
+    assert frame["event"]["type"] == "turn.queued"
+    assert len(frame["messages"]) == 1
+    assert frame["messages"][0]["idempotency_key"] == (
+        f"onebot.v11:{context.id}:{frame['event_id']}:0"
+    )
+    assert "任务已排队" in frame["messages"][0]["text"]
+    assert idle == {"type": "idle_timeout", "last_seq": frame["seq"]}
+
+
+def test_bot_gateway_websocket_requires_token_when_configured(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "secret")
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    client = TestClient(create_app(control))
+    url = (
+        "/api/v1/bot-gateway/session-events/ws"
+        f"?session_id={session_id}&chat_context_id={context.id}"
+        "&after_seq=1&idle_timeout_seconds=0"
+    )
+
+    with client.websocket_connect(url) as websocket:
+        denied = websocket.receive_json()
+
+    assert denied["type"] == "error"
+    assert denied["error"]["error_code"] == "PERMISSION_DENIED"
+
+    with client.websocket_connect(f"{url}&token=secret") as websocket:
+        frame = websocket.receive_json()
+
+    assert frame["type"] == "bot.render.create"
+    assert frame["event"]["type"] == "turn.queued"
+
+
+def test_bot_gateway_websocket_reports_missing_chat_context(tmp_path):
+    control = ControlPlane()
+    _, session_id = create_session_with_turn(control, tmp_path)
+    client = TestClient(create_app(control))
+
+    with client.websocket_connect(
+        "/api/v1/bot-gateway/session-events/ws"
+        f"?session_id={session_id}&chat_context_id=missing"
+    ) as websocket:
+        message = websocket.receive_json()
+
+    assert message["type"] == "error"
+    assert message["error"]["error_code"] == "NOT_FOUND"
+
+
 def test_bot_retry_worker_api_reports_status_and_runs_once(tmp_path):
     control = ControlPlane()
     context, session_id = create_session_with_turn(control, tmp_path)

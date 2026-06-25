@@ -19,7 +19,7 @@ This repository currently contains the first executable backend slice:
 - Optional token-gated WebSocket streams and Terminal command transport.
 - Local Console Client that acquires human lease on first input and forwards terminal input.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
-- Bot Gateway delivery service with persistent idempotent delivery records, in-memory text transport, and OneBot V11 HTTP transport.
+- Bot Gateway delivery service with persistent idempotent delivery records, WebSocket render subscriptions, in-memory text transport, and OneBot V11 HTTP transport.
 - Optional NoneBot wrapper that normalizes message and action callback events into the existing `/agent` command path.
 - Background Bot delivery retry worker with configurable interval and batch-size guardrails.
 - Platform-scoped Bot delivery rate-limit policies that schedule unsent messages for retry.
@@ -140,6 +140,14 @@ curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/deliver-session-events \
 ```
 
 Delivery records are idempotent by platform, chat context, event, and message index, and can be persisted through the SQLAlchemy repository. Failed sends are recorded with attempt count, last error, and next retry time; `POST /api/v1/bot-gateway/retry-failed-deliveries` retries due failures.
+
+External Bot Gateway subscribers can also receive Bot-facing render frames without mutating delivery records:
+
+```bash
+wscat -c 'ws://127.0.0.1:8000/api/v1/bot-gateway/session-events/ws?session_id=<session-id>&chat_context_id=<chat-context-id>&after_seq=42'
+```
+
+Each pushed frame uses `type: "bot.render.create"` and includes the semantic event, render document, target chat context, platform, and per-message idempotency keys. Set `AGENTBRIDGE_WS_TOKEN` to protect this subscription endpoint in the same way as the other WebSocket routes.
 
 The background retry worker is disabled by default. Enable it for long-running deployments:
 

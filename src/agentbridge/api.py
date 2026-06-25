@@ -45,7 +45,7 @@ from agentbridge.onebot import (
 )
 from agentbridge.persistence import SQLAlchemyRepository
 from agentbridge.policy import ApprovalPolicy, Permission
-from agentbridge.renderer import OneBotV11TextRenderer, document_from_event
+from agentbridge.renderer import OneBotV11TextRenderer, RenderDocument, document_from_event
 from agentbridge.storage import InMemoryRepository
 from agentbridge.terminal_agent import (
     FakeTerminalBackend,
@@ -978,6 +978,34 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         return [record.model_dump(mode="json") for record in records]
 
+    @app.websocket("/api/v1/bot-gateway/session-events/ws")
+    async def stream_bot_gateway_session_events(
+        websocket: WebSocket,
+        session_id: str,
+        chat_context_id: str,
+        control: ControlPlane = Depends(get_control),
+        bot_gateway_service: BotGatewayService = Depends(get_bot_gateway),
+        platform: BotPlatform = BotPlatform.ONEBOT_V11,
+        after_seq: int | None = None,
+        limit: int = 100,
+        poll_interval_seconds: float = 0.25,
+        idle_timeout_seconds: float | None = None,
+        token: str | None = None,
+    ):
+        await stream_bot_gateway_events(
+            websocket=websocket,
+            control=control,
+            bot_gateway_service=bot_gateway_service,
+            session_id=session_id,
+            chat_context_id=chat_context_id,
+            platform=platform,
+            after_seq=after_seq,
+            limit=limit,
+            poll_interval_seconds=poll_interval_seconds,
+            idle_timeout_seconds=idle_timeout_seconds,
+            token=token,
+        )
+
     @app.post("/api/v1/bot-gateway/retry-failed-deliveries")
     def retry_failed_deliveries(
         payload: RetryBotDeliveriesRequest,
@@ -1128,6 +1156,116 @@ async def stream_session_events(
             await asyncio.sleep(poll_interval)
     except WebSocketDisconnect:
         return
+
+
+async def stream_bot_gateway_events(
+    *,
+    websocket: WebSocket,
+    control: ControlPlane,
+    bot_gateway_service: BotGatewayService,
+    session_id: str,
+    chat_context_id: str,
+    platform: BotPlatform,
+    after_seq: int | None,
+    limit: int,
+    poll_interval_seconds: float,
+    idle_timeout_seconds: float | None,
+    token: str | None,
+) -> None:
+    if not await accept_authenticated_websocket(websocket, token=token):
+        return
+    try:
+        control.repository.get_session(session_id)
+        chat_context = control.repository.get_chat_context(chat_context_id)
+    except AgentBridgeError as exc:
+        await websocket.send_json({"type": "error", "error": exc.to_payload()})
+        await websocket.close(code=1008)
+        return
+
+    batch_limit = clamp_stream_limit(limit)
+    poll_interval = clamp_poll_interval(poll_interval_seconds)
+    idle_timeout = normalize_idle_timeout(idle_timeout_seconds)
+    last_seq = max(after_seq or 0, 0)
+    idle_started_at = monotonic()
+
+    try:
+        while True:
+            events = control.repository.list_events(
+                session_id=session_id,
+                after_seq=last_seq,
+                limit=batch_limit,
+            )
+            if events:
+                idle_started_at = monotonic()
+                for event in events:
+                    last_seq = max(last_seq, event.seq)
+                    document = document_from_event(event)
+                    text_messages = bot_gateway_service.renderer.render(document)
+                    await websocket.send_json(
+                        bot_gateway_render_frame(
+                            session_id=session_id,
+                            chat_context=chat_context,
+                            platform=platform,
+                            event=event,
+                            document=document,
+                            text_messages=text_messages,
+                        )
+                    )
+                continue
+
+            if idle_timeout is not None and monotonic() - idle_started_at >= idle_timeout:
+                await websocket.send_json({"type": "idle_timeout", "last_seq": last_seq})
+                await websocket.close(code=1000)
+                return
+
+            await asyncio.sleep(poll_interval)
+    except WebSocketDisconnect:
+        return
+
+
+def bot_gateway_render_frame(
+    *,
+    session_id: str,
+    chat_context,
+    platform: BotPlatform,
+    event,
+    document: RenderDocument,
+    text_messages: list[str],
+) -> dict[str, object]:
+    return {
+        "type": "bot.render.create",
+        "event_id": event.id,
+        "seq": event.seq,
+        "session_id": session_id,
+        "chat_context_id": chat_context.id,
+        "platform": platform.value,
+        "chat": chat_context.model_dump(mode="json"),
+        "event": event.model_dump(mode="json"),
+        "document": document.model_dump(mode="json"),
+        "messages": [
+            {
+                "index": index,
+                "idempotency_key": bot_render_idempotency_key(
+                    platform=platform,
+                    chat_context_id=chat_context.id,
+                    event_id=event.id,
+                    message_index=index,
+                ),
+                "text": text,
+            }
+            for index, text in enumerate(text_messages)
+        ],
+    }
+
+
+def bot_render_idempotency_key(
+    *,
+    platform: BotPlatform,
+    chat_context_id: str,
+    event_id: str,
+    message_index: int,
+) -> str:
+    return f"{platform.value}:{chat_context_id}:{event_id}:{message_index}"
 
 
 async def stream_terminal_commands(

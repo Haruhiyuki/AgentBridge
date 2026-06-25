@@ -53,6 +53,7 @@ Implemented in this slice:
 - Bot Gateway delivery service using the renderer.
 - In-memory Bot transport and idempotent delivery records keyed by platform, chat context, event, and message index.
 - Delivery APIs through `POST /api/v1/bot-gateway/deliver-session-events` and `GET /api/v1/bot-gateway/deliveries`.
+- Bot Gateway subscriber WebSocket through `/api/v1/bot-gateway/session-events/ws`, pushing `bot.render.create` frames with chat routing metadata and per-message idempotency keys.
 - Bot delivery records are now domain/repository state and persist through Alembic migration `0002_bot_delivery_records`.
 - Recovery tests prove replay after repository re-instantiation skips already delivered Bot messages.
 - OneBot V11 HTTP transport with group/private payload routing, bearer token support, and idempotency header.
@@ -104,7 +105,7 @@ Not implemented yet:
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
 - General ABAC policy editor for action/resource/attribute rules beyond approval quorum overrides.
-- Production WebSocket hardening with mTLS/device keys and Bot Gateway subscriber fan-out beyond the current session event streams.
+- Production WebSocket hardening with mTLS/device keys.
 - Rich platform-specific renderer delivery state, message editing, and button/card support.
 - Native action/callback support for platforms that expose buttons or interactions.
 - Broader platform-specific delivery state, including message edits, deletes, acknowledgement tracking, and per-adapter action callbacks.
@@ -137,6 +138,7 @@ Not implemented yet:
 - OneBot inbound support currently executes text commands. The optional NoneBot wrapper can also map callback/action payloads that carry a command string through the same command execution path.
 - Group role bindings are scoped to a chat context and actor ID. This keeps OneBot user permissions local to the group/private context while still allowing command/API callers to carry bootstrap roles.
 - WebSocket session streams are read-side transports over immutable semantic events. They use `after_seq` cursors for replay/reconnect and do not mutate Bot delivery records.
+- Bot Gateway WebSocket subscriptions fan out render frames for external platform adapters, but do not store delivery records. Platform send results, edits, deletes, and acknowledgements remain separate delivery-state work.
 - `AGENTBRIDGE_WS_TOKEN` is the current MVP WebSocket gate for local/browser clients. It is intentionally simpler than the design's production mTLS/device-key model, which remains future hardening work.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
 
@@ -155,7 +157,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 
 1. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
 2. Expand policy engine to general ABAC action/resource/attribute rules and policy simulation.
-3. Replace the MVP WebSocket token gate with mTLS/device-key auth and add production Bot Gateway subscriber fan-out.
+3. Replace the MVP WebSocket token gate with mTLS/device-key auth.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.
 5. Add richer platform delivery state for edits/deletes/acknowledgements.
 6. Add native NoneBot matcher setup helpers once a NoneBot dependency boundary is selected.
