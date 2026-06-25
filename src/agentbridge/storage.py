@@ -125,6 +125,7 @@ class InMemoryRepository:
         description: str | None = None,
         default_agent: AgentType = AgentType.CLAUDE,
         max_active_sessions: int = 10,
+        max_running_turns: int = 4,
         max_queued_turns: int = 100,
     ) -> Project:
         with self._lock:
@@ -153,6 +154,14 @@ class InMemoryRepository:
                     status_code=400,
                     details={"max_queued_turns": max_queued_turns},
                 )
+            if max_running_turns < 0:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "项目最大运行任务数不能为负。",
+                    next_step="请将 max_running_turns 设置为 0 或更大的整数。",
+                    status_code=400,
+                    details={"max_running_turns": max_running_turns},
+                )
             project = Project(
                 id=project_id,
                 name=name.strip(),
@@ -161,6 +170,7 @@ class InMemoryRepository:
                 description=description,
                 default_agent=default_agent,
                 max_active_sessions=max_active_sessions,
+                max_running_turns=max_running_turns,
                 max_queued_turns=max_queued_turns,
                 created_by=actor.id,
             )
@@ -856,6 +866,16 @@ class InMemoryRepository:
             if turn.session_id in session_ids and turn.status == TurnStatus.QUEUED
         )
 
+    def _count_project_running_turns(self, project_id: str) -> int:
+        session_ids = {
+            session.id for session in self.sessions.values() if session.project_id == project_id
+        }
+        return sum(
+            1
+            for turn in self.turns.values()
+            if turn.session_id in session_ids and turn.status == TurnStatus.RUNNING
+        )
+
     def _select_default_workspace(self, project_id: str) -> Workspace:
         candidates = self.list_workspaces(project_id)
         if not candidates:
@@ -984,6 +1004,144 @@ class InMemoryRepository:
     def list_turns(self, session_id: str) -> list[Turn]:
         with self._lock:
             return [turn for turn in self.turns.values() if turn.session_id == session_id]
+
+    def start_turn(self, *, session_id: str, turn_id: str) -> Turn:
+        with self._lock:
+            session = self.get_session(session_id)
+            turn = self._get_session_turn(session_id=session_id, turn_id=turn_id)
+            if turn.status == TurnStatus.RUNNING:
+                return turn
+            if turn.status in {
+                TurnStatus.COMPLETED,
+                TurnStatus.FAILED,
+                TurnStatus.CANCELLED,
+            }:
+                raise AgentBridgeError(
+                    ErrorCode.RESOURCE_CONFLICT,
+                    f"Turn 已处于终态，不能开始运行：{turn.status.value}",
+                    next_step="请创建新的 Turn，或检查 Terminal Agent 事件顺序。",
+                    status_code=409,
+                    details={"turn_id": turn_id, "status": turn.status.value},
+                )
+            if session.active_turn_id and session.active_turn_id != turn_id:
+                active_turn = self.turns.get(session.active_turn_id)
+                if active_turn and active_turn.status == TurnStatus.RUNNING:
+                    raise AgentBridgeError(
+                        ErrorCode.RESOURCE_CONFLICT,
+                        "当前 Session 已有运行中的 Turn。",
+                        next_step="请等待当前 Turn 结束后再开始下一个 Turn。",
+                        status_code=409,
+                        details={
+                            "session_id": session_id,
+                            "active_turn_id": session.active_turn_id,
+                        },
+                    )
+            project = self.get_project(session.project_id)
+            running_turn_count = self._count_project_running_turns(project.id)
+            if running_turn_count >= project.max_running_turns:
+                raise AgentBridgeError(
+                    ErrorCode.QUOTA_EXCEEDED,
+                    "项目运行中任务数已达到配额上限。",
+                    next_step="请等待运行中的 Turn 完成，或提高项目 max_running_turns 配额。",
+                    status_code=409,
+                    details={
+                        "project_id": project.id,
+                        "running_turns": running_turn_count,
+                        "max_running_turns": project.max_running_turns,
+                    },
+                )
+            now = utc_now()
+            updated_turn = turn.model_copy(
+                update={
+                    "status": TurnStatus.RUNNING,
+                    "started_at": turn.started_at or now,
+                }
+            )
+            self.turns[turn.id] = updated_turn
+            self.sessions[session.id] = session.model_copy(
+                update={
+                    "active_turn_id": turn.id,
+                    "status": SessionStatus.RUNNING,
+                    "updated_at": now,
+                }
+            )
+            return updated_turn
+
+    def finish_turn(self, *, session_id: str, turn_id: str, status: TurnStatus) -> Turn:
+        with self._lock:
+            session = self.get_session(session_id)
+            turn = self._get_session_turn(session_id=session_id, turn_id=turn_id)
+            if status not in {
+                TurnStatus.COMPLETED,
+                TurnStatus.FAILED,
+                TurnStatus.CANCELLED,
+            }:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    f"Turn 结束状态无效：{status.value}",
+                    next_step="请使用 completed、failed 或 cancelled。",
+                    status_code=400,
+                    details={"turn_id": turn_id, "status": status.value},
+                )
+            if turn.status == status:
+                return turn
+            if turn.status in {
+                TurnStatus.COMPLETED,
+                TurnStatus.FAILED,
+                TurnStatus.CANCELLED,
+            }:
+                raise AgentBridgeError(
+                    ErrorCode.RESOURCE_CONFLICT,
+                    f"Turn 已处于终态，不能改写为：{status.value}",
+                    next_step="请检查 Terminal Agent 事件顺序或幂等键。",
+                    status_code=409,
+                    details={
+                        "turn_id": turn_id,
+                        "current_status": turn.status.value,
+                        "requested_status": status.value,
+                    },
+                )
+            now = utc_now()
+            updated_turn = turn.model_copy(
+                update={
+                    "status": status,
+                    "completed_at": turn.completed_at or now,
+                }
+            )
+            self.turns[turn.id] = updated_turn
+            if session.active_turn_id == turn.id:
+                self.sessions[session.id] = session.model_copy(
+                    update={
+                        "active_turn_id": None,
+                        "status": SessionStatus.IDLE,
+                        "updated_at": now,
+                    }
+                )
+            return updated_turn
+
+    def _get_session_turn(self, *, session_id: str, turn_id: str) -> Turn:
+        turn = self.turns.get(turn_id)
+        if not turn:
+            raise AgentBridgeError(
+                ErrorCode.NOT_FOUND,
+                f"Turn 不存在：{turn_id}",
+                next_step="请确认 Terminal Agent 事件携带的是已入队 Turn ID。",
+                status_code=404,
+                details={"turn_id": turn_id},
+            )
+        if turn.session_id != session_id:
+            raise AgentBridgeError(
+                ErrorCode.RESOURCE_CONFLICT,
+                "Turn 不属于目标 Session。",
+                next_step="请检查 Terminal Agent 事件中的 session_id 与 turn_id。",
+                status_code=409,
+                details={
+                    "turn_id": turn_id,
+                    "turn_session_id": turn.session_id,
+                    "session_id": session_id,
+                },
+            )
+        return turn
 
     def acquire_lease(
         self,
@@ -1410,6 +1568,10 @@ class InMemoryRepository:
             if idempotency_key:
                 self.event_idempotency[idempotency_key] = event
             return event
+
+    def get_event_by_idempotency_key(self, idempotency_key: str) -> SemanticEvent | None:
+        with self._lock:
+            return self.event_idempotency.get(idempotency_key)
 
     def list_events(
         self,

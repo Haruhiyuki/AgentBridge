@@ -34,6 +34,7 @@ from agentbridge.domain import (
     SemanticEvent,
     SemanticEventSource,
     Turn,
+    TurnStatus,
     Visibility,
     Workspace,
     WorkspaceType,
@@ -90,6 +91,7 @@ class ControlPlane:
         description: str | None = None,
         default_agent: AgentType = AgentType.CLAUDE,
         max_active_sessions: int = 10,
+        max_running_turns: int = 4,
         max_queued_turns: int = 100,
         trace_id: str,
         chat_context_id: str | None = None,
@@ -105,6 +107,7 @@ class ControlPlane:
                 "slug": slug or "",
                 "default_agent": default_agent.value,
                 "max_active_sessions": max_active_sessions,
+                "max_running_turns": max_running_turns,
                 "max_queued_turns": max_queued_turns,
                 **self._chat_policy_attributes(chat_context_id),
             },
@@ -117,6 +120,7 @@ class ControlPlane:
             description=description,
             default_agent=default_agent,
             max_active_sessions=max_active_sessions,
+            max_running_turns=max_running_turns,
             max_queued_turns=max_queued_turns,
         )
         self.audit(
@@ -136,6 +140,7 @@ class ControlPlane:
                 "name": project.name,
                 "slug": project.slug,
                 "max_active_sessions": project.max_active_sessions,
+                "max_running_turns": project.max_running_turns,
                 "max_queued_turns": project.max_queued_turns,
             },
         )
@@ -634,6 +639,75 @@ class ControlPlane:
             payload={"released_epoch": epoch, "next_epoch": next_epoch},
         )
         return next_epoch
+
+    def ingest_session_event(
+        self,
+        *,
+        session_id: str,
+        event_type: str,
+        source: SemanticEventSource,
+        trace_id: str,
+        idempotency_key: str | None = None,
+        turn_id: str | None = None,
+        interaction_id: str | None = None,
+        payload: dict[str, object] | None = None,
+    ) -> SemanticEvent:
+        session = self.repository.get_session(session_id)
+        if idempotency_key:
+            existing = self.repository.get_event_by_idempotency_key(idempotency_key)
+            if existing:
+                return existing
+        self._apply_turn_lifecycle_event(
+            session_id=session_id,
+            event_type=event_type,
+            turn_id=turn_id,
+        )
+        return self.emit_event(
+            event_type=event_type,
+            source=source,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            interaction_id=interaction_id,
+            payload=payload,
+            idempotency_key=idempotency_key,
+        )
+
+    def _apply_turn_lifecycle_event(
+        self,
+        *,
+        session_id: str,
+        event_type: str,
+        turn_id: str | None,
+    ) -> None:
+        if event_type not in {
+            "turn.started",
+            "turn.completed",
+            "turn.failed",
+            "turn.interrupted",
+        }:
+            return
+        if not turn_id:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                f"{event_type} 事件必须携带 turn_id。",
+                next_step="请让 Terminal Agent 使用已入队 Turn ID 发送生命周期事件。",
+                status_code=400,
+            )
+        if event_type == "turn.started":
+            self.repository.start_turn(session_id=session_id, turn_id=turn_id)
+            return
+        terminal_status = {
+            "turn.completed": TurnStatus.COMPLETED,
+            "turn.failed": TurnStatus.FAILED,
+            "turn.interrupted": TurnStatus.CANCELLED,
+        }[event_type]
+        self.repository.finish_turn(
+            session_id=session_id,
+            turn_id=turn_id,
+            status=terminal_status,
+        )
 
     def create_interaction(
         self,
@@ -1901,6 +1975,7 @@ class ControlPlane:
                     "project_status": project.status.value,
                     "default_agent": project.default_agent.value,
                     "max_active_sessions": project.max_active_sessions,
+                    "max_running_turns": project.max_running_turns,
                     "max_queued_turns": project.max_queued_turns,
                     "created_by": project.created_by,
                 }

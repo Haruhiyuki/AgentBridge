@@ -12,7 +12,7 @@ This repository currently contains the first executable backend slice:
 - Shared domain models for projects, workspaces, sessions, turns, interactions, writer leases, chat contexts, and audit events.
 - In-memory repository suitable for contract tests and local MVP prototyping.
 - `/agent` command parser and executor for project/session routing, turn enqueueing, lease control, and idempotent invocation handling.
-- Project active-session and queued-Turn quotas plus Workspace write-capacity enforcement for multi-session safety.
+- Project active-session, running-Turn, and queued-Turn quotas plus Workspace write-capacity enforcement for multi-session safety.
 - Ordered semantic event streams with replay and idempotent Terminal Agent event ingestion.
 - Optional SQLAlchemy persistence with an Alembic-managed schema.
 - Terminal input gateway with fake, tmux, and stdlib PTY backends plus writer-lease epoch enforcement.

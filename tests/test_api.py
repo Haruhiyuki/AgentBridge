@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from agentbridge.api import create_app
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, DeviceIdentityScope, Visibility
+from agentbridge.domain import Actor, DeviceIdentityScope, TurnStatus, Visibility
 from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService
 
 
@@ -1524,6 +1524,8 @@ def test_project_session_admin_ui_serves_dashboard():
     assert "async function closeSession()" in html
     assert "project-max-active-sessions" in html
     assert "function readProjectMaxActiveSessions()" in html
+    assert "project-max-running-turns" in html
+    assert "function readProjectMaxRunningTurns()" in html
     assert "project-max-queued-turns" in html
     assert "function readProjectMaxQueuedTurns()" in html
     assert "workspace-writable" in html
@@ -1869,6 +1871,7 @@ def test_project_session_rest_flow_supports_admin_operations(tmp_path):
             "description": "Admin managed project",
             "default_agent": "codex",
             "max_active_sessions": 3,
+            "max_running_turns": 2,
             "max_queued_turns": 5,
             "trace_id": "test-admin-project-create",
         },
@@ -1877,6 +1880,7 @@ def test_project_session_rest_flow_supports_admin_operations(tmp_path):
     project = project_response.json()
     assert project["slug"] == "backend"
     assert project["max_active_sessions"] == 3
+    assert project["max_running_turns"] == 2
     assert project["max_queued_turns"] == 5
 
     workspace_path = tmp_path / "repo"
@@ -3518,6 +3522,176 @@ def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
     assert payload_missing_response.json() == []
     assert project_response.status_code == 200
     assert [event["session_id"] for event in project_response.json()] == [session_id]
+
+
+def test_session_event_ingest_updates_turn_lifecycle_and_running_quota(tmp_path):
+    control = ControlPlane()
+    client = TestClient(create_app(control))
+    actor = {"id": "admin-ui", "roles": ["admin"]}
+
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": actor,
+            "name": "Running Turn Quota",
+            "max_running_turns": 1,
+            "trace_id": "test-running-turn-project",
+        },
+    )
+    assert project_response.status_code == 200
+    project = project_response.json()
+    workspace_response = client.post(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        json={
+            "actor": actor,
+            "machine_id": "local",
+            "path": str(tmp_path / "repo"),
+            "allowed_root": str(tmp_path),
+            "trace_id": "test-running-turn-workspace",
+        },
+    )
+    assert workspace_response.status_code == 200
+    workspace = workspace_response.json()
+    first_session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": actor,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Running One",
+            "trace_id": "test-running-turn-session-one",
+        },
+    )
+    second_session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": actor,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Running Two",
+            "trace_id": "test-running-turn-session-two",
+        },
+    )
+    assert first_session_response.status_code == 200
+    assert second_session_response.status_code == 200
+    first_session = first_session_response.json()
+    second_session = second_session_response.json()
+    first_turn_response = client.post(
+        f"/api/v1/sessions/{first_session['id']}/turns",
+        json={
+            "actor": actor,
+            "prompt": "First running turn",
+            "trace_id": "test-running-turn-one",
+        },
+    )
+    second_turn_response = client.post(
+        f"/api/v1/sessions/{second_session['id']}/turns",
+        json={
+            "actor": actor,
+            "prompt": "Second running turn",
+            "trace_id": "test-running-turn-two",
+        },
+    )
+    assert first_turn_response.status_code == 200
+    assert second_turn_response.status_code == 200
+    first_turn = first_turn_response.json()
+    second_turn = second_turn_response.json()
+    same_session_turn_response = client.post(
+        f"/api/v1/sessions/{first_session['id']}/turns",
+        json={
+            "actor": actor,
+            "prompt": "Same session second running turn",
+            "trace_id": "test-running-turn-same-session",
+        },
+    )
+    assert same_session_turn_response.status_code == 200
+    same_session_turn = same_session_turn_response.json()
+
+    first_start = client.post(
+        f"/api/v1/sessions/{first_session['id']}/events",
+        json={
+            "type": "turn.started",
+            "source": "terminal_agent",
+            "trace_id": "test-running-turn-start-one",
+            "turn_id": first_turn["id"],
+            "idempotency_key": "running-turn-start-one",
+        },
+    )
+    duplicate_start = client.post(
+        f"/api/v1/sessions/{first_session['id']}/events",
+        json={
+            "type": "turn.started",
+            "source": "terminal_agent",
+            "trace_id": "test-running-turn-start-one-duplicate",
+            "turn_id": first_turn["id"],
+            "idempotency_key": "running-turn-start-one",
+        },
+    )
+    same_session_blocked = client.post(
+        f"/api/v1/sessions/{first_session['id']}/events",
+        json={
+            "type": "turn.started",
+            "source": "terminal_agent",
+            "trace_id": "test-running-turn-same-session-blocked",
+            "turn_id": same_session_turn["id"],
+            "idempotency_key": "running-turn-same-session-blocked",
+        },
+    )
+    blocked_start = client.post(
+        f"/api/v1/sessions/{second_session['id']}/events",
+        json={
+            "type": "turn.started",
+            "source": "terminal_agent",
+            "trace_id": "test-running-turn-start-blocked",
+            "turn_id": second_turn["id"],
+            "idempotency_key": "running-turn-start-two",
+        },
+    )
+    first_complete = client.post(
+        f"/api/v1/sessions/{first_session['id']}/events",
+        json={
+            "type": "turn.completed",
+            "source": "terminal_agent",
+            "trace_id": "test-running-turn-complete-one",
+            "turn_id": first_turn["id"],
+            "idempotency_key": "running-turn-complete-one",
+        },
+    )
+    second_start = client.post(
+        f"/api/v1/sessions/{second_session['id']}/events",
+        json={
+            "type": "turn.started",
+            "source": "terminal_agent",
+            "trace_id": "test-running-turn-start-two",
+            "turn_id": second_turn["id"],
+            "idempotency_key": "running-turn-start-two",
+        },
+    )
+
+    assert first_start.status_code == 200
+    assert duplicate_start.status_code == 200
+    assert duplicate_start.json()["id"] == first_start.json()["id"]
+    assert same_session_blocked.status_code == 409
+    same_session_payload = same_session_blocked.json()
+    assert same_session_payload["error_code"] == "RESOURCE_CONFLICT"
+    assert same_session_payload["details"] == {
+        "session_id": first_session["id"],
+        "active_turn_id": first_turn["id"],
+    }
+    assert blocked_start.status_code == 409
+    blocked_payload = blocked_start.json()
+    assert blocked_payload["error_code"] == "QUOTA_EXCEEDED"
+    assert blocked_payload["details"] == {
+        "project_id": project["id"],
+        "running_turns": 1,
+        "max_running_turns": 1,
+    }
+    assert first_complete.status_code == 200
+    assert second_start.status_code == 200
+    assert control.repository.turns[first_turn["id"]].status == TurnStatus.COMPLETED
+    assert control.repository.turns[second_turn["id"]].status == TurnStatus.RUNNING
+    assert control.repository.sessions[first_session["id"]].active_turn_id is None
+    assert control.repository.sessions[second_session["id"]].active_turn_id == second_turn["id"]
 
 
 def test_rendered_events_api_returns_documents_and_text_messages(tmp_path):

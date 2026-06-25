@@ -118,6 +118,7 @@ class CreateProjectRequest(BaseModel):
     description: str | None = None
     default_agent: AgentType = AgentType.CLAUDE
     max_active_sessions: int = Field(default=10, ge=0)
+    max_running_turns: int = Field(default=4, ge=0)
     max_queued_turns: int = Field(default=100, ge=0)
     trace_id: str = "api"
 
@@ -585,6 +586,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             description=payload.description,
             default_agent=payload.default_agent,
             max_active_sessions=payload.max_active_sessions,
+            max_running_turns=payload.max_running_turns,
             max_queued_turns=payload.max_queued_turns,
             trace_id=payload.trace_id,
         )
@@ -1109,13 +1111,11 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         payload: IngestSessionEventRequest,
         control: ControlPlane = Depends(get_control),
     ):
-        session = control.repository.get_session(session_id)
-        event = control.emit_event(
+        event = control.ingest_session_event(
+            session_id=session_id,
             event_type=payload.type,
             source=payload.source,
             trace_id=payload.trace_id,
-            project_id=session.project_id,
-            session_id=session_id,
             turn_id=payload.turn_id,
             interaction_id=payload.interaction_id,
             payload=payload.payload,

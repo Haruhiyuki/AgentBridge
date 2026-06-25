@@ -263,6 +263,8 @@ class SQLAlchemyRepository(InMemoryRepository):
         "create_session",
         "close_session",
         "enqueue_turn",
+        "start_turn",
+        "finish_turn",
         "acquire_lease",
         "release_lease",
         "create_interaction",

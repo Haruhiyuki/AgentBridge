@@ -243,6 +243,7 @@ class Project(BaseModel):
     status: ProjectStatus = ProjectStatus.ACTIVE
     default_agent: AgentType = AgentType.CLAUDE
     max_active_sessions: int = Field(default=10, ge=0)
+    max_running_turns: int = Field(default=4, ge=0)
     max_queued_turns: int = Field(default=100, ge=0)
     policy_id: str | None = None
     created_by: str

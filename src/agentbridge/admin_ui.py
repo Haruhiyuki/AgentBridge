@@ -1305,6 +1305,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
               <th>Status</th>
               <th>Agent</th>
               <th>Max Sessions</th>
+              <th>Max Running</th>
               <th>Max Queue</th>
             </tr>
           </thead>
@@ -1335,6 +1336,10 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
         <label>
           Max Active Sessions
           <input id="project-max-active-sessions" type="number" min="0" step="1" value="10">
+        </label>
+        <label>
+          Max Running Turns
+          <input id="project-max-running-turns" type="number" min="0" step="1" value="4">
         </label>
         <label>
           Max Queued Turns
@@ -1488,6 +1493,11 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       return Number.isFinite(parsed) ? Math.max(0, parsed) : 10;
     }
 
+    function readProjectMaxRunningTurns() {
+      const parsed = Number.parseInt($("project-max-running-turns").value || "4", 10);
+      return Number.isFinite(parsed) ? Math.max(0, parsed) : 4;
+    }
+
     function readProjectMaxQueuedTurns() {
       const parsed = Number.parseInt($("project-max-queued-turns").value || "100", 10);
       return Number.isFinite(parsed) ? Math.max(0, parsed) : 100;
@@ -1531,6 +1541,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
           project.status,
           project.default_agent,
           project.max_active_sessions,
+          project.max_running_turns,
           project.max_queued_turns,
         ]) {
           appendCell(tr, value);
@@ -1677,6 +1688,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
           description: optional($("project-description").value),
           default_agent: $("project-agent").value,
           max_active_sessions: readProjectMaxActiveSessions(),
+          max_running_turns: readProjectMaxRunningTurns(),
           max_queued_turns: readProjectMaxQueuedTurns(),
           trace_id: "admin-ui-project-create",
         }),

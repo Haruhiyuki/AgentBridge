@@ -260,6 +260,9 @@ class CommandService:
                     or options.get("max-active")
                     or options.get("max-sessions")
                 ),
+                "max_running_turns": parse_optional_int(
+                    options.get("max-running-turns") or options.get("max-running")
+                ),
                 "max_queued_turns": parse_optional_int(
                     options.get("max-queued-turns")
                     or options.get("max-queued")
@@ -849,6 +852,9 @@ class CommandService:
             max_active_sessions=int(args["max_active_sessions"])
             if args.get("max_active_sessions") is not None
             else 10,
+            max_running_turns=int(args["max_running_turns"])
+            if args.get("max_running_turns") is not None
+            else 4,
             max_queued_turns=int(args["max_queued_turns"])
             if args.get("max_queued_turns") is not None
             else 100,
