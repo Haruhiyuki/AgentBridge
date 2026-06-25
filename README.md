@@ -272,6 +272,10 @@ metadata where available, and removal timestamps for operational audit. Response
 include `certificate_health`, which reports `ok`, `expiring`, `expired`, `unknown`,
 `none`, or `revoked` based on active certificate records; known expired managed
 certificates are rejected during client-certificate fingerprint authentication.
+Operators can run
+`POST /api/v1/device-identities/certificates/scan` to produce an audited certificate
+health scan and a `device_identity.certificates_scanned` semantic event for expiring,
+expired, or metadata-incomplete managed certificates.
 Set `AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE` and
 `AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE` to enable CSR-based certificate issuance through
 `POST /api/v1/device-identities/{device_id}/certificates/issue`. The CSR Common Name

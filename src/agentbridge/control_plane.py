@@ -9,6 +9,10 @@ from agentbridge.device_auth import (
     hash_device_key,
     normalize_certificate_fingerprint,
 )
+from agentbridge.device_certificate_health import (
+    datetime_payload,
+    device_identity_certificate_health,
+)
 from agentbridge.device_certificates import (
     DeviceCertificateIssuer,
     IssuedDeviceCertificate,
@@ -2128,6 +2132,113 @@ class ControlPlane:
             },
         )
         return identity, issued_certificate
+
+    def scan_device_identity_certificates(
+        self,
+        *,
+        actor: Actor,
+        warning_days: int,
+        include_revoked: bool = False,
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> dict[str, object]:
+        if warning_days <= 0:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "证书到期预警窗口必须为正整数天。",
+                next_step="请提供大于 0 的 warning_days。",
+            )
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.DEVICE_MANAGE,
+            resource_type="device_identity",
+            attributes={
+                "operation": "scan_device_identity_certificates",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
+        scanned_at = utc_now()
+        status_counts = {
+            "ok": 0,
+            "expiring": 0,
+            "expired": 0,
+            "unknown": 0,
+            "none": 0,
+            "revoked": 0,
+        }
+        devices: list[dict[str, object]] = []
+        action_required_devices: list[dict[str, object]] = []
+        for identity in self.repository.list_device_identities(
+            include_revoked=include_revoked
+        ):
+            health = device_identity_certificate_health(
+                identity,
+                now=scanned_at,
+                warning_days=warning_days,
+            )
+            health_status = str(health["status"])
+            status_counts[health_status] = status_counts.get(health_status, 0) + 1
+            device_item = {
+                "device_identity_id": identity.id,
+                "device_id": identity.device_id,
+                "display_name": identity.display_name,
+                "identity_status": identity.status.value,
+                "certificate_health": health,
+            }
+            devices.append(device_item)
+            if health_status in {"expired", "expiring", "unknown"}:
+                action_required_devices.append(
+                    {
+                        "device_identity_id": identity.id,
+                        "device_id": identity.device_id,
+                        "display_name": identity.display_name,
+                        "identity_status": identity.status.value,
+                        "certificate_health_status": health_status,
+                        "expired_count": health["expired_count"],
+                        "expiring_count": health["expiring_count"],
+                        "untracked_certificate_count": health[
+                            "untracked_certificate_count"
+                        ],
+                        "missing_validity_count": health["missing_validity_count"],
+                        "next_expires_at": health["next_expires_at"],
+                    }
+                )
+        result = {
+            "scanned_at": datetime_payload(scanned_at),
+            "warning_days": warning_days,
+            "include_revoked": include_revoked,
+            "total_device_count": len(devices),
+            "status_counts": status_counts,
+            "action_required_count": len(action_required_devices),
+            "action_required_devices": action_required_devices,
+            "devices": devices,
+        }
+        event_summary = {
+            "scanned_at": result["scanned_at"],
+            "warning_days": warning_days,
+            "include_revoked": include_revoked,
+            "total_device_count": len(devices),
+            "status_counts": status_counts,
+            "action_required_count": len(action_required_devices),
+            "action_required_devices": action_required_devices,
+            "scanned_by": effective_actor.id,
+        }
+        self.audit(
+            action="device_identity.certificates_scanned",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            details=event_summary,
+        )
+        self.emit_event(
+            event_type="device_identity.certificates_scanned",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            payload=event_summary,
+        )
+        return result
 
     def _certificate_records_for_fingerprint_update(
         self,

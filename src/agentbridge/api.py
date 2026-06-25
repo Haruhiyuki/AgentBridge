@@ -8,7 +8,7 @@ import io
 import json
 import os
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic
 
@@ -40,6 +40,10 @@ from agentbridge.bot_gateway import (
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
 from agentbridge.device_auth import normalize_certificate_fingerprint, verify_device_key
+from agentbridge.device_certificate_health import (
+    device_identity_certificate_health,
+    managed_device_certificate_active,
+)
 from agentbridge.device_certificates import DeviceCertificateIssuer
 from agentbridge.domain import (
     AccessPolicyEffect,
@@ -49,7 +53,6 @@ from agentbridge.domain import (
     AuditEvent,
     BotDeliveryResultAction,
     BotDeliveryStatus,
-    DeviceCertificateRecord,
     DeviceIdentity,
     DeviceIdentityScope,
     DeviceIdentityStatus,
@@ -438,6 +441,15 @@ class IssueDeviceCertificateRequest(BaseModel):
     csr_pem: str
     validity_days: int | None = Field(default=None, ge=1)
     trace_id: str = "device-certificate-issue-api"
+
+
+class ScanDeviceCertificatesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    warning_days: int | None = Field(default=None, ge=1)
+    include_revoked: bool = False
+    trace_id: str = "device-certificate-scan-api"
 
 
 class GroupRoleChangeRequest(BaseModel):
@@ -942,6 +954,22 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         if device_key is not None:
             response["device_key"] = device_key
         return response
+
+    @app.post("/api/v1/device-identities/certificates/scan")
+    def scan_device_certificates(
+        payload: ScanDeviceCertificatesRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        return control.scan_device_identity_certificates(
+            actor=payload.actor.to_actor(),
+            warning_days=(
+                payload.warning_days
+                if payload.warning_days is not None
+                else device_certificate_expiry_warning_days_from_env()
+            ),
+            include_revoked=payload.include_revoked,
+            trace_id=payload.trace_id,
+        )
 
     @app.post("/api/v1/device-identities/{device_id}/revoke")
     def revoke_device_identity(
@@ -2056,82 +2084,15 @@ def device_identity_public_payload(identity: DeviceIdentity) -> dict[str, object
         "certificate_records": [
             record.model_dump(mode="json") for record in identity.certificate_records
         ],
-        "certificate_health": device_identity_certificate_health(identity),
+        "certificate_health": device_identity_certificate_health(
+            identity,
+            warning_days=device_certificate_expiry_warning_days_from_env(),
+        ),
         "created_by": identity.created_by,
         "created_at": identity.created_at.isoformat(),
         "revoked_at": identity.revoked_at.isoformat() if identity.revoked_at else None,
         "last_used_at": (
             identity.last_used_at.isoformat() if identity.last_used_at else None
-        ),
-    }
-
-
-def device_identity_certificate_health(
-    identity: DeviceIdentity,
-    *,
-    now: datetime | None = None,
-    warning_days: int | None = None,
-) -> dict[str, object]:
-    current_time = _aware_utc(now or utc_now())
-    warning_window_days = (
-        max(1, warning_days)
-        if warning_days is not None
-        else device_certificate_expiry_warning_days_from_env()
-    )
-    warning_cutoff = current_time + timedelta(days=warning_window_days)
-    active_fingerprints = {
-        fingerprint
-        for value in identity.certificate_fingerprints
-        if (fingerprint := normalize_certificate_fingerprint(value))
-    }
-    active_records = _active_certificate_records_by_fingerprint(identity)
-    expiries = [
-        _aware_utc(record.not_after)
-        for record in active_records.values()
-        if record.not_after is not None
-    ]
-    expired_fingerprints = sorted(
-        fingerprint
-        for fingerprint, record in active_records.items()
-        if record.not_after is not None
-        and _aware_utc(record.not_after) <= current_time
-    )
-    expiring_fingerprints = sorted(
-        fingerprint
-        for fingerprint, record in active_records.items()
-        if record.not_after is not None
-        and current_time < _aware_utc(record.not_after) <= warning_cutoff
-    )
-    untracked_count = len(active_fingerprints.difference(active_records))
-    missing_validity_count = sum(
-        1 for record in active_records.values() if record.not_after is None
-    )
-    if identity.status == DeviceIdentityStatus.REVOKED:
-        status = "revoked"
-    elif not active_fingerprints:
-        status = "none"
-    elif expired_fingerprints:
-        status = "expired"
-    elif expiring_fingerprints:
-        status = "expiring"
-    elif untracked_count or missing_validity_count:
-        status = "unknown"
-    else:
-        status = "ok"
-    next_expires_at = min(expiries) if expiries else None
-    return {
-        "status": status,
-        "warning_days": warning_window_days,
-        "active_certificate_count": len(active_fingerprints),
-        "tracked_certificate_count": len(active_records),
-        "untracked_certificate_count": untracked_count,
-        "missing_validity_count": missing_validity_count,
-        "expired_count": len(expired_fingerprints),
-        "expiring_count": len(expiring_fingerprints),
-        "expired_fingerprints": expired_fingerprints,
-        "expiring_fingerprints": expiring_fingerprints,
-        "next_expires_at": (
-            _datetime_payload(next_expires_at) if next_expires_at else None
         ),
     }
 
@@ -2144,51 +2105,6 @@ def device_certificate_expiry_warning_days_from_env() -> int:
             default=14,
         ),
     )
-
-
-def _active_certificate_records_by_fingerprint(
-    identity: DeviceIdentity,
-) -> dict[str, DeviceCertificateRecord]:
-    active_fingerprints = {
-        fingerprint
-        for value in identity.certificate_fingerprints
-        if (fingerprint := normalize_certificate_fingerprint(value))
-    }
-    records: dict[str, DeviceCertificateRecord] = {}
-    for record in identity.certificate_records:
-        if record.fingerprint in active_fingerprints and record.removed_at is None:
-            records[record.fingerprint] = record
-    return records
-
-
-def _managed_device_certificate_active(
-    identity: DeviceIdentity,
-    presented_fingerprint: str,
-    *,
-    now: datetime | None = None,
-) -> bool:
-    fingerprint = normalize_certificate_fingerprint(presented_fingerprint)
-    active_fingerprints = {
-        normalized
-        for value in identity.certificate_fingerprints
-        if (normalized := normalize_certificate_fingerprint(value))
-    }
-    if not fingerprint or fingerprint not in active_fingerprints:
-        return False
-    record = _active_certificate_records_by_fingerprint(identity).get(fingerprint)
-    if record is None or record.not_after is None:
-        return True
-    return _aware_utc(record.not_after) > _aware_utc(now or utc_now())
-
-
-def _aware_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
-def _datetime_payload(value: datetime) -> str:
-    return _aware_utc(value).isoformat().replace("+00:00", "Z")
 
 
 async def stream_session_events(
@@ -3450,7 +3366,7 @@ def matching_managed_device_certificate_fingerprint(
             continue
         if not device_identity_resource_allowed(identity, resource_ids):
             continue
-        if _managed_device_certificate_active(identity, presented_fingerprint):
+        if managed_device_certificate_active(identity, presented_fingerprint):
             control.repository.mark_device_identity_used(identity.device_id)
             return True
     return False

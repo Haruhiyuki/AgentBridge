@@ -3747,6 +3747,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
         <button id="save-device" class="primary" type="button">Save / Rotate Key</button>
         <button id="issue-certificate" type="button">Issue Certificate</button>
         <button id="rotate-certificates" type="button">Rotate Certificates</button>
+        <button id="scan-certificates" type="button">Scan Certificates</button>
         <button id="revoke-device" class="danger" type="button">Revoke</button>
       </div>
       <div class="field-grid">
@@ -4085,6 +4086,23 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       setStatus(`Rotated certificates for ${rotated.device_id}`);
     }
 
+    async function scanCertificates() {
+      const result = await requestJson("/api/v1/device-identities/certificates/scan", {
+        method: "POST",
+        body: JSON.stringify({
+          actor: actor(),
+          include_revoked: $("include-revoked").checked,
+          trace_id: "admin-ui-device-cert-scan",
+        }),
+      });
+      $("generated-key").textContent = JSON.stringify(result, null, 2);
+      await loadDevices();
+      setStatus(
+        `Scanned ${result.total_device_count} devices; ` +
+          `${result.action_required_count} need attention`,
+      );
+    }
+
     async function revokeDevice() {
       const deviceId = $("device-id").value.trim();
       if (!deviceId) throw new Error("Device ID is required");
@@ -4120,6 +4138,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       "click",
       () => run(rotateDeviceCertificates),
     );
+    $("scan-certificates").addEventListener("click", () => run(scanCertificates));
     $("revoke-device").addEventListener("click", () => run(revokeDevice));
     $("allowed-scopes").value = defaultScopes;
     loadDevices().catch((error) => {

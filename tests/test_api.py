@@ -961,19 +961,33 @@ def test_managed_device_identity_rejects_expired_tracked_certificate_fingerprint
         "/api/v1/commands",
         headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
     )
+    device_headers = {
+        "x-agentbridge-device-id": "expired-certificate-device",
+        "x-agentbridge-device-key": device_key,
+    }
     key_response = client.get(
         "/api/v1/commands",
-        headers={
-            "x-agentbridge-device-id": "expired-certificate-device",
-            "x-agentbridge-device-key": device_key,
-        },
+        headers=device_headers,
     )
     identity_response = client.get(
         "/api/v1/device-identities",
-        headers={
-            "x-agentbridge-device-id": "expired-certificate-device",
-            "x-agentbridge-device-key": device_key,
+        headers=device_headers,
+    )
+    scan_response = client.post(
+        "/api/v1/device-identities/certificates/scan",
+        json={
+            "actor": {"id": "security-admin", "roles": ["admin"]},
+            "warning_days": 7,
+            "trace_id": "managed-device-certificate-scan",
         },
+        headers=device_headers,
+    )
+    audit_events = control.repository.list_audit_events(
+        action="device_identity.certificates_scanned"
+    )
+    semantic_events = control.repository.list_semantic_events(
+        event_type="device_identity.certificates_scanned",
+        trace_id="managed-device-certificate-scan",
     )
 
     assert certificate_response.status_code == 403
@@ -984,6 +998,22 @@ def test_managed_device_identity_rejects_expired_tracked_certificate_fingerprint
     assert health["expired_count"] == 1
     assert health["expired_fingerprints"] == ["aabbcc"]
     assert health["next_expires_at"] is not None
+    assert scan_response.status_code == 200
+    scan = scan_response.json()
+    assert scan["warning_days"] == 7
+    assert scan["total_device_count"] == 1
+    assert scan["status_counts"]["expired"] == 1
+    assert scan["action_required_count"] == 1
+    assert scan["action_required_devices"][0]["device_id"] == (
+        "expired-certificate-device"
+    )
+    assert scan["action_required_devices"][0]["certificate_health_status"] == "expired"
+    assert scan["devices"][0]["certificate_health"]["expired_fingerprints"] == ["aabbcc"]
+    assert len(audit_events) == 1
+    assert audit_events[0].details["action_required_count"] == 1
+    assert audit_events[0].details["status_counts"]["expired"] == 1
+    assert len(semantic_events) == 1
+    assert semantic_events[0].payload["action_required_count"] == 1
 
 
 def test_managed_device_identity_rejects_certificate_issue_with_mismatched_ca_key(
@@ -2373,6 +2403,9 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "certificate-fingerprints-remove" in html
     assert "certificate-csr" in html
     assert "certificate-validity-days" in html
+    assert "scan-certificates" in html
+    assert "async function scanCertificates()" in html
+    assert "/api/v1/device-identities/certificates/scan" in html
     assert "Cert Health" in html
     assert "formatCertificateHealth" in html
     assert "certificate_health" in html
