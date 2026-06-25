@@ -192,6 +192,7 @@ class DeviceIdentityScope(StrEnum):
     HTTP_API = "http_api"
     DEVICE_MANAGE = "device_manage"
     POLICY_MANAGE = "policy_manage"
+    GROUP_ROLE_MANAGE = "group_role_manage"
     SESSION_EVENTS_WS = "session_events_ws"
     RENDERED_EVENTS_WS = "rendered_events_ws"
     TERMINAL_WS = "terminal_ws"

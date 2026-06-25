@@ -501,6 +501,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "allowed-scopes" in html
     assert "device_manage" in html
     assert "policy_manage" in html
+    assert "group_role_manage" in html
     assert "certificate-fingerprints" in html
     assert "generated-key" in html
 
@@ -823,6 +824,117 @@ def test_group_role_api_grants_command_permissions(tmp_path):
         },
     )
     assert denied_turn.status_code == 403
+
+
+def test_managed_device_identity_requires_group_role_manage_scope_for_role_apis():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    context = client.post(
+        "/api/v1/chat-contexts",
+        json={
+            "bot_instance_id": "bot-test",
+            "platform": "onebot.v11",
+            "chat_space_id": "group-role-scope",
+        },
+    ).json()
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "group-role-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    regular_http_response = client.get("/api/v1/projects", headers=key_headers)
+    list_response = client.get(
+        f"/api/v1/chat-contexts/{context['id']}/roles",
+        headers=key_headers,
+    )
+    grant_response = client.post(
+        f"/api/v1/chat-contexts/{context['id']}/roles/grant",
+        json={
+            "actor": maintainer,
+            "target_actor_id": "usr_member",
+            "roles": ["operator"],
+            "trace_id": "group-role-device-grant",
+        },
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert create_response.status_code == 200
+    assert regular_http_response.status_code == 200
+    assert list_response.status_code == 403
+    assert grant_response.status_code == 403
+
+
+def test_managed_device_identity_group_role_manage_scope_allows_role_apis():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    context = client.post(
+        "/api/v1/chat-contexts",
+        json={
+            "bot_instance_id": "bot-test",
+            "platform": "onebot.v11",
+            "chat_space_id": "group-role-manager-scope",
+        },
+    ).json()
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "role-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "group_role_manage"],
+            "trace_id": "group-role-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "role-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    grant_response = client.post(
+        f"/api/v1/chat-contexts/{context['id']}/roles/grant",
+        json={
+            "actor": maintainer,
+            "target_actor_id": "usr_member",
+            "roles": ["operator"],
+            "trace_id": "group-role-manager-grant",
+        },
+        headers=headers,
+    )
+    list_response = client.get(
+        f"/api/v1/chat-contexts/{context['id']}/roles",
+        headers=headers,
+    )
+    revoke_response = client.post(
+        f"/api/v1/chat-contexts/{context['id']}/roles/revoke",
+        json={
+            "actor": maintainer,
+            "target_actor_id": "usr_member",
+            "roles": ["operator"],
+            "trace_id": "group-role-manager-revoke",
+        },
+        headers=headers,
+    )
+
+    assert create_response.status_code == 200
+    assert grant_response.status_code == 200
+    assert grant_response.json()["roles"] == ["operator"]
+    assert list_response.status_code == 200
+    assert [binding["actor_id"] for binding in list_response.json()] == ["usr_member"]
+    assert revoke_response.status_code == 200
+    assert revoke_response.json() is None
 
 
 def test_interaction_api_creates_answers_and_votes(tmp_path):

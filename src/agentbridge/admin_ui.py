@@ -3437,6 +3437,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       "http_api",
       "device_manage",
       "policy_manage",
+      "group_role_manage",
       "session_events_ws",
       "rendered_events_ws",
       "terminal_ws",

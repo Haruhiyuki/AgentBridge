@@ -2182,10 +2182,17 @@ def http_api_request_authorized(
 
 def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
     path = request.url.path.rstrip("/")
+    path_segments = path.split("/")
     if path == "/api/v1/access-policy" or path.startswith("/api/v1/access-policy/"):
         return DeviceIdentityScope.POLICY_MANAGE
     if path.endswith("/approval-policy"):
         return DeviceIdentityScope.POLICY_MANAGE
+    if (
+        len(path_segments) >= 6
+        and path_segments[:4] == ["", "api", "v1", "chat-contexts"]
+        and path_segments[5] == "roles"
+    ):
+        return DeviceIdentityScope.GROUP_ROLE_MANAGE
     if path == "/api/v1/device-identities" or path.startswith(
         "/api/v1/device-identities/"
     ):
