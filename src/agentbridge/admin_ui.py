@@ -3436,6 +3436,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
     const defaultScopes = [
       "http_api",
       "audit_read",
+      "bot_gateway_read",
       "bot_gateway_manage",
       "onebot_event_ingest",
       "command_parse",

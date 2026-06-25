@@ -204,6 +204,7 @@ class DeviceIdentityScope(StrEnum):
     INTERACTION_MANAGE = "interaction_manage"
     TERMINAL_READ = "terminal_read"
     TERMINAL_CONTROL = "terminal_control"
+    BOT_GATEWAY_READ = "bot_gateway_read"
     BOT_GATEWAY_MANAGE = "bot_gateway_manage"
     ONEBOT_EVENT_INGEST = "onebot_event_ingest"
     SESSION_EVENTS_WS = "session_events_ws"

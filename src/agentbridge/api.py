@@ -2186,6 +2186,8 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
     method = request.method.upper()
     if method == "POST" and path.startswith("/api/v1/bot-gateway/"):
         return DeviceIdentityScope.BOT_GATEWAY_MANAGE
+    if method == "GET" and path.startswith("/api/v1/bot-gateway/"):
+        return DeviceIdentityScope.BOT_GATEWAY_READ
     if method == "POST" and path == "/api/v1/onebot/events":
         return DeviceIdentityScope.ONEBOT_EVENT_INGEST
     if method == "POST" and path == "/api/v1/commands/parse":

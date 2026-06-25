@@ -1335,6 +1335,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "auth-device-key" in html
     assert "allowed-scopes" in html
     assert "audit_read" in html
+    assert "bot_gateway_read" in html
     assert "bot_gateway_manage" in html
     assert "onebot_event_ingest" in html
     assert "command_parse" in html
@@ -1751,9 +1752,95 @@ def test_managed_device_identity_requires_bot_gateway_manage_scope_for_bot_gatew
     )
 
     assert create_response.status_code == 200
-    assert status_response.status_code == 200
+    assert status_response.status_code == 403
     assert retry_response.status_code == 403
     assert delivery_result_response.status_code == 403
+
+
+def test_managed_device_identity_requires_bot_gateway_read_scope_for_bot_gateway_gets():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-bot-gateway-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "bot-gateway-read-scope-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-bot-gateway-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    regular_http_response = client.get("/api/v1/projects", headers=key_headers)
+    deliveries_response = client.get(
+        "/api/v1/bot-gateway/deliveries",
+        headers=key_headers,
+    )
+    rate_limits_response = client.get(
+        "/api/v1/bot-gateway/rate-limits",
+        headers=key_headers,
+    )
+    retry_worker_response = client.get(
+        "/api/v1/bot-gateway/retry-worker",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert create_response.status_code == 200
+    assert regular_http_response.status_code == 200
+    assert deliveries_response.status_code == 403
+    assert rate_limits_response.status_code == 403
+    assert retry_worker_response.status_code == 403
+
+
+def test_managed_device_identity_bot_gateway_read_scope_allows_bot_gateway_gets():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "bot-gateway-read-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "bot_gateway_read"],
+            "trace_id": "bot-gateway-read-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "bot-gateway-read-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    deliveries_response = client.get(
+        "/api/v1/bot-gateway/deliveries",
+        headers=headers,
+    )
+    rate_limits_response = client.get(
+        "/api/v1/bot-gateway/rate-limits",
+        headers=headers,
+    )
+    retry_worker_response = client.get(
+        "/api/v1/bot-gateway/retry-worker",
+        headers=headers,
+    )
+    run_once_response = client.post(
+        "/api/v1/bot-gateway/retry-worker/run-once",
+        json={},
+        headers=headers,
+    )
+
+    assert create_response.status_code == 200
+    assert deliveries_response.status_code == 200
+    assert deliveries_response.json() == []
+    assert rate_limits_response.status_code == 200
+    assert "policies" in rate_limits_response.json()
+    assert retry_worker_response.status_code == 200
+    assert retry_worker_response.json()["enabled"] is False
+    assert run_once_response.status_code == 403
 
 
 def test_managed_device_identity_bot_gateway_manage_scope_allows_bot_gateway_posts():
