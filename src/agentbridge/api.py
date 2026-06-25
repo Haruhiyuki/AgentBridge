@@ -8,6 +8,8 @@ import hmac
 import io
 import json
 import os
+import shlex
+import subprocess
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -2163,10 +2165,14 @@ class AuditArchiveSigner:
     key_id: str
     hmac_key: str | None = None
     private_key: Any | None = None
+    external_command: tuple[str, ...] | None = None
+    external_timeout_seconds: float = 10.0
     public_key_sha256: str | None = None
 
     def sign(self, canonical_archive: str) -> dict[str, object]:
         data = canonical_archive.encode("utf-8")
+        if self.external_command is not None:
+            return self._sign_with_external_command(data)
         if self.algorithm == "HMAC-SHA256":
             if self.hmac_key is None:
                 raise RuntimeError("hmac signer missing key")
@@ -2201,6 +2207,102 @@ class AuditArchiveSigner:
             payload["public_key_sha256"] = self.public_key_sha256
         return payload
 
+    def _sign_with_external_command(self, data: bytes) -> dict[str, object]:
+        if not self.external_command:
+            raise RuntimeError("external signer missing command")
+        archive_sha256 = hashlib.sha256(data).hexdigest()
+        env = os.environ.copy()
+        env["AGENTBRIDGE_AUDIT_ARCHIVE_SHA256"] = archive_sha256
+        env["AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_ALGORITHM"] = self.algorithm
+        env["AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID"] = self.key_id
+        try:
+            completed = subprocess.run(
+                self.external_command,
+                input=data,
+                capture_output=True,
+                env=env,
+                check=False,
+                timeout=self.external_timeout_seconds,
+            )
+        except OSError as exc:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "Audit archive external signing command could not be started.",
+                next_step=(
+                    "Check AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_COMMAND "
+                    "and executable permissions."
+                ),
+                status_code=503,
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "Audit archive external signing command timed out.",
+                next_step=(
+                    "Check signer health or increase "
+                    "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_COMMAND_TIMEOUT_SECONDS."
+                ),
+                status_code=503,
+            ) from exc
+        if completed.returncode != 0:
+            stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "Audit archive external signing command failed.",
+                next_step=stderr[:500] or "Check signer logs and KMS/HSM permissions.",
+                status_code=503,
+            )
+        try:
+            output = json.loads(completed.stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "Audit archive external signing command returned invalid JSON.",
+                next_step=(
+                    "Return a JSON object with signature fields "
+                    "`encoding` and `value`."
+                ),
+                status_code=503,
+            ) from exc
+        if not isinstance(output, dict):
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "Audit archive external signing command returned invalid JSON.",
+                next_step="Return a JSON object, not an array or scalar value.",
+                status_code=503,
+            )
+        encoding = str(output.get("encoding") or "base64")
+        value = output.get("value")
+        if encoding not in {"base64", "hex"} or not isinstance(value, str) or not value:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "Audit archive external signing command returned invalid signature.",
+                next_step=(
+                    "Return a non-empty `value` with `encoding` set to "
+                    "`base64` or `hex`."
+                ),
+                status_code=503,
+            )
+        payload: dict[str, object] = {"encoding": encoding, "value": value}
+        for key in (
+            "public_key_sha256",
+            "signing_certificate_sha256",
+            "kms_key_version",
+            "signature_id",
+        ):
+            optional_value = output.get(key)
+            if isinstance(optional_value, str) and optional_value.strip():
+                payload[key] = optional_value.strip()
+        metadata = output.get("metadata")
+        if isinstance(metadata, dict):
+            payload["metadata"] = {
+                str(key): value
+                for key, value in metadata.items()
+                if isinstance(key, str)
+                and isinstance(value, str | int | float | bool)
+            }
+        return payload
+
 
 def audit_archive_hmac_signing_key() -> tuple[str, str]:
     keys, configured = tokens_from_env("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY")
@@ -2208,7 +2310,8 @@ def audit_archive_hmac_signing_key() -> tuple[str, str]:
         key_id = os.environ.get("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID", "").strip()
         return keys[0], key_id or "default"
     next_step = (
-        "Set AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_FILE, "
+        "Set AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_COMMAND, "
+        "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_FILE, "
         "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY, or "
         "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_FILE."
     )
@@ -2223,6 +2326,9 @@ def audit_archive_hmac_signing_key() -> tuple[str, str]:
 
 
 def audit_archive_signer() -> AuditArchiveSigner:
+    external_signer = audit_archive_external_signer()
+    if external_signer is not None:
+        return external_signer
     asymmetric_signer = audit_archive_asymmetric_signer()
     if asymmetric_signer is not None:
         return asymmetric_signer
@@ -2232,6 +2338,73 @@ def audit_archive_signer() -> AuditArchiveSigner:
         key_id=key_id,
         hmac_key=signing_key,
     )
+
+
+def audit_archive_external_signer() -> AuditArchiveSigner | None:
+    command = os.environ.get("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_COMMAND", "").strip()
+    if not command:
+        return None
+    try:
+        command_parts = tuple(shlex.split(command))
+    except ValueError as exc:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "Audit archive external signing command is invalid.",
+            next_step=(
+                "Check shell-style quoting in "
+                "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_COMMAND."
+            ),
+            status_code=400,
+        ) from exc
+    if not command_parts:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "Audit archive external signing command is empty.",
+            next_step="Set AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_COMMAND to an executable.",
+            status_code=400,
+        )
+    algorithm = os.environ.get(
+        "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_COMMAND_ALGORITHM",
+        "",
+    ).strip()
+    key_id = os.environ.get("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID", "").strip()
+    return AuditArchiveSigner(
+        algorithm=algorithm or "EXTERNAL-SHA256",
+        key_id=key_id or "external",
+        external_command=command_parts,
+        external_timeout_seconds=audit_archive_external_signing_timeout_seconds(),
+    )
+
+
+def audit_archive_external_signing_timeout_seconds() -> float:
+    value = os.environ.get(
+        "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_COMMAND_TIMEOUT_SECONDS", ""
+    ).strip()
+    if not value:
+        return 10.0
+    try:
+        timeout = float(value)
+    except ValueError as exc:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "Audit archive external signing timeout is invalid.",
+            next_step=(
+                "Set AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_COMMAND_TIMEOUT_SECONDS "
+                "to a positive number."
+            ),
+            status_code=400,
+        ) from exc
+    if timeout <= 0:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "Audit archive external signing timeout is invalid.",
+            next_step=(
+                "Set AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_COMMAND_TIMEOUT_SECONDS "
+                "to a positive number."
+            ),
+            status_code=400,
+        )
+    return min(timeout, 120.0)
 
 
 def audit_archive_asymmetric_signer() -> AuditArchiveSigner | None:

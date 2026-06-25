@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import sys
 import threading
 from datetime import UTC, datetime, timedelta
 
@@ -3481,6 +3482,100 @@ def test_audit_archive_export_supports_asymmetric_private_key(monkeypatch, tmp_p
         canonical_archive.encode("utf-8")
     ).hexdigest()
     assert signature["public_key_sha256"] == hashlib.sha256(public_key_der).hexdigest()
+
+
+def test_audit_archive_export_supports_external_signing_command(monkeypatch, tmp_path):
+    signer_script = tmp_path / "audit_external_signer.py"
+    signer_script.write_text(
+        "\n".join(
+            [
+                "import base64",
+                "import hashlib",
+                "import json",
+                "import os",
+                "import sys",
+                "data = sys.stdin.buffer.read()",
+                "digest = hashlib.sha256(data).hexdigest()",
+                "if os.environ.get('AGENTBRIDGE_AUDIT_ARCHIVE_SHA256') != digest:",
+                "    raise SystemExit('digest mismatch')",
+                "signature = hashlib.sha256(b'external:' + data).digest()",
+                "json.dump({",
+                "    'encoding': 'base64',",
+                "    'value': base64.b64encode(signature).decode('ascii'),",
+                "    'public_key_sha256': 'external-public-key',",
+                "    'kms_key_version': 'v3',",
+                "    'signature_id': 'sig-001',",
+                "    'metadata': {",
+                "        'algorithm_env': os.environ.get(",
+                "            'AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_ALGORITHM'",
+                "        ),",
+                "        'key_id_env': os.environ.get(",
+                "            'AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID'",
+                "        ),",
+                "    },",
+                "}, sys.stdout)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(
+        "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_COMMAND",
+        f"{sys.executable} {signer_script}",
+    )
+    monkeypatch.setenv(
+        "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_COMMAND_ALGORITHM",
+        "AWS-KMS-RSASSA-PSS-SHA256",
+    )
+    monkeypatch.setenv("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID", "kms-key")
+    monkeypatch.setenv("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY", "hmac-fallback")
+    client = TestClient(create_app())
+    actor = {"id": "admin-ui", "roles": ["admin"]}
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": actor,
+            "name": "External Audit Backend",
+            "trace_id": "test-audit-external-project",
+        },
+    )
+
+    response = client.get(
+        "/api/v1/audit/export",
+        params={
+            "action": "project.created",
+            "project_id": project_response.json()["id"],
+            "format": "archive",
+        },
+    )
+
+    assert response.status_code == 200
+    archive_payload = response.json()
+    archive = archive_payload["archive"]
+    canonical_archive = json.dumps(
+        archive,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    expected_signature = base64.b64encode(
+        hashlib.sha256(b"external:" + canonical_archive.encode("utf-8")).digest()
+    ).decode("ascii")
+    signature = archive_payload["signature"]
+    assert archive["algorithm"] == "AWS-KMS-RSASSA-PSS-SHA256"
+    assert signature["algorithm"] == "AWS-KMS-RSASSA-PSS-SHA256"
+    assert signature["key_id"] == "kms-key"
+    assert signature["encoding"] == "base64"
+    assert signature["value"] == expected_signature
+    assert signature["archive_sha256"] == hashlib.sha256(
+        canonical_archive.encode("utf-8")
+    ).hexdigest()
+    assert signature["public_key_sha256"] == "external-public-key"
+    assert signature["kms_key_version"] == "v3"
+    assert signature["signature_id"] == "sig-001"
+    assert signature["metadata"] == {
+        "algorithm_env": "AWS-KMS-RSASSA-PSS-SHA256",
+        "key_id_env": "kms-key",
+    }
 
 
 def test_command_execute_api_creates_project_session_and_turn(tmp_path):

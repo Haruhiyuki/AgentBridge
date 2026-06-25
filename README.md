@@ -33,7 +33,7 @@ This repository currently contains the first executable backend slice:
 - Built-in Admin Web pages for system health, project/session operations with active Turn, queue, pending approval, and lease status, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
-Production PTY supervision, richer Bot renderers, KMS-backed signing/custody, and real Claude/Codex adapters are planned next milestones.
+Production PTY supervision, richer Bot renderers, provider-native key custody, and real Claude/Codex adapters are planned next milestones.
 
 ## Development
 
@@ -330,14 +330,16 @@ Audit records can be queried through `GET /api/v1/audit` with optional `actor_id
 `limit` filters. `q` performs a case-insensitive contains match over audit
 `details`. Results are bounded and returned newest first for operational review.
 The same filters can be exported through `GET /api/v1/audit/export?format=json`
-or `format=csv`. Set `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_FILE` to enable
-asymmetric `format=archive` signing with an Ed25519, RSA, or ECDSA PEM private key;
-`AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_PASSWORD(_FILE)` can unlock encrypted
-keys. If no private key is configured, `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY` or
-`AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_FILE` enables the existing HMAC-SHA256 archive
-signature path. Archive signatures include the signing `key_id` from
-`AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID` when configured, and asymmetric signatures
-also include `public_key_sha256` for offline verifier key selection.
+or `format=csv`. Set `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_COMMAND` to sign
+`format=archive` exports through an external KMS/HSM/Vault command that receives the
+canonical archive JSON on stdin and returns a JSON signature. If no external command is
+configured, `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_FILE` enables asymmetric
+Ed25519, RSA, or ECDSA PEM signing; `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY` or
+`AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_FILE` remains the HMAC-SHA256 fallback.
+`AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID` labels the signing key, and external or
+asymmetric signatures can include verifier key metadata such as `public_key_sha256`.
+See `docs/operations/AUDIT_ARCHIVE_SIGNING.md` for signer precedence, external signer
+I/O, and verification guidance.
 
 Semantic events can be searched across streams through `GET /api/v1/events` with
 optional `project_id`, `session_id`, `turn_id`, `interaction_id`, `event_type`,
