@@ -158,9 +158,14 @@ Semantic events can be mapped to platform-neutral render documents and plain-tex
 
 ```bash
 curl http://127.0.0.1:8000/api/v1/sessions/<session-id>/rendered-events
+curl 'http://127.0.0.1:8000/api/v1/events/rendered?event_type=device_identity.certificates_scanned'
 ```
 
-The current renderer targets reliable text fallback for OneBot-style platforms. Rich buttons/cards and platform-specific delivery state are planned for the Bot Gateway layer.
+The cross-stream rendered event API accepts the same operational filters as
+`GET /api/v1/events`, so operator notifications such as certificate health scans can
+be rendered without a session-specific stream. The current renderer targets reliable
+text fallback for OneBot-style platforms. Rich buttons/cards and platform-specific
+delivery state are planned for the Bot Gateway layer.
 
 ## Event Streaming
 
@@ -278,7 +283,8 @@ health scan and a `device_identity.certificates_scanned` semantic event for expi
 expired, or metadata-incomplete managed certificates. Set
 `AGENTBRIDGE_DEVICE_CERT_SCAN_WORKER_ENABLED=true` to run the same scan in the
 background at `AGENTBRIDGE_DEVICE_CERT_SCAN_INTERVAL_SECONDS` intervals; worker status
-is exposed through `/api/v1/device-identities/certificates/scan-worker`.
+is exposed through `/api/v1/device-identities/certificates/scan-worker`. Scan events
+render as operator-readable summaries through `GET /api/v1/events/rendered`.
 Set `AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE` and
 `AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE` to enable CSR-based certificate issuance through
 `POST /api/v1/device-identities/{device_id}/certificates/issue`. The CSR Common Name

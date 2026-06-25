@@ -281,6 +281,31 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 ),
             )
         )
+    elif event.type == "device_identity.certificates_scanned":
+        visibility = RenderVisibility.OPERATORS
+        action_required_count = int(payload.get("action_required_count") or 0)
+        status_counts = payload.get("status_counts") or {}
+        action_required_devices = payload.get("action_required_devices") or []
+        block_factory = warning_block if action_required_count else text_block
+        blocks.append(
+            block_factory(
+                "设备证书扫描",
+                (
+                    f"扫描设备数：{payload.get('total_device_count', 0)}\n"
+                    f"需要处理：{action_required_count}\n"
+                    f"状态汇总：{format_status_counts(status_counts)}\n"
+                    f"预警窗口：{payload.get('warning_days')} 天\n"
+                    f"扫描时间：{payload.get('scanned_at')}"
+                ),
+            )
+        )
+        if action_required_devices:
+            blocks.append(
+                text_block(
+                    "需要处理的设备",
+                    format_certificate_scan_devices(action_required_devices),
+                )
+            )
     else:
         blocks.append(text_block("事件", event.type))
         if payload:
@@ -428,3 +453,38 @@ def stable_jsonish(value: dict[str, Any]) -> str:
         lines.append(f"  {key!r}: {value[key]!r},")
     lines.append("}")
     return "\n".join(lines)
+
+
+def format_status_counts(value: Any) -> str:
+    if not isinstance(value, dict) or not value:
+        return "-"
+    return ", ".join(
+        f"{key}={value[key]}" for key in sorted(value) if value[key]
+    ) or "无异常"
+
+
+def format_certificate_scan_devices(value: Any) -> str:
+    if not isinstance(value, list):
+        return "-"
+    lines: list[str] = []
+    valid_items = [item for item in value if isinstance(item, dict)]
+    for item in valid_items[:8]:
+        pieces = [
+            str(item.get("device_id") or "-"),
+            str(item.get("certificate_health_status") or "unknown"),
+        ]
+        if item.get("expired_count"):
+            pieces.append(f"expired={item['expired_count']}")
+        if item.get("expiring_count"):
+            pieces.append(f"expiring={item['expiring_count']}")
+        if item.get("untracked_certificate_count"):
+            pieces.append(f"untracked={item['untracked_certificate_count']}")
+        if item.get("missing_validity_count"):
+            pieces.append(f"missing_validity={item['missing_validity_count']}")
+        if item.get("next_expires_at"):
+            pieces.append(f"next={item['next_expires_at']}")
+        lines.append(" · ".join(pieces))
+    remaining = len(valid_items) - len(lines)
+    if remaining > 0:
+        lines.append(f"... {remaining} more")
+    return "\n".join(lines) if lines else "-"

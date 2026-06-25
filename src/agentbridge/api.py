@@ -63,6 +63,7 @@ from agentbridge.domain import (
     LeaseOwnerType,
     PolicyScope,
     RiskLevel,
+    SemanticEvent,
     SemanticEventSource,
     Visibility,
     WorkspaceType,
@@ -1305,6 +1306,40 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         return [event.model_dump(mode="json") for event in events]
 
+    @app.get("/api/v1/events/rendered")
+    def search_rendered_events(
+        control: ControlPlane = Depends(get_control),
+        project_id: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        interaction_id: str | None = None,
+        event_type: str | None = None,
+        source: SemanticEventSource | None = None,
+        trace_id: str | None = None,
+        q: str | None = None,
+        limit: int = 100,
+    ):
+        if session_id is not None:
+            control.repository.get_session(session_id)
+        elif project_id is not None:
+            control.repository.get_project(project_id)
+        events = control.repository.list_semantic_events(
+            project_id=project_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            interaction_id=interaction_id,
+            event_type=event_type,
+            source=source,
+            trace_id=trace_id,
+            payload_query=q,
+            limit=limit,
+        )
+        renderer = OneBotV11TextRenderer()
+        return [
+            rendered_event_payload(event=event, renderer=renderer)
+            for event in events
+        ]
+
     @app.get("/api/v1/sessions/{session_id}/rendered-events")
     def list_rendered_events(
         session_id: str,
@@ -1321,15 +1356,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         renderer = OneBotV11TextRenderer()
         rendered = []
         for event in events:
-            document = document_from_event(event)
-            rendered.append(
-                {
-                    "event_id": event.id,
-                    "seq": event.seq,
-                    "document": document.model_dump(mode="json"),
-                    "text_messages": renderer.render(document),
-                }
-            )
+            rendered.append(rendered_event_payload(event=event, renderer=renderer))
         return rendered
 
     @app.websocket("/api/v1/sessions/{session_id}/events/ws")
@@ -2110,6 +2137,20 @@ def ensure_chat_context_id(payload: CommandRequest, control: ControlPlane) -> st
         return payload.chat_context_id
     context = control.get_or_create_chat_context(**payload.chat.model_dump())
     return context.id
+
+
+def rendered_event_payload(
+    *,
+    event: SemanticEvent,
+    renderer: OneBotV11TextRenderer,
+) -> dict[str, object]:
+    document = document_from_event(event)
+    return {
+        "event_id": event.id,
+        "seq": event.seq,
+        "document": document.model_dump(mode="json"),
+        "text_messages": renderer.render(document),
+    }
 
 
 def device_identity_public_payload(identity: DeviceIdentity) -> dict[str, object]:
@@ -2939,6 +2980,7 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         "/api/v1/audit",
         "/api/v1/audit/export",
         "/api/v1/events",
+        "/api/v1/events/rendered",
     }:
         return DeviceIdentityScope.AUDIT_READ
     if (

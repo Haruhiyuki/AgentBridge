@@ -931,6 +931,7 @@ def test_managed_device_identity_rejects_expired_tracked_certificate_fingerprint
         allowed_scopes={
             DeviceIdentityScope.HTTP_API,
             DeviceIdentityScope.DEVICE_MANAGE,
+            DeviceIdentityScope.AUDIT_READ,
         },
         certificate_fingerprints={"SHA256:AA:BB:CC"},
         trace_id="managed-device-expired-certificate-create",
@@ -995,6 +996,12 @@ def test_managed_device_identity_rejects_expired_tracked_certificate_fingerprint
         },
         headers=device_headers,
     )
+    rendered_scan_response = client.get(
+        "/api/v1/events/rendered"
+        "?event_type=device_identity.certificates_scanned"
+        "&trace_id=managed-device-certificate-scan",
+        headers=device_headers,
+    )
     audit_events = control.repository.list_audit_events(
         action="device_identity.certificates_scanned"
     )
@@ -1040,6 +1047,12 @@ def test_managed_device_identity_rejects_expired_tracked_certificate_fingerprint
     assert semantic_events[0].payload["action_required_count"] == 1
     assert len(worker_events) == 1
     assert worker_events[0].payload["action_required_count"] == 1
+    assert rendered_scan_response.status_code == 200
+    rendered_scan = rendered_scan_response.json()[0]
+    assert rendered_scan["document"]["blocks"][0]["title"] == "设备证书扫描"
+    assert rendered_scan["document"]["visibility"] == "operators"
+    assert "需要处理：1" in rendered_scan["text_messages"][0]
+    assert "expired-certificate-device" in rendered_scan["text_messages"][0]
 
 
 def test_device_certificate_scan_worker_can_autostart_from_environment(monkeypatch):
