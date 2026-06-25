@@ -2059,8 +2059,8 @@ ADMIN_AUTH_QUERY_PARAM = "admin_token"
 
 
 def admin_html_response(request: Request, html: str):
-    expected_tokens = admin_expected_tokens()
-    if not expected_tokens:
+    expected_tokens, token_configured = admin_expected_token_config()
+    if not token_configured:
         return HTMLResponse(html)
 
     presented_token = admin_presented_token(request)
@@ -2086,11 +2086,15 @@ def admin_html_response(request: Request, html: str):
 
 
 def admin_expected_tokens() -> list[str]:
-    tokens = [
-        os.environ.get("AGENTBRIDGE_ADMIN_TOKEN", "").strip(),
-        os.environ.get("AGENTBRIDGE_API_TOKEN", "").strip(),
-    ]
-    return [token for token in tokens if token]
+    tokens, _configured = admin_expected_token_config()
+    return tokens
+
+
+def admin_expected_token_config() -> tuple[list[str], bool]:
+    return tokens_from_env(
+        "AGENTBRIDGE_ADMIN_TOKEN",
+        "AGENTBRIDGE_API_TOKEN",
+    )
 
 
 def admin_presented_token(request: Request) -> str | None:
@@ -2138,10 +2142,10 @@ def http_api_request_authorized(
         return True
     if request.url.path == "/api/v1/health":
         return True
-    expected_tokens = http_api_expected_tokens()
+    expected_tokens, token_configured = http_api_expected_token_config()
     device_keys = configured_device_keys()
     if (
-        not expected_tokens
+        not token_configured
         and not device_keys_configured()
         and not managed_device_identities_configured(control)
     ):
@@ -2154,11 +2158,15 @@ def http_api_request_authorized(
 
 
 def http_api_expected_tokens() -> list[str]:
-    tokens = [
-        os.environ.get("AGENTBRIDGE_API_TOKEN", "").strip(),
-        os.environ.get("AGENTBRIDGE_ADMIN_TOKEN", "").strip(),
-    ]
-    return [token for token in tokens if token]
+    tokens, _configured = http_api_expected_token_config()
+    return tokens
+
+
+def http_api_expected_token_config() -> tuple[list[str], bool]:
+    return tokens_from_env(
+        "AGENTBRIDGE_API_TOKEN",
+        "AGENTBRIDGE_ADMIN_TOKEN",
+    )
 
 
 def http_api_presented_tokens(request: Request) -> list[str]:
@@ -2252,10 +2260,10 @@ async def accept_authenticated_websocket(
     required_scope: DeviceIdentityScope,
 ) -> bool:
     await websocket.accept()
-    expected_tokens = websocket_expected_tokens()
+    expected_tokens, token_configured = websocket_expected_token_config()
     device_keys = configured_device_keys()
     if (
-        not expected_tokens
+        not token_configured
         and not device_keys_configured()
         and not managed_device_identities_configured(control)
     ):
@@ -2276,7 +2284,7 @@ async def accept_authenticated_websocket(
         ErrorCode.PERMISSION_DENIED,
         "WebSocket token 无效。",
         next_step=(
-            "请使用当前 AGENTBRIDGE_WS_TOKEN，"
+            "请使用当前 AGENTBRIDGE_WS_TOKEN/AGENTBRIDGE_WS_TOKEN_FILE，"
             "或通过 device_id/device_key 重新连接，或先解锁 Admin Web。"
         ),
         status_code=403,
@@ -2299,8 +2307,37 @@ def websocket_presented_token(websocket: WebSocket, token: str | None) -> str | 
 
 
 def websocket_expected_tokens() -> list[str]:
-    token = os.environ.get("AGENTBRIDGE_WS_TOKEN", "").strip()
-    return [token] if token else []
+    tokens, _configured = websocket_expected_token_config()
+    return tokens
+
+
+def websocket_expected_token_config() -> tuple[list[str], bool]:
+    return tokens_from_env("AGENTBRIDGE_WS_TOKEN")
+
+
+def tokens_from_env(*token_env_names: str) -> tuple[list[str], bool]:
+    tokens: list[str] = []
+    configured = False
+    for token_env_name in token_env_names:
+        token = os.environ.get(token_env_name, "").strip()
+        if token:
+            configured = True
+            tokens.append(token)
+        token_file = os.environ.get(f"{token_env_name}_FILE", "").strip()
+        if not token_file:
+            continue
+        configured = True
+        file_token = token_from_file(token_file)
+        if file_token:
+            tokens.append(file_token)
+    return tokens, configured
+
+
+def token_from_file(raw_path: str) -> str | None:
+    try:
+        return Path(raw_path).expanduser().read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
 
 
 def websocket_device_key_authorized(

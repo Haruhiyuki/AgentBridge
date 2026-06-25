@@ -174,15 +174,24 @@ wscat -c 'ws://127.0.0.1:8000/api/v1/sessions/<session-id>/rendered-events/ws?af
 
 Both streams emit replayed events first, then poll for new events. `after_seq`, `limit`, `poll_interval_seconds`, and `idle_timeout_seconds` are accepted as query parameters.
 
-Set `AGENTBRIDGE_WS_TOKEN` to require WebSocket clients to pass either `?token=...` or `Authorization: Bearer ...`. A browser session unlocked through Admin Web can also use its HttpOnly admin cookie for same-origin WebSocket streams. If the variable is unset and no device keys are configured, WebSocket routes stay open for local MVP development.
+Set `AGENTBRIDGE_WS_TOKEN` or `AGENTBRIDGE_WS_TOKEN_FILE` to require WebSocket clients
+to pass either `?token=...` or `Authorization: Bearer ...`. Token files are reread for
+each WebSocket connection so operators can rotate shared WebSocket tokens without
+restarting AgentBridge. A browser session unlocked through Admin Web can also use its
+HttpOnly admin cookie for same-origin WebSocket streams. If neither variable is set and
+no device keys are configured, WebSocket routes stay open for local MVP development.
 
-Set `AGENTBRIDGE_API_TOKEN` to require REST API clients to pass either
-`Authorization: Bearer <token>` or `X-AgentBridge-API-Token: <token>` for `/api/*`
-routes other than `/api/v1/health`. If `AGENTBRIDGE_ADMIN_TOKEN` is configured, that
-same token and the unlocked Admin Web cookie can also authorize REST API calls so the
-built-in admin pages continue to work after browser unlock. If only `AGENTBRIDGE_API_TOKEN`
-is configured, it also gates and unlocks the built-in admin pages. If neither variable is
-set and no device keys are configured, REST routes stay open for local MVP development.
+Set `AGENTBRIDGE_API_TOKEN` or `AGENTBRIDGE_API_TOKEN_FILE` to require REST API clients
+to pass either `Authorization: Bearer <token>` or `X-AgentBridge-API-Token: <token>` for
+`/api/*` routes other than `/api/v1/health`. If `AGENTBRIDGE_ADMIN_TOKEN` or
+`AGENTBRIDGE_ADMIN_TOKEN_FILE` is configured, that same token and the unlocked Admin Web
+cookie can also authorize REST API calls so the built-in admin pages continue to work
+after browser unlock. If only `AGENTBRIDGE_API_TOKEN` or `AGENTBRIDGE_API_TOKEN_FILE` is
+configured, it also gates and unlocks the built-in admin pages. Token files are reread
+for each HTTP request, and a configured but unreadable/empty token file does not disable
+the gate; if it is the only token source, token auth fails closed. If no token
+variable/file is set and no device keys are configured, REST routes stay open for local
+MVP development.
 
 For per-device keys without adding database state, set `AGENTBRIDGE_DEVICE_KEYS` to a
 JSON object mapping device IDs to secrets. REST clients present
@@ -247,7 +256,7 @@ External Bot Gateway subscribers can also receive Bot-facing render frames witho
 wscat -c 'ws://127.0.0.1:8000/api/v1/bot-gateway/session-events/ws?session_id=<session-id>&chat_context_id=<chat-context-id>&after_seq=42'
 ```
 
-Each pushed frame uses `type: "bot.render.create"` and includes the semantic event, render document, target chat context, platform, per-message idempotency keys, and platform-neutral `actions` for button-capable adapters. Each action descriptor carries a label, style, command, `callback_data`, and payload that existing NoneBot callback handling can map back into the audited `/agent` command path. Set `AGENTBRIDGE_WS_TOKEN` to protect this subscription endpoint in the same way as the other WebSocket routes.
+Each pushed frame uses `type: "bot.render.create"` and includes the semantic event, render document, target chat context, platform, per-message idempotency keys, and platform-neutral `actions` for button-capable adapters. Each action descriptor carries a label, style, command, `callback_data`, and payload that existing NoneBot callback handling can map back into the audited `/agent` command path. Set `AGENTBRIDGE_WS_TOKEN` or `AGENTBRIDGE_WS_TOKEN_FILE` to protect this subscription endpoint in the same way as the other WebSocket routes.
 
 Platform adapters can report delivery lifecycle results back to AgentBridge:
 
@@ -451,12 +460,15 @@ The device identities page lists active/revoked managed devices, creates or rota
 device keys, edits transport scopes, shows last-used timestamps, shows the generated key
 once, and revokes selected devices.
 
-Set `AGENTBRIDGE_ADMIN_TOKEN` to require a browser token before serving `/admin` pages.
-When `AGENTBRIDGE_API_TOKEN` is configured and `AGENTBRIDGE_ADMIN_TOKEN` is not, the
-API token is also accepted for Admin Web unlock:
+Set `AGENTBRIDGE_ADMIN_TOKEN` or `AGENTBRIDGE_ADMIN_TOKEN_FILE` to require a browser
+token before serving `/admin` pages. When `AGENTBRIDGE_API_TOKEN` or
+`AGENTBRIDGE_API_TOKEN_FILE` is configured and no dedicated admin token is set, the API
+token is also accepted for Admin Web unlock:
 
 ```bash
 export AGENTBRIDGE_ADMIN_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+# Or rotate without restart:
+# export AGENTBRIDGE_ADMIN_TOKEN_FILE="$HOME/.agentbridge/admin.token"
 ```
 
 Open `/admin?admin_token=<token>` once to set a short-lived HttpOnly, SameSite cookie,

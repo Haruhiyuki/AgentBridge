@@ -87,6 +87,42 @@ def test_api_token_gate_protects_rest_api_when_configured(monkeypatch):
     assert bearer_response.json() == []
 
 
+def test_api_token_file_hot_reloads_and_fails_closed(monkeypatch, tmp_path):
+    token_file = tmp_path / "api-token"
+    token_file.write_text("first-secret\n", encoding="utf-8")
+    monkeypatch.delenv("AGENTBRIDGE_API_TOKEN", raising=False)
+    monkeypatch.setenv("AGENTBRIDGE_API_TOKEN_FILE", str(token_file))
+    client = TestClient(create_app())
+
+    first_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-api-token": "first-secret"},
+    )
+    token_file.write_text("second-secret\n", encoding="utf-8")
+    stale_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-api-token": "first-secret"},
+    )
+    rotated_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-api-token": "second-secret"},
+    )
+
+    assert first_response.status_code == 200
+    assert stale_response.status_code == 403
+    assert rotated_response.status_code == 200
+
+    monkeypatch.setenv("AGENTBRIDGE_API_TOKEN_FILE", str(tmp_path / "missing-token"))
+    missing_file_response = client.get("/api/v1/projects")
+    assert missing_file_response.status_code == 403
+
+    empty_file = tmp_path / "empty-token"
+    empty_file.write_text("\n", encoding="utf-8")
+    monkeypatch.setenv("AGENTBRIDGE_API_TOKEN_FILE", str(empty_file))
+    empty_file_response = client.get("/api/v1/projects")
+    assert empty_file_response.status_code == 403
+
+
 def test_admin_cookie_authorizes_rest_api_when_admin_token_configured(monkeypatch):
     monkeypatch.setenv("AGENTBRIDGE_ADMIN_TOKEN", "admin-secret")
     client = TestClient(create_app())
@@ -100,6 +136,28 @@ def test_admin_cookie_authorizes_rest_api_when_admin_token_configured(monkeypatc
     assert "AgentBridge Admin" in unlock_response.text
     assert api_response.status_code == 200
     assert api_response.json() == []
+
+
+def test_admin_token_file_hot_reloads(monkeypatch, tmp_path):
+    token_file = tmp_path / "admin-token"
+    token_file.write_text("first-admin\n", encoding="utf-8")
+    monkeypatch.delenv("AGENTBRIDGE_ADMIN_TOKEN", raising=False)
+    monkeypatch.setenv("AGENTBRIDGE_ADMIN_TOKEN_FILE", str(token_file))
+    client = TestClient(create_app())
+
+    locked_response = client.get("/admin")
+    first_unlock = client.get("/admin?admin_token=first-admin")
+    token_file.write_text("second-admin\n", encoding="utf-8")
+    client.cookies.clear()
+    stale_unlock = client.get("/admin?admin_token=first-admin")
+    rotated_unlock = client.get("/admin?admin_token=second-admin")
+
+    assert locked_response.status_code == 401
+    assert first_unlock.status_code == 200
+    assert "AgentBridge Admin" in first_unlock.text
+    assert stale_unlock.status_code == 401
+    assert rotated_unlock.status_code == 200
+    assert "AgentBridge Admin" in rotated_unlock.text
 
 
 def test_device_key_gate_authorizes_rest_api_when_configured(monkeypatch):
@@ -1312,6 +1370,54 @@ def test_session_events_websocket_requires_token_when_configured(monkeypatch, tm
     assert message["type"] == "semantic_event"
     assert message["event"]["type"] == "session.created"
     assert idle == {"type": "idle_timeout", "last_seq": message["event"]["seq"]}
+
+
+def test_session_events_websocket_token_file_hot_reloads(monkeypatch, tmp_path):
+    token_file = tmp_path / "ws-token"
+    token_file.write_text("first-secret\n", encoding="utf-8")
+    monkeypatch.delenv("AGENTBRIDGE_WS_TOKEN", raising=False)
+    monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN_FILE", str(token_file))
+    client = TestClient(create_app())
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-events-ws-token-file",
+        prefix="event-ws-token-file",
+        name="Event WS Token File",
+    )
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/events/ws"
+        "?token=first-secret&idle_timeout_seconds=0"
+    ) as websocket:
+        message = websocket.receive_json()
+        idle = websocket.receive_json()
+
+    assert message["type"] == "semantic_event"
+    assert idle == {"type": "idle_timeout", "last_seq": message["event"]["seq"]}
+
+    token_file.write_text("second-secret\n", encoding="utf-8")
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/events/ws"
+        "?token=first-secret&idle_timeout_seconds=0"
+    ) as websocket:
+        denied = websocket.receive_json()
+
+    assert denied["type"] == "error"
+    assert denied["error"]["error_code"] == "PERMISSION_DENIED"
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/events/ws"
+        "?token=second-secret&idle_timeout_seconds=0"
+    ) as websocket:
+        rotated_message = websocket.receive_json()
+        rotated_idle = websocket.receive_json()
+
+    assert rotated_message["type"] == "semantic_event"
+    assert rotated_idle == {
+        "type": "idle_timeout",
+        "last_seq": rotated_message["event"]["seq"],
+    }
 
 
 def test_session_events_websocket_accepts_device_key(monkeypatch, tmp_path):
