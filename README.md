@@ -294,13 +294,14 @@ of chat context IDs to have the scan worker automatically deliver action-require
 events through Bot Gateway; `AGENTBRIDGE_DEVICE_CERT_SCAN_NOTIFY_PLATFORM` defaults to
 `onebot.v11`, and `AGENTBRIDGE_DEVICE_CERT_SCAN_NOTIFY_ONLY_ACTION_REQUIRED` defaults
 to `true`.
-Set `AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE` and
-`AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE` to enable CSR-based certificate issuance through
+Set `AGENTBRIDGE_DEVICE_CERT_ISSUER_COMMAND` to issue CSR-based device certificates
+through an external CA/KMS/HSM command, or set `AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE`
+and `AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE` for the local PEM CA path. Both modes enable
 `POST /api/v1/device-identities/{device_id}/certificates/issue`. The CSR Common Name
-must exactly match `device_id`; issued certificates include the client-auth EKU, return
-the public certificate PEM once, store the SHA-256 fingerprint plus serial number,
-subject, issuer, and validity window on the managed identity, and preserve existing
-key/scope/resource settings. Use
+must exactly match `device_id`; issued certificates must include the client-auth EKU,
+return the public certificate PEM once, store the SHA-256 fingerprint plus serial
+number, subject, issuer, and validity window on the managed identity, and preserve
+existing key/scope/resource settings. Use
 `POST /api/v1/device-identities/{device_id}/certificates/renew` with a replacement CSR
 to issue a new managed certificate and retire the active CA-issued certificate
 fingerprint records for that device while preserving their removal metadata.
@@ -310,7 +311,7 @@ or `AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD_FILE` can unlock encrypted CA keys, 
 when the request omits `validity_days`. `AGENTBRIDGE_DEVICE_CERT_EXPIRY_WARNING_DAYS`
 sets the certificate health expiring window and defaults to 14 days.
 See `docs/operations/DEVICE_CERTIFICATE_OPERATIONS.md` for the renewal scheduler,
-cutover, TLS proxy, and CA key custody runbook.
+external issuer command, cutover, TLS proxy, and CA key custody runbook.
 
 For deployments behind a TLS-terminating reverse proxy that verifies client
 certificates, set `AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS` or

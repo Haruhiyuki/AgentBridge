@@ -15,6 +15,7 @@ from agentbridge.device_certificate_health import (
 )
 from agentbridge.device_certificates import (
     DeviceCertificateIssuer,
+    ExternalDeviceCertificateIssuer,
     IssuedDeviceCertificate,
 )
 from agentbridge.domain import (
@@ -2057,7 +2058,7 @@ class ControlPlane:
         actor: Actor,
         device_id: str,
         csr_pem: str,
-        issuer: DeviceCertificateIssuer,
+        issuer: DeviceCertificateIssuer | ExternalDeviceCertificateIssuer,
         validity_days: int | None,
         trace_id: str,
         chat_context_id: str | None = None,
@@ -2139,7 +2140,7 @@ class ControlPlane:
         actor: Actor,
         device_id: str,
         csr_pem: str,
-        issuer: DeviceCertificateIssuer,
+        issuer: DeviceCertificateIssuer | ExternalDeviceCertificateIssuer,
         validity_days: int | None,
         trace_id: str,
         chat_context_id: str | None = None,

@@ -877,6 +877,141 @@ def test_managed_device_identity_issues_ca_backed_certificate(monkeypatch, tmp_p
     assert audit_events[0].details["device_id"] == "issued-device"
 
 
+def test_managed_device_identity_issues_certificate_with_external_issuer(
+    monkeypatch,
+    tmp_path,
+):
+    ca_certificate_path, ca_key_path = _write_test_ca(tmp_path)
+    issuer_script = tmp_path / "device_certificate_issuer.py"
+    issuer_script.write_text(
+        "\n".join(
+            [
+                "import hashlib",
+                "import json",
+                "import os",
+                "import sys",
+                "from datetime import UTC, datetime, timedelta",
+                "from cryptography import x509",
+                "from cryptography.hazmat.primitives import hashes, serialization",
+                "from cryptography.x509.oid import ExtendedKeyUsageOID",
+                "ca_cert_path, ca_key_path = sys.argv[1], sys.argv[2]",
+                "payload = json.load(sys.stdin)",
+                "csr_pem = payload['csr_pem']",
+                "csr_sha256 = hashlib.sha256(csr_pem.encode('utf-8')).hexdigest()",
+                "if os.environ['AGENTBRIDGE_DEVICE_CERT_DEVICE_ID'] != payload['device_id']:",
+                "    raise SystemExit('device id env mismatch')",
+                "if os.environ['AGENTBRIDGE_DEVICE_CERT_CSR_SHA256'] != csr_sha256:",
+                "    raise SystemExit('csr digest mismatch')",
+                "env_validity = int(os.environ['AGENTBRIDGE_DEVICE_CERT_VALIDITY_DAYS'])",
+                "if env_validity != payload['validity_days']:",
+                "    raise SystemExit('validity env mismatch')",
+                "csr = x509.load_pem_x509_csr(csr_pem.encode('utf-8'))",
+                "ca_cert_pem = open(ca_cert_path, encoding='utf-8').read()",
+                "ca_cert = x509.load_pem_x509_certificate(ca_cert_pem.encode('utf-8'))",
+                "ca_key_pem = open(ca_key_path, 'rb').read()",
+                "ca_key = serialization.load_pem_private_key(ca_key_pem, password=None)",
+                "not_before = datetime.now(UTC) - timedelta(minutes=5)",
+                "not_after = datetime.now(UTC) + timedelta(days=payload['validity_days'])",
+                "builder = (",
+                "    x509.CertificateBuilder()",
+                "    .subject_name(csr.subject)",
+                "    .issuer_name(ca_cert.subject)",
+                "    .public_key(csr.public_key())",
+                "    .serial_number(x509.random_serial_number())",
+                "    .not_valid_before(not_before)",
+                "    .not_valid_after(not_after)",
+                "    .add_extension(x509.BasicConstraints(ca=False, path_length=None), True)",
+                "    .add_extension(",
+                "        x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]),",
+                "        False,",
+                "    )",
+                ")",
+                "try:",
+                "    san = csr.extensions.get_extension_for_class(x509.SubjectAlternativeName)",
+                "except x509.ExtensionNotFound:",
+                "    san = None",
+                "if san is not None:",
+                "    builder = builder.add_extension(san.value, san.critical)",
+                "cert = builder.sign(ca_key, hashes.SHA256())",
+                "cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode('utf-8')",
+                "json.dump({",
+                "    'certificate_pem': cert_pem,",
+                "    'ca_certificate_pem': ca_cert_pem,",
+                "}, sys.stdout)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE", raising=False)
+    monkeypatch.setenv(
+        "AGENTBRIDGE_DEVICE_CERT_ISSUER_COMMAND",
+        f"{sys.executable} {issuer_script} {ca_certificate_path} {ca_key_path}",
+    )
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_DEFAULT_VALIDITY_DAYS", "9")
+    control = ControlPlane()
+    client = TestClient(create_app(control))
+    actor = {"id": "security-admin", "roles": ["admin"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": actor,
+            "device_id": "external-issued-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "device_manage"],
+            "trace_id": "managed-device-external-issue-create",
+        },
+    )
+    issue_response = client.post(
+        "/api/v1/device-identities/external-issued-device/certificates/issue",
+        json={
+            "actor": actor,
+            "csr_pem": _device_csr_pem("external-issued-device"),
+            "trace_id": "managed-device-cert-external-issue",
+        },
+        headers={
+            "x-agentbridge-device-id": "external-issued-device",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+    issued = issue_response.json()
+    certificate = x509.load_pem_x509_certificate(
+        issued["certificate_pem"].encode("utf-8")
+    )
+    certificate_response = client.get(
+        "/api/v1/commands",
+        headers={
+            "x-agentbridge-client-cert-fingerprint": (
+                issued["certificate_fingerprint"]
+            )
+        },
+    )
+    audit_events = control.repository.list_audit_events(
+        action="device_identity.certificate_issued"
+    )
+
+    assert create_response.status_code == 200
+    assert issue_response.status_code == 200
+    assert issued["certificate_fingerprint"] == certificate.fingerprint(
+        hashes.SHA256()
+    ).hex()
+    assert issued["ca_certificate_pem"]
+    assert issued["device_identity"]["certificate_fingerprints"] == [
+        issued["certificate_fingerprint"]
+    ]
+    issued_record = issued["device_identity"]["certificate_records"][0]
+    assert issued_record["source"] == "managed_ca"
+    assert issued_record["issuer"] == "CN=AgentBridge Test CA"
+    assert issued_record["not_after"] == issued["not_after"]
+    assert certificate.not_valid_after_utc.isoformat().replace("+00:00", "Z") == (
+        issued["not_after"]
+    )
+    assert certificate_response.status_code == 200
+    assert len(audit_events) == 1
+    assert audit_events[0].details["device_id"] == "external-issued-device"
+
+
 def test_managed_device_identity_renews_ca_backed_certificate(monkeypatch, tmp_path):
     ca_certificate_path, ca_key_path = _write_test_ca(tmp_path)
     monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE", str(ca_certificate_path))

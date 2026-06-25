@@ -7,7 +7,17 @@ certificate fingerprint to AgentBridge.
 
 ## Configuration
 
-Enable CSR-based managed certificate issuance and renewal with:
+Enable CSR-based managed certificate issuance and renewal with an external issuer
+command when production policy requires KMS/HSM/Vault or offline CA custody:
+
+```bash
+export AGENTBRIDGE_DEVICE_CERT_ISSUER_COMMAND="/usr/local/bin/agentbridge-device-cert-issuer"
+export AGENTBRIDGE_DEVICE_CERT_ISSUER_COMMAND_TIMEOUT_SECONDS=10
+export AGENTBRIDGE_DEVICE_CERT_DEFAULT_VALIDITY_DAYS=30
+export AGENTBRIDGE_DEVICE_CERT_EXPIRY_WARNING_DAYS=14
+```
+
+If a local encrypted PEM issuing key is acceptable for the environment, configure:
 
 ```bash
 export AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE=/etc/agentbridge/device-ca.crt
@@ -39,6 +49,42 @@ For active CA-issued certificates, `certificate_health.renewal_due_at` is calcul
 - `renewal_status=unknown`: an active managed CA record is missing validity metadata.
 
 Treat `due`, `overdue`, and `unknown` as renewal action-required states.
+
+## External Issuer Command
+
+When `AGENTBRIDGE_DEVICE_CERT_ISSUER_COMMAND` is configured, AgentBridge validates the
+CSR signature and Common Name first, then sends a JSON request to the command on stdin:
+
+```json
+{
+  "version": 1,
+  "device_id": "build-agent-1",
+  "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----\n...",
+  "validity_days": 30,
+  "required_extended_key_usage": "client_auth"
+}
+```
+
+The child process also receives:
+
+- `AGENTBRIDGE_DEVICE_CERT_DEVICE_ID`
+- `AGENTBRIDGE_DEVICE_CERT_CSR_SHA256`
+- `AGENTBRIDGE_DEVICE_CERT_VALIDITY_DAYS`
+
+The command must return:
+
+```json
+{
+  "certificate_pem": "-----BEGIN CERTIFICATE-----\n...",
+  "ca_certificate_pem": "-----BEGIN CERTIFICATE-----\n..."
+}
+```
+
+AgentBridge parses the returned certificate and rejects it unless the certificate Common
+Name matches `device_id`, the certificate public key matches the CSR public key, the
+certificate is not expired, the Extended Key Usage includes `clientAuth`, and the
+returned `ca_certificate_pem` is a CA certificate that directly issued the returned
+device certificate.
 
 ## Renewal Flow
 
@@ -91,9 +137,9 @@ For the online AgentBridge issuing key:
 - Do not enable debug SQL/logging modes that could capture request payloads containing
   CSR or certificate material.
 
-KMS-backed or offline remote signing is not implemented yet. Environments that require
-non-exportable CA keys should treat local PEM signing as a temporary development or
-single-node operations mode.
+Provider-native CA SDK clients are not implemented yet. Environments that require
+non-exportable CA keys should prefer the external issuer command and keep the command's
+own KMS/HSM credentials outside the AgentBridge process environment where possible.
 
 ## TLS Proxy Boundary
 

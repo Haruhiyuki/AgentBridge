@@ -53,7 +53,10 @@ from agentbridge.device_certificate_health import (
     managed_device_certificate_active,
 )
 from agentbridge.device_certificate_scan import DeviceCertificateScanWorker
-from agentbridge.device_certificates import DeviceCertificateIssuer
+from agentbridge.device_certificates import (
+    DeviceCertificateIssuer,
+    ExternalDeviceCertificateIssuer,
+)
 from agentbridge.domain import (
     AccessPolicyEffect,
     Actor,
@@ -3937,7 +3940,27 @@ def create_approval_policy_from_env() -> ApprovalPolicy:
     return ApprovalPolicy(quorum_by_risk=quorum_by_risk)
 
 
-def create_device_certificate_issuer_from_env() -> DeviceCertificateIssuer:
+def create_device_certificate_issuer_from_env() -> (
+    DeviceCertificateIssuer | ExternalDeviceCertificateIssuer
+):
+    external_issuer_command = os.environ.get(
+        "AGENTBRIDGE_DEVICE_CERT_ISSUER_COMMAND", ""
+    )
+    if external_issuer_command.strip():
+        return ExternalDeviceCertificateIssuer.from_command(
+            command=external_issuer_command,
+            default_validity_days=device_certificate_default_validity_days_from_env(),
+            timeout_seconds=min(
+                120.0,
+                max(
+                    0.1,
+                    env_float(
+                        "AGENTBRIDGE_DEVICE_CERT_ISSUER_COMMAND_TIMEOUT_SECONDS",
+                        default=10.0,
+                    ),
+                ),
+            ),
+        )
     ca_certificate_file = os.environ.get("AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE", "")
     ca_private_key_file = os.environ.get("AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE", "")
     if not ca_certificate_file.strip() or not ca_private_key_file.strip():
@@ -3945,7 +3968,8 @@ def create_device_certificate_issuer_from_env() -> DeviceCertificateIssuer:
             ErrorCode.COMMAND_ARGUMENT_INVALID,
             "设备证书签发 CA 未配置。",
             next_step=(
-                "请设置 AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE 和 "
+                "请设置 AGENTBRIDGE_DEVICE_CERT_ISSUER_COMMAND，或设置 "
+                "AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE 和 "
                 "AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE。"
             ),
             status_code=503,
