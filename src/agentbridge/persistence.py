@@ -195,6 +195,11 @@ audit_events_table = Table(
     Column("position", Integer, nullable=False, unique=True),
     Column("action", String(255), nullable=False, index=True),
     Column("actor_id", String(255), nullable=False, index=True),
+    Column("trace_id", String(255), nullable=True, index=True),
+    Column("chat_context_id", String(64), nullable=True, index=True),
+    Column("project_id", String(64), nullable=True, index=True),
+    Column("session_id", String(64), nullable=True, index=True),
+    Column("interaction_id", String(64), nullable=True, index=True),
     Column("created_at", String(64), nullable=False, index=True),
     Column("entry_hash", String(128), nullable=False, unique=True),
     Column("payload", JSON, nullable=False),
@@ -442,6 +447,14 @@ class SQLAlchemyRepository(InMemoryRepository):
             stmt = stmt.where(audit_events_table.c.action == action)
         if actor_id is not None:
             stmt = stmt.where(audit_events_table.c.actor_id == actor_id)
+        if project_id is not None:
+            stmt = stmt.where(audit_events_table.c.project_id == project_id)
+        if session_id is not None:
+            stmt = stmt.where(audit_events_table.c.session_id == session_id)
+        if interaction_id is not None:
+            stmt = stmt.where(audit_events_table.c.interaction_id == interaction_id)
+        if trace_id is not None:
+            stmt = stmt.where(audit_events_table.c.trace_id == trace_id)
         if created_from is not None:
             stmt = stmt.where(
                 audit_events_table.c.created_at >= utc_datetime_key(created_from)
@@ -455,13 +468,7 @@ class SQLAlchemyRepository(InMemoryRepository):
         with self._lock, self.engine.connect() as connection:
             for row in connection.execute(stmt):
                 event = AuditEvent.model_validate(row.payload)
-                if (
-                    (project_id is None or event.project_id == project_id)
-                    and (session_id is None or event.session_id == session_id)
-                    and (interaction_id is None or event.interaction_id == interaction_id)
-                    and (trace_id is None or event.trace_id == trace_id)
-                    and payload_contains_query(event.details, payload_query)
-                ):
+                if payload_contains_query(event.details, payload_query):
                     events.append(event)
                     if len(events) >= max_results:
                         break
@@ -740,6 +747,11 @@ class SQLAlchemyRepository(InMemoryRepository):
                         "position": position,
                         "action": event.action,
                         "actor_id": event.actor_id,
+                        "trace_id": event.trace_id,
+                        "chat_context_id": event.chat_context_id,
+                        "project_id": event.project_id,
+                        "session_id": event.session_id,
+                        "interaction_id": event.interaction_id,
                         "created_at": utc_datetime_key(event.created_at),
                         "entry_hash": event.entry_hash,
                         "payload": event.model_dump(mode="json"),

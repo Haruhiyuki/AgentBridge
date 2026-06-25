@@ -58,10 +58,10 @@ def test_event_query_column_migrations_backfill_payload(tmp_path):
         "actor_id": "usr_legacy",
         "outcome": "success",
         "trace_id": "legacy-audit",
-        "chat_context_id": None,
+        "chat_context_id": "ctx_legacy",
         "project_id": "prj_legacy",
         "session_id": "sess_legacy",
-        "interaction_id": None,
+        "interaction_id": "int_legacy",
         "details": {"session_id": "sess_legacy"},
         "created_at": "2026-06-25T00:01:00Z",
         "previous_hash": None,
@@ -124,7 +124,9 @@ def test_event_query_column_migrations_backfill_payload(tmp_path):
         audit_row = connection.execute(
             text(
                 """
-                SELECT created_at
+                SELECT
+                  trace_id, chat_context_id, project_id, session_id, interaction_id,
+                  created_at
                 FROM audit_events
                 WHERE id = :id
                 """
@@ -139,6 +141,11 @@ def test_event_query_column_migrations_backfill_payload(tmp_path):
     assert row.turn_id == "turn_legacy"
     assert row.interaction_id == "int_legacy"
     assert row.created_at == "2026-06-25T00:00:00.000000+00:00"
+    assert audit_row.trace_id == "legacy-audit"
+    assert audit_row.chat_context_id == "ctx_legacy"
+    assert audit_row.project_id == "prj_legacy"
+    assert audit_row.session_id == "sess_legacy"
+    assert audit_row.interaction_id == "int_legacy"
     assert audit_row.created_at == "2026-06-25T00:01:00.000000+00:00"
 
 
@@ -320,11 +327,22 @@ def test_sqlalchemy_repository_lists_filtered_audit_events(tmp_path):
     assert newest[0].trace_id == "audit-session-two"
     engine = create_engine(database_url)
     with engine.connect() as connection:
-        stored_created_at = connection.execute(
-            text("SELECT created_at FROM audit_events WHERE id = :id"),
+        row = connection.execute(
+            text(
+                """
+                SELECT
+                  trace_id, project_id, session_id, interaction_id, created_at
+                FROM audit_events
+                WHERE id = :id
+                """
+            ),
             {"id": newest[0].id},
-        ).scalar_one()
-    assert stored_created_at == newest[0].created_at.astimezone(UTC).isoformat(
+        ).one()
+    assert row.trace_id == "audit-session-two"
+    assert row.project_id == project.id
+    assert row.session_id == second_session.id
+    assert row.interaction_id is None
+    assert row.created_at == newest[0].created_at.astimezone(UTC).isoformat(
         timespec="microseconds"
     )
 
