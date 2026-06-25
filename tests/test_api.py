@@ -810,6 +810,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "async function revokeDevice()" in html
     assert "auth-device-key" in html
     assert "allowed-scopes" in html
+    assert "command_execute" in html
     assert "device_manage" in html
     assert "policy_manage" in html
     assert "group_role_manage" in html
@@ -1036,6 +1037,83 @@ def test_command_execute_api_creates_project_session_and_turn(tmp_path):
     assert turn_response.status_code == 200
     assert turn_response.json()["data"]["project_id"] == project_id
     assert turn_response.json()["data"]["session_id"] == session_id
+
+
+def test_managed_device_identity_requires_command_execute_scope_for_command_execute():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "command-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    parse_response = client.post(
+        "/api/v1/commands/parse",
+        json={"raw_text": "/agent project list", "actor": actor},
+        headers=key_headers,
+    )
+    key_execute_response = client.post(
+        "/api/v1/commands/execute",
+        json={"raw_text": "/agent project list", "actor": actor},
+        headers=key_headers,
+    )
+    cert_execute_response = client.post(
+        "/api/v1/commands/execute",
+        json={"raw_text": "/agent project list", "actor": actor},
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert create_response.status_code == 200
+    assert parse_response.status_code == 200
+    assert key_execute_response.status_code == 403
+    assert cert_execute_response.status_code == 403
+
+
+def test_managed_device_identity_command_execute_scope_allows_command_execute():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "command-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "command_execute"],
+            "trace_id": "command-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "command-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    execute_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": "/agent project list",
+            "actor": actor,
+            "idempotency_key": "command-manager-project-list",
+        },
+        headers=headers,
+    )
+
+    assert create_response.status_code == 200
+    assert execute_response.status_code == 200
+    assert execute_response.json()["canonical_command"] == "project.list"
+    assert execute_response.json()["data"] == {"projects": []}
 
 
 def test_api_returns_product_error_payload_for_permission_denied():

@@ -3435,6 +3435,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
     const $ = (id) => document.getElementById(id);
     const defaultScopes = [
       "http_api",
+      "command_execute",
       "device_manage",
       "policy_manage",
       "group_role_manage",
