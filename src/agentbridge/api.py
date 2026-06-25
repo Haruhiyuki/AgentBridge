@@ -423,6 +423,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        start_terminal_backend_supervision(terminal)
         if terminal_lifecycle_monitor_enabled:
             terminal.start_lifecycle_monitor(
                 interval_seconds=terminal_lifecycle_poll_interval_seconds
@@ -433,6 +434,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             yield
         finally:
             terminal.stop_lifecycle_monitor()
+            stop_terminal_backend_supervision(terminal)
             bot_retry_worker.stop()
 
     app = FastAPI(
@@ -1914,6 +1916,11 @@ def create_terminal_backend_from_env():
         host_state_path = os.environ.get("AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH")
         host_state = Path(host_state_path).expanduser() if host_state_path else None
         max_output_chars = terminal_pty_output_limit_from_env()
+        host_auto_start = env_bool("AGENTBRIDGE_TERMINAL_PTY_HOST_AUTO_START", default=False)
+        host_watchdog_enabled = env_bool(
+            "AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_ENABLED",
+            default=False,
+        )
         supervisor = (
             PtyHostSupervisor(
                 PtyHostSupervisorConfig(
@@ -1925,9 +1932,14 @@ def create_terminal_backend_from_env():
                         "AGENTBRIDGE_TERMINAL_PTY_HOST_STARTUP_TIMEOUT_SECONDS",
                         default=3.0,
                     ),
+                    watchdog_enabled=host_watchdog_enabled,
+                    watchdog_interval_seconds=env_float(
+                        "AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_INTERVAL_SECONDS",
+                        default=5.0,
+                    ),
                 )
             )
-            if env_bool("AGENTBRIDGE_TERMINAL_PTY_HOST_AUTO_START", default=False)
+            if host_auto_start or host_watchdog_enabled
             else None
         )
         return PtyHostTerminalBackend(
@@ -1936,6 +1948,18 @@ def create_terminal_backend_from_env():
             supervisor=supervisor,
         )
     raise RuntimeError("AGENTBRIDGE_TERMINAL_BACKEND must be one of: fake, tmux, pty, pty_host")
+
+
+def start_terminal_backend_supervision(terminal: TerminalAgentService) -> None:
+    start = getattr(terminal.backend, "start_supervision", None)
+    if callable(start):
+        start()
+
+
+def stop_terminal_backend_supervision(terminal: TerminalAgentService) -> None:
+    stop = getattr(terminal.backend, "stop_supervision", None)
+    if callable(stop):
+        stop()
 
 
 def create_terminal_lifecycle_policy_from_env() -> TerminalLifecyclePolicy:

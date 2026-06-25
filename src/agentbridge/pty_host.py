@@ -10,6 +10,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event, RLock, Thread
 from typing import Any
 
 from agentbridge.domain import AgentBridgeError, ErrorCode
@@ -39,6 +40,8 @@ class PtyHostSupervisorConfig:
     start_command: tuple[str, ...] = ()
     startup_timeout_seconds: float = 3.0
     poll_interval_seconds: float = 0.05
+    watchdog_enabled: bool = False
+    watchdog_interval_seconds: float = 5.0
 
 
 class PtyHostTerminalBackend:
@@ -103,6 +106,19 @@ class PtyHostTerminalBackend:
 
     def health(self) -> dict[str, object]:
         return self._request("health", {})
+
+    def start_supervision(self) -> None:
+        if self.supervisor is not None:
+            self.supervisor.start_watchdog()
+
+    def stop_supervision(self) -> None:
+        if self.supervisor is not None:
+            self.supervisor.stop_watchdog()
+
+    def supervision_status(self) -> dict[str, object]:
+        if self.supervisor is None:
+            return {"enabled": False}
+        return self.supervisor.status()
 
     def _request(self, action: str, payload: dict[str, object]) -> dict[str, Any]:
         request = {
@@ -180,37 +196,95 @@ class PtyHostSupervisor:
     def __init__(self, config: PtyHostSupervisorConfig) -> None:
         self.config = config
         self.process: subprocess.Popen[bytes] | None = None
+        self.start_count = 0
+        self.restart_count = 0
+        self.last_error: str | None = None
+        self._lock = RLock()
+        self._watchdog_stop_event = Event()
+        self._watchdog_thread: Thread | None = None
 
     def ensure_running(self) -> bool:
-        if self.is_healthy():
-            return False
-        self._remove_stale_socket()
-        self.process = subprocess.Popen(
-            self.start_command(),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            start_new_session=True,
-            env=self._host_env(),
-        )
-        deadline = time.monotonic() + self.config.startup_timeout_seconds
-        while time.monotonic() < deadline:
+        with self._lock:
             if self.is_healthy():
-                return True
-            if self.process.poll() is not None:
-                break
-            time.sleep(max(self.config.poll_interval_seconds, 0.01))
-        raise AgentBridgeError(
-            ErrorCode.PLATFORM_CAPABILITY_MISSING,
-            "PTY Host 启动后未就绪。",
-            next_step="请检查 agentbridge-pty-host 是否能正常启动。",
-            status_code=503,
-            details={
-                "socket_path": str(self.config.socket_path.expanduser()),
-                "return_code": self.process.poll() if self.process else None,
-            },
+                self.last_error = None
+                return False
+            previous_process = self.process
+            self._remove_stale_socket()
+            self.process = subprocess.Popen(
+                self.start_command(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                start_new_session=True,
+                env=self._host_env(),
+            )
+            self.start_count += 1
+            if previous_process is not None:
+                self.restart_count += 1
+            deadline = time.monotonic() + self.config.startup_timeout_seconds
+            while time.monotonic() < deadline:
+                if self.is_healthy():
+                    self.last_error = None
+                    return True
+                if self.process.poll() is not None:
+                    break
+                time.sleep(max(self.config.poll_interval_seconds, 0.01))
+            error = AgentBridgeError(
+                ErrorCode.PLATFORM_CAPABILITY_MISSING,
+                "PTY Host 启动后未就绪。",
+                next_step="请检查 agentbridge-pty-host 是否能正常启动。",
+                status_code=503,
+                details={
+                    "socket_path": str(self.config.socket_path.expanduser()),
+                    "return_code": self.process.poll() if self.process else None,
+                },
+            )
+            self.last_error = error.message
+            raise error
+
+    def start_watchdog(self) -> None:
+        if not self.config.watchdog_enabled:
+            return
+        with self._lock:
+            if self._watchdog_thread is not None and self._watchdog_thread.is_alive():
+                return
+            self._watchdog_stop_event.clear()
+            self._watchdog_thread = Thread(
+                target=self._watchdog_loop,
+                name="agentbridge-pty-host-watchdog",
+                daemon=True,
+            )
+            self._watchdog_thread.start()
+
+    def stop_watchdog(self) -> None:
+        thread = self._watchdog_thread
+        if thread is None:
+            return
+        self._watchdog_stop_event.set()
+        thread.join(
+            timeout=max(
+                self.config.startup_timeout_seconds + self.config.watchdog_interval_seconds,
+                1.0,
+            )
         )
+        if not thread.is_alive():
+            self._watchdog_thread = None
+
+    def status(self) -> dict[str, object]:
+        process = self.process
+        return {
+            "enabled": True,
+            "watchdog_enabled": self.config.watchdog_enabled,
+            "watchdog_running": (
+                self._watchdog_thread is not None and self._watchdog_thread.is_alive()
+            ),
+            "start_count": self.start_count,
+            "restart_count": self.restart_count,
+            "host_pid": process.pid if process is not None else None,
+            "host_return_code": process.poll() if process is not None else None,
+            "last_error": self.last_error,
+        }
 
     def is_healthy(self) -> bool:
         try:
@@ -222,6 +296,16 @@ class PtyHostSupervisor:
             return client.health().get("status") == "ok"
         except AgentBridgeError:
             return False
+
+    def _watchdog_loop(self) -> None:
+        while not self._watchdog_stop_event.is_set():
+            try:
+                self.ensure_running()
+            except AgentBridgeError as exc:
+                self.last_error = exc.message
+            self._watchdog_stop_event.wait(
+                max(self.config.watchdog_interval_seconds, 0.05)
+            )
 
     def start_command(self) -> list[str]:
         if self.config.start_command:

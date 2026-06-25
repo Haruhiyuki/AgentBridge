@@ -21,6 +21,8 @@ from agentbridge.api import (
     env_bool,
     env_float,
     env_int,
+    start_terminal_backend_supervision,
+    stop_terminal_backend_supervision,
 )
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, LeaseOwnerType
@@ -403,6 +405,7 @@ class LocalTerminalAgentServer:
                 auth_token=self.auth_token,
                 launcher_script_dir=self.desktop_launcher.launcher_script_dir,
             )
+        start_terminal_backend_supervision(self.terminal)
         if self.lifecycle_monitor_enabled:
             self.terminal.start_lifecycle_monitor(
                 interval_seconds=self.lifecycle_poll_interval_seconds
@@ -410,6 +413,7 @@ class LocalTerminalAgentServer:
 
     async def stop(self) -> None:
         self.terminal.stop_lifecycle_monitor()
+        stop_terminal_backend_supervision(self.terminal)
         if self._server:
             self._server.close()
             await self._server.wait_closed()

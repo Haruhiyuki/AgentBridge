@@ -13,7 +13,12 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from agentbridge.api import create_app, create_terminal_backend_from_env
+from agentbridge.api import (
+    create_app,
+    create_terminal_backend_from_env,
+    start_terminal_backend_supervision,
+    stop_terminal_backend_supervision,
+)
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, LeaseOwnerType, Visibility
 from agentbridge.pty_host import PtyHostServer, PtyHostTerminalBackend
@@ -669,6 +674,9 @@ def test_pty_host_backend_auto_starts_host_and_cleans_stale_socket(monkeypatch, 
 
     assert isinstance(backend, PtyHostTerminalBackend)
     assert backend.supervisor is not None
+    backend.start_supervision()
+    assert backend.supervision_status()["watchdog_enabled"] is False
+    assert backend.supervision_status()["watchdog_running"] is False
     try:
         assert backend.health()["status"] == "ok"
         assert backend.supervisor.process is not None
@@ -684,6 +692,92 @@ def test_pty_host_backend_auto_starts_host_and_cleans_stale_socket(monkeypatch, 
                 backend.supervisor.process.wait(timeout=5)
         if socket_path.exists():
             socket_path.unlink()
+
+
+def test_pty_host_watchdog_restarts_crashed_host(monkeypatch, tmp_path):
+    socket_path = Path(f"/tmp/agentbridge-pty-host-{uuid4().hex}.sock")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_BACKEND", "pty_host")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET", str(socket_path))
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN", "secret-token")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_ENABLED", "true")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH", str(tmp_path / "host.json"))
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_STARTUP_TIMEOUT_SECONDS", "5")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_INTERVAL_SECONDS", "0.05")
+
+    backend = create_terminal_backend_from_env()
+
+    assert isinstance(backend, PtyHostTerminalBackend)
+    assert backend.supervisor is not None
+    backend.start_supervision()
+    try:
+        first_process = None
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            candidate = backend.supervisor.process
+            if (
+                candidate is not None
+                and candidate.poll() is None
+                and backend.supervisor.is_healthy()
+            ):
+                first_process = candidate
+                break
+            time.sleep(0.05)
+        assert first_process is not None
+
+        first_process.kill()
+        first_process.wait(timeout=5)
+
+        restarted_process = None
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            candidate = backend.supervisor.process
+            if (
+                candidate is not None
+                and candidate is not first_process
+                and candidate.poll() is None
+                and backend.supervisor.is_healthy()
+            ):
+                restarted_process = candidate
+                break
+            time.sleep(0.05)
+
+        assert restarted_process is not None
+        status = backend.supervision_status()
+        assert status["watchdog_running"] is True
+        assert status["restart_count"] >= 1
+    finally:
+        backend.stop_supervision()
+        process = backend.supervisor.process
+        if process is not None and process.poll() is None:
+            process.terminate()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+        if socket_path.exists():
+            socket_path.unlink()
+
+
+def test_terminal_backend_supervision_hooks_call_backend():
+    class SupervisedFakeBackend(FakeTerminalBackend):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls: list[str] = []
+
+        def start_supervision(self) -> None:
+            self.calls.append("start")
+
+        def stop_supervision(self) -> None:
+            self.calls.append("stop")
+
+    backend = SupervisedFakeBackend()
+    terminal = TerminalAgentService(ControlPlane(), backend=backend)
+
+    start_terminal_backend_supervision(terminal)
+    stop_terminal_backend_supervision(terminal)
+
+    assert backend.calls == ["start", "stop"]
 
 
 def test_pty_host_backend_survives_client_recreation(tmp_path):
