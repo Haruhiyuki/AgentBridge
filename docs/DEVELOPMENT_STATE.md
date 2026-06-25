@@ -57,6 +57,9 @@ Implemented in this slice:
 - Retry API through `POST /api/v1/bot-gateway/retry-failed-deliveries`.
 - Alembic migration `0003_bot_delivery_retry_metadata` adds retry metadata columns.
 - Tests cover initial failure, due retry, and retry after repository restart.
+- Background Bot delivery retry worker with environment-controlled startup.
+- Retry worker status and bounded run-once APIs through `/api/v1/bot-gateway/retry-worker`.
+- Retry worker scheduling honors each record's `next_retry_at` and caps retry throughput by configured batch size and interval.
 - Explicit chat-context role bindings for group users.
 - Effective actor roles now merge request/default roles with persisted group role bindings before permission checks.
 - `/agent role list/grant/revoke` commands for maintainers/admins.
@@ -76,7 +79,7 @@ Not implemented yet:
 - Rich platform-specific renderer delivery state, message editing, and button/card support.
 - NoneBot plugin wrapper around the OneBot transport and inbound command/action event handling.
 - Native action/callback support for platforms that expose buttons or interactions.
-- Background delivery retry worker and platform rate-limit aware scheduling.
+- Platform-specific delivery rate-limit policies and adaptive scheduling.
 - Normalized relational query layer for large audit/event searches; the current SQLAlchemy repository persists Pydantic payload snapshots with indexed routing columns.
 - PostgreSQL-specific operational hardening, connection pooling policy, and migration deployment docs.
 
@@ -94,6 +97,7 @@ Not implemented yet:
 - Bot delivery records are persisted separately from semantic events so replay, delivery retries, and platform message IDs can evolve without mutating event history.
 - OneBot outbound delivery is implemented as a transport contract first. Full NoneBot integration still needs inbound event parsing, lifecycle registration, and adapter-specific rate-limit handling.
 - Delivery retry state is stored on delivery records, not events, so the immutable semantic event stream remains replayable while platform delivery can fail and recover independently.
+- The retry worker reuses the Bot Gateway retry path instead of writing records directly. This keeps manual retry, background retry, and future scheduler behavior consistent.
 - OneBot inbound support currently executes text commands only. Callback/button semantics remain platform-specific and should enter through the same command execution path once supported by an adapter.
 - Group role bindings are scoped to a chat context and actor ID. This keeps OneBot user permissions local to the group/private context while still allowing command/API callers to carry bootstrap roles.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
@@ -114,5 +118,5 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 1. Add tmux lifecycle supervision tests around the local daemon, including restart/reconnect behavior.
 2. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
 3. Add NoneBot plugin wrapper around the OneBot inbound/outbound adapters.
-4. Add a background delivery retry worker with platform rate-limit handling.
+4. Add platform-specific delivery rate-limit policies and adaptive scheduling.
 5. Expand policy engine to approval quorum, risk levels, and ABAC policy rules.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from threading import Event, RLock, Thread, current_thread
 from typing import Protocol
 from uuid import uuid4
 
@@ -284,3 +285,110 @@ class BotGatewayService:
     def _retry_delay(self, attempt_count: int) -> int:
         delay = self.retry_base_seconds * (2 ** max(attempt_count - 1, 0))
         return min(delay, self.retry_max_seconds)
+
+
+class BotDeliveryRetryWorker:
+    """Background scheduler for due Bot delivery retries."""
+
+    def __init__(
+        self,
+        gateway: BotGatewayService,
+        *,
+        enabled: bool = False,
+        interval_seconds: float = 30.0,
+        batch_size: int = 100,
+        chat_context_id: str | None = None,
+    ) -> None:
+        self.gateway = gateway
+        self.enabled = enabled
+        self.interval_seconds = max(float(interval_seconds), 0.1)
+        self.batch_size = max(int(batch_size), 1)
+        self.chat_context_id = chat_context_id
+        self._lock = RLock()
+        self._stop_event = Event()
+        self._thread: Thread | None = None
+        self.started_at: datetime | None = None
+        self.last_run_at: datetime | None = None
+        self.last_error: str | None = None
+        self.last_record_count = 0
+        self.run_count = 0
+
+    def start(self) -> bool:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return False
+            self._stop_event.clear()
+            self.started_at = utc_now()
+            self._thread = Thread(
+                target=self._run_loop,
+                name="agentbridge-bot-retry-worker",
+                daemon=True,
+            )
+            self._thread.start()
+            return True
+
+    def stop(self, timeout: float = 5.0) -> bool:
+        with self._lock:
+            thread = self._thread
+            if thread is None:
+                return False
+            self._stop_event.set()
+        if thread is not current_thread():
+            thread.join(timeout=timeout)
+        with self._lock:
+            stopped = not thread.is_alive()
+            if stopped:
+                self._thread = None
+            return stopped
+
+    def is_running(self) -> bool:
+        with self._lock:
+            return bool(self._thread and self._thread.is_alive())
+
+    def run_once(
+        self,
+        *,
+        chat_context_id: str | None = None,
+        limit: int | None = None,
+        now: datetime | None = None,
+    ) -> list[BotDeliveryRecord]:
+        retry_limit = max(int(limit or self.batch_size), 1)
+        retry_context = chat_context_id if chat_context_id is not None else self.chat_context_id
+        with self._lock:
+            self.run_count += 1
+            self.last_run_at = utc_now()
+        try:
+            records = self.gateway.retry_failed_deliveries(
+                chat_context_id=retry_context,
+                now=now,
+                limit=retry_limit,
+            )
+        except Exception as exc:
+            with self._lock:
+                self.last_error = str(exc)
+                self.last_record_count = 0
+            return []
+        with self._lock:
+            self.last_error = None
+            self.last_record_count = len(records)
+        return records
+
+    def status(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "enabled": self.enabled,
+                "running": bool(self._thread and self._thread.is_alive()),
+                "interval_seconds": self.interval_seconds,
+                "batch_size": self.batch_size,
+                "chat_context_id": self.chat_context_id,
+                "started_at": self.started_at.isoformat() if self.started_at else None,
+                "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
+                "last_error": self.last_error,
+                "last_record_count": self.last_record_count,
+                "run_count": self.run_count,
+            }
+
+    def _run_loop(self) -> None:
+        while not self._stop_event.is_set():
+            self.run_once()
+            self._stop_event.wait(self.interval_seconds)

@@ -19,6 +19,7 @@ This repository currently contains the first executable backend slice:
 - Local Console Client that acquires human lease on first input and forwards terminal input.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
 - Bot Gateway delivery service with persistent idempotent delivery records, in-memory text transport, and OneBot V11 HTTP transport.
+- Background Bot delivery retry worker with configurable interval and batch-size guardrails.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - REST API routes aligned with the design document's service interface.
 
@@ -95,7 +96,26 @@ curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/deliver-session-events \
   -d '{"session_id":"<session-id>","chat_context_id":"<chat-context-id>"}'
 ```
 
-Delivery records are idempotent by platform, chat context, event, and message index, and can be persisted through the SQLAlchemy repository. Failed sends are recorded with attempt count, last error, and next retry time; `POST /api/v1/bot-gateway/retry-failed-deliveries` retries due failures. The current in-memory transport is intended for contract tests; real NoneBot inbound handling is the next integration layer.
+Delivery records are idempotent by platform, chat context, event, and message index, and can be persisted through the SQLAlchemy repository. Failed sends are recorded with attempt count, last error, and next retry time; `POST /api/v1/bot-gateway/retry-failed-deliveries` retries due failures.
+
+The background retry worker is disabled by default. Enable it for long-running deployments:
+
+```bash
+export AGENTBRIDGE_BOT_RETRY_WORKER_ENABLED=true
+export AGENTBRIDGE_BOT_RETRY_INTERVAL_SECONDS=30
+export AGENTBRIDGE_BOT_RETRY_BATCH_SIZE=100
+```
+
+Check worker state or run one bounded retry pass:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/bot-gateway/retry-worker
+curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/retry-worker/run-once \
+  -H 'content-type: application/json' \
+  -d '{"limit":10}'
+```
+
+The current in-memory transport is intended for contract tests; real NoneBot inbound handling is the next integration layer.
 
 To send through a OneBot V11 HTTP endpoint:
 

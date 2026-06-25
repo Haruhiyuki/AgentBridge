@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from agentbridge.bot_gateway import BotGatewayService, BotPlatform, InMemoryBotTransport
+from agentbridge.bot_gateway import (
+    BotDeliveryRetryWorker,
+    BotGatewayService,
+    BotPlatform,
+    InMemoryBotTransport,
+)
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
@@ -205,6 +211,13 @@ class RetryBotDeliveriesRequest(BaseModel):
     limit: int = 100
 
 
+class RetryWorkerRunOnceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chat_context_id: str | None = None
+    limit: int | None = None
+
+
 class OneBotEventRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -223,15 +236,31 @@ class GroupRoleChangeRequest(BaseModel):
 
 
 def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
-    app = FastAPI(title="AgentBridge Control Plane", version="0.1.0")
     control = control_plane or ControlPlane(repository=create_repository_from_env())
     commands = CommandService(control)
     terminal = TerminalAgentService(control, backend=create_terminal_backend_from_env())
     bot_gateway = BotGatewayService(control, transport=create_bot_transport_from_env())
+    bot_retry_worker = create_bot_retry_worker_from_env(bot_gateway)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        if bot_retry_worker.enabled:
+            bot_retry_worker.start()
+        try:
+            yield
+        finally:
+            bot_retry_worker.stop()
+
+    app = FastAPI(
+        title="AgentBridge Control Plane",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
     app.state.control = control
     app.state.commands = commands
     app.state.terminal = terminal
     app.state.bot_gateway = bot_gateway
+    app.state.bot_retry_worker = bot_retry_worker
 
     @app.exception_handler(AgentBridgeError)
     async def agentbridge_error_handler(_, exc: AgentBridgeError):
@@ -248,6 +277,9 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
 
     def get_bot_gateway() -> BotGatewayService:
         return app.state.bot_gateway
+
+    def get_bot_retry_worker() -> BotDeliveryRetryWorker:
+        return app.state.bot_retry_worker
 
     @app.get("/api/v1/health")
     def health(control: ControlPlane = Depends(get_control)):
@@ -678,6 +710,26 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             for record in bot_gateway_service.list_records(chat_context_id, status=status)
         ]
 
+    @app.get("/api/v1/bot-gateway/retry-worker")
+    def bot_retry_worker_status(
+        retry_worker: BotDeliveryRetryWorker = Depends(get_bot_retry_worker),
+    ):
+        return retry_worker.status()
+
+    @app.post("/api/v1/bot-gateway/retry-worker/run-once")
+    def run_bot_retry_worker_once(
+        payload: RetryWorkerRunOnceRequest,
+        retry_worker: BotDeliveryRetryWorker = Depends(get_bot_retry_worker),
+    ):
+        records = retry_worker.run_once(
+            chat_context_id=payload.chat_context_id,
+            limit=payload.limit,
+        )
+        return {
+            "worker": retry_worker.status(),
+            "records": [record.model_dump(mode="json") for record in records],
+        }
+
     @app.post("/api/v1/onebot/events")
     def receive_onebot_event(
         payload: OneBotEventRequest,
@@ -756,6 +808,42 @@ def create_bot_transport_from_env():
             access_token=os.environ.get("AGENTBRIDGE_ONEBOT_ACCESS_TOKEN"),
         )
     return InMemoryBotTransport()
+
+
+def create_bot_retry_worker_from_env(bot_gateway: BotGatewayService) -> BotDeliveryRetryWorker:
+    return BotDeliveryRetryWorker(
+        bot_gateway,
+        enabled=env_bool("AGENTBRIDGE_BOT_RETRY_WORKER_ENABLED", default=False),
+        interval_seconds=env_float("AGENTBRIDGE_BOT_RETRY_INTERVAL_SECONDS", default=30.0),
+        batch_size=env_int("AGENTBRIDGE_BOT_RETRY_BATCH_SIZE", default=100),
+    )
+
+
+def env_bool(name: str, *, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def env_float(name: str, *, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a number") from exc
+
+
+def env_int(name: str, *, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
 
 
 def run() -> None:

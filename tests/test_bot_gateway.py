@@ -3,7 +3,12 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from agentbridge.api import create_app
-from agentbridge.bot_gateway import BotDeliveryStatus, BotGatewayService, InMemoryBotTransport
+from agentbridge.bot_gateway import (
+    BotDeliveryRetryWorker,
+    BotDeliveryStatus,
+    BotGatewayService,
+    InMemoryBotTransport,
+)
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, AgentBridgeError, ErrorCode
@@ -132,6 +137,35 @@ def test_bot_gateway_records_failures_and_retries_due_deliveries(tmp_path):
     assert len(transport.sent) == 1
 
 
+def test_bot_retry_worker_retries_due_failures_with_batch_limit(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    transport = FlakyTransport(fail_times=2)
+    gateway = BotGatewayService(control, transport=transport, retry_base_seconds=0)
+
+    failed = gateway.deliver_session_events(
+        session_id=session_id,
+        chat_context_id=context.id,
+    )
+    worker = BotDeliveryRetryWorker(gateway, batch_size=1, interval_seconds=60)
+    first_retry = worker.run_once()
+    second_retry = worker.run_once()
+
+    assert [record.status for record in failed] == [
+        BotDeliveryStatus.FAILED,
+        BotDeliveryStatus.FAILED,
+    ]
+    assert len(first_retry) == 1
+    assert first_retry[0].status == BotDeliveryStatus.SENT
+    assert first_retry[0].attempt_count == 2
+    assert len(second_retry) == 1
+    assert second_retry[0].status == BotDeliveryStatus.SENT
+    assert gateway.list_records(context.id, status=BotDeliveryStatus.FAILED) == []
+    assert len(transport.sent) == 2
+    assert worker.status()["run_count"] == 2
+    assert worker.status()["last_record_count"] == 1
+
+
 def test_bot_gateway_delivery_records_survive_repository_restart(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'bot-delivery.db'}"
     first_repo = SQLAlchemyRepository(database_url, create_schema=True)
@@ -245,3 +279,47 @@ def test_bot_gateway_api_delivers_and_lists_records(tmp_path):
         "skipped_duplicate"
     ]
     assert len(records_response.json()) == 1
+
+
+def test_bot_retry_worker_api_reports_status_and_runs_once(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    transport = FlakyTransport(fail_times=1)
+    gateway = BotGatewayService(control, transport=transport, retry_base_seconds=0)
+    app = create_app(control)
+    app.state.bot_gateway = gateway
+    app.state.bot_retry_worker = BotDeliveryRetryWorker(gateway, batch_size=10)
+    client = TestClient(app)
+
+    failed = gateway.deliver_session_events(
+        session_id=session_id,
+        chat_context_id=context.id,
+        after_seq=1,
+    )
+    status_response = client.get("/api/v1/bot-gateway/retry-worker")
+    run_response = client.post(
+        "/api/v1/bot-gateway/retry-worker/run-once",
+        json={"chat_context_id": context.id, "limit": 10},
+    )
+
+    assert failed[0].status == BotDeliveryStatus.FAILED
+    assert status_response.status_code == 200
+    assert status_response.json()["running"] is False
+    assert run_response.status_code == 200
+    assert run_response.json()["worker"]["last_record_count"] == 1
+    assert run_response.json()["records"][0]["status"] == "sent"
+    assert len(transport.sent) == 1
+
+
+def test_bot_retry_worker_can_autostart_from_environment(monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_BOT_RETRY_WORKER_ENABLED", "true")
+    monkeypatch.setenv("AGENTBRIDGE_BOT_RETRY_INTERVAL_SECONDS", "60")
+    app = create_app()
+
+    with TestClient(app) as client:
+        running_status = client.get("/api/v1/bot-gateway/retry-worker")
+        assert running_status.status_code == 200
+        assert running_status.json()["enabled"] is True
+        assert running_status.json()["running"] is True
+
+    assert app.state.bot_retry_worker.is_running() is False
