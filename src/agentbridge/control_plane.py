@@ -24,6 +24,7 @@ from agentbridge.domain import (
     AuditEvent,
     AuditOutcome,
     ChatContext,
+    DeviceCertificateRecord,
     DeviceIdentity,
     DeviceIdentityScope,
     DeviceIdentityStatus,
@@ -44,6 +45,7 @@ from agentbridge.domain import (
     Workspace,
     WorkspaceType,
     WriterLease,
+    utc_now,
 )
 from agentbridge.policy import ROLE_PERMISSIONS, ApprovalPolicy, Permission, PolicyEngine
 from agentbridge.storage import InMemoryRepository
@@ -1999,12 +2001,19 @@ class ControlPlane:
                     "请先为设备身份配置 device_key，或在同一次轮换中添加新的证书指纹。"
                 ),
             )
+        certificate_records = self._certificate_records_for_fingerprint_update(
+            existing_identity=existing_identity,
+            next_fingerprints=next_fingerprints,
+            actor_id=effective_actor.id,
+            source="fingerprint_rotation",
+        )
         identity = self.repository.upsert_device_identity(
             device_id=existing_identity.device_id,
             display_name=existing_identity.display_name,
             allowed_scopes=set(existing_identity.allowed_scopes),
             allowed_resource_ids=set(existing_identity.allowed_resource_ids),
             certificate_fingerprints=next_fingerprints,
+            certificate_records=certificate_records,
             updated_by=effective_actor.id,
         )
         added_values = sorted(next_fingerprints.difference(current_fingerprints))
@@ -2075,12 +2084,18 @@ class ControlPlane:
         )
         next_fingerprints = set(existing_identity.certificate_fingerprints)
         next_fingerprints.add(issued_certificate.certificate_fingerprint)
+        certificate_records = self._certificate_records_for_issued_certificate(
+            existing_identity=existing_identity,
+            issued_certificate=issued_certificate,
+            actor_id=effective_actor.id,
+        )
         identity = self.repository.upsert_device_identity(
             device_id=existing_identity.device_id,
             display_name=existing_identity.display_name,
             allowed_scopes=set(existing_identity.allowed_scopes),
             allowed_resource_ids=set(existing_identity.allowed_resource_ids),
             certificate_fingerprints=next_fingerprints,
+            certificate_records=certificate_records,
             updated_by=effective_actor.id,
         )
         self.audit(
@@ -2113,6 +2128,121 @@ class ControlPlane:
             },
         )
         return identity, issued_certificate
+
+    def _certificate_records_for_fingerprint_update(
+        self,
+        *,
+        existing_identity: DeviceIdentity,
+        next_fingerprints: set[str],
+        actor_id: str,
+        source: str,
+    ) -> list[DeviceCertificateRecord]:
+        now = utc_now()
+        records: list[DeviceCertificateRecord] = []
+        known_fingerprints: set[str] = set()
+        for record in existing_identity.certificate_records:
+            known_fingerprints.add(record.fingerprint)
+            if record.fingerprint not in next_fingerprints and record.removed_at is None:
+                records.append(
+                    record.model_copy(
+                        update={"removed_at": now, "removed_by": actor_id}
+                    )
+                )
+            elif (
+                record.fingerprint in next_fingerprints
+                and record.removed_at is not None
+            ):
+                records.append(
+                    record.model_copy(
+                        update={
+                            "source": source,
+                            "issued_by": actor_id,
+                            "issued_at": now,
+                            "removed_by": None,
+                            "removed_at": None,
+                        }
+                    )
+                )
+            else:
+                records.append(record)
+        removed_without_records = (
+            set(existing_identity.certificate_fingerprints)
+            .difference(next_fingerprints)
+            .difference(known_fingerprints)
+        )
+        for fingerprint in sorted(removed_without_records):
+            records.append(
+                DeviceCertificateRecord(
+                    fingerprint=fingerprint,
+                    source="fingerprint_import",
+                    issued_by=actor_id,
+                    issued_at=now,
+                    removed_by=actor_id,
+                    removed_at=now,
+                )
+            )
+        for fingerprint in sorted(next_fingerprints.difference(known_fingerprints)):
+            record_source = (
+                "fingerprint_import"
+                if fingerprint in existing_identity.certificate_fingerprints
+                else source
+            )
+            records.append(
+                DeviceCertificateRecord(
+                    fingerprint=fingerprint,
+                    source=record_source,
+                    issued_by=actor_id,
+                    issued_at=now,
+                )
+            )
+        return records
+
+    def _certificate_records_for_issued_certificate(
+        self,
+        *,
+        existing_identity: DeviceIdentity,
+        issued_certificate: IssuedDeviceCertificate,
+        actor_id: str,
+    ) -> list[DeviceCertificateRecord]:
+        now = utc_now()
+        issued_record = DeviceCertificateRecord(
+            fingerprint=issued_certificate.certificate_fingerprint,
+            source="managed_ca",
+            serial_number=issued_certificate.serial_number,
+            subject=issued_certificate.subject,
+            issuer=issued_certificate.issuer,
+            not_before=issued_certificate.not_before,
+            not_after=issued_certificate.not_after,
+            issued_by=actor_id,
+            issued_at=now,
+        )
+        records: list[DeviceCertificateRecord] = []
+        replaced = False
+        known_fingerprints: set[str] = set()
+        for record in existing_identity.certificate_records:
+            known_fingerprints.add(record.fingerprint)
+            if record.fingerprint == issued_record.fingerprint:
+                records.append(issued_record)
+                replaced = True
+            else:
+                records.append(record)
+        missing_existing_fingerprints = (
+            set(existing_identity.certificate_fingerprints)
+            .difference(known_fingerprints)
+            .difference({issued_record.fingerprint})
+        )
+        for fingerprint in sorted(missing_existing_fingerprints):
+            records.append(
+                DeviceCertificateRecord(
+                    fingerprint=fingerprint,
+                    source="fingerprint_import",
+                    issued_by=actor_id,
+                    issued_at=now,
+                )
+            )
+        if not replaced:
+            records.append(issued_record)
+        return records
 
     def revoke_device_identity(
         self,

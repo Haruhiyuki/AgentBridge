@@ -33,7 +33,7 @@ This repository currently contains the first executable backend slice:
 - Built-in Admin Web pages for system health, project/session operations with active Turn, queue, pending approval, and lease status, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
-Production PTY supervision, full mTLS/device certificate rotation workflows, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
+Production PTY supervision, device certificate renewal automation, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
 
 ## Development
 
@@ -266,13 +266,16 @@ identity through
 `POST /api/v1/device-identities/{device_id}/certificate-fingerprints/rotate` with
 `add_fingerprints` and/or `remove_fingerprints`. The rotation preserves the device key,
 allowed scopes, and resource allowlist, audits the added/removed fingerprints, and
-rejects removing the last credential from a certificate-only device.
+rejects removing the last credential from a certificate-only device. Device identity
+responses include `certificate_records`, retaining per-fingerprint source, issuance
+metadata where available, and removal timestamps for operational audit.
 Set `AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE` and
 `AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE` to enable CSR-based certificate issuance through
 `POST /api/v1/device-identities/{device_id}/certificates/issue`. The CSR Common Name
 must exactly match `device_id`; issued certificates include the client-auth EKU, return
-the public certificate PEM once, store the SHA-256 fingerprint on the managed identity,
-and preserve existing key/scope/resource settings. `AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD`
+the public certificate PEM once, store the SHA-256 fingerprint plus serial number,
+subject, issuer, and validity window on the managed identity, and preserve existing
+key/scope/resource settings. `AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD`
 or `AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD_FILE` can unlock encrypted CA keys, and
 `AGENTBRIDGE_DEVICE_CERT_DEFAULT_VALIDITY_DAYS` defaults new certificates to 30 days
 when the request omits `validity_days`.

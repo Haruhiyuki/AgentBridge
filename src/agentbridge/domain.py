@@ -218,6 +218,38 @@ class DeviceIdentityScope(StrEnum):
     BOT_GATEWAY_WS = "bot_gateway_ws"
 
 
+class DeviceCertificateRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    fingerprint: str
+    source: str = "fingerprint_import"
+    serial_number: str | None = None
+    subject: str | None = None
+    issuer: str | None = None
+    not_before: datetime | None = None
+    not_after: datetime | None = None
+    issued_by: str | None = None
+    issued_at: datetime = Field(default_factory=utc_now)
+    removed_by: str | None = None
+    removed_at: datetime | None = None
+
+    @field_validator("fingerprint")
+    @classmethod
+    def validate_fingerprint(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("certificate fingerprint must not be empty")
+        return normalized
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("certificate record source must not be empty")
+        return normalized
+
+
 class SemanticEventSource(StrEnum):
     CONTROL_PLANE = "control_plane"
     TERMINAL_AGENT = "terminal_agent"
@@ -383,6 +415,7 @@ class DeviceIdentity(BaseModel):
     )
     allowed_resource_ids: set[str] = Field(default_factory=set)
     certificate_fingerprints: set[str] = Field(default_factory=set)
+    certificate_records: list[DeviceCertificateRecord] = Field(default_factory=list)
     created_by: str
     created_at: datetime = Field(default_factory=utc_now)
     revoked_at: datetime | None = None

@@ -448,6 +448,8 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
     assert cert_only_key is None
     assert cert_only_identity.key_hash is None
     assert cert_only_identity.certificate_fingerprints == {"ddeeff"}
+    assert cert_only_identity.certificate_records[0].fingerprint == "ddeeff"
+    assert cert_only_identity.certificate_records[0].source == "fingerprint_import"
 
     restored = SQLAlchemyRepository(database_url)
     restored_identities = {
@@ -486,9 +488,13 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
     }
     assert restored_identity.allowed_resource_ids == {"proj_allowed", "sess_allowed"}
     assert restored_identity.certificate_fingerprints == {"aabbcc"}
+    assert restored_identity.certificate_records[0].fingerprint == "aabbcc"
+    assert restored_identity.certificate_records[0].source == "fingerprint_import"
     restored_cert_only = restored_identities["cert-only"]
     assert restored_cert_only.key_hash is None
     assert restored_cert_only.certificate_fingerprints == {"ddeeff"}
+    assert restored_cert_only.certificate_records[0].fingerprint == "ddeeff"
+    assert restored_cert_only.certificate_records[0].removed_at is None
     used_identity = restored.mark_device_identity_used("laptop")
     assert used_identity.last_used_at is not None
 

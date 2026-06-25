@@ -385,6 +385,9 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
     assert created["allowed_scopes"] == ["device_manage", "http_api"]
     assert created["allowed_resource_ids"] == []
     assert created["certificate_fingerprints"] == ["aabbcc"]
+    assert created["certificate_records"][0]["fingerprint"] == "aabbcc"
+    assert created["certificate_records"][0]["source"] == "fingerprint_import"
+    assert created["certificate_records"][0]["removed_at"] is None
     assert created["device_key"] == "managed-secret"
     assert "key_hash" not in created
     assert "key_salt" not in created
@@ -399,6 +402,7 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
     assert listed["allowed_scopes"] == ["device_manage", "http_api"]
     assert listed["allowed_resource_ids"] == []
     assert listed["certificate_fingerprints"] == ["aabbcc"]
+    assert listed["certificate_records"][0]["fingerprint"] == "aabbcc"
     assert listed["last_used_at"] is not None
     assert "device_key" not in listed
     assert revoke_response.status_code == 200
@@ -727,6 +731,21 @@ def test_managed_device_identity_rotates_certificate_fingerprints():
     assert rotated["device_id"] == "rotating-device"
     assert rotated["allowed_scopes"] == ["device_manage", "http_api"]
     assert rotated["certificate_fingerprints"] == ["ddeeff"]
+    old_record = next(
+        record
+        for record in rotated["certificate_records"]
+        if record["fingerprint"] == "aabbcc"
+    )
+    new_record = next(
+        record
+        for record in rotated["certificate_records"]
+        if record["fingerprint"] == "ddeeff"
+    )
+    assert old_record["source"] == "fingerprint_import"
+    assert old_record["removed_at"] is not None
+    assert old_record["removed_by"] == "security-admin"
+    assert new_record["source"] == "fingerprint_rotation"
+    assert new_record["removed_at"] is None
     assert old_certificate_response.status_code == 403
     assert new_certificate_response.status_code == 200
     assert key_response.status_code == 200
@@ -822,6 +841,14 @@ def test_managed_device_identity_issues_ca_backed_certificate(monkeypatch, tmp_p
     assert issue_response.status_code == 200
     assert issued["certificate_fingerprint"] == issued_fingerprint
     assert issued["device_identity"]["certificate_fingerprints"] == [issued_fingerprint]
+    issued_record = issued["device_identity"]["certificate_records"][0]
+    assert issued_record["fingerprint"] == issued_fingerprint
+    assert issued_record["source"] == "managed_ca"
+    assert issued_record["serial_number"] == str(issued_certificate.serial_number)
+    assert issued_record["subject"] == "CN=issued-device"
+    assert issued_record["issuer"] == issued["issuer"]
+    assert issued_record["not_after"] == issued["not_after"]
+    assert issued_record["removed_at"] is None
     assert issued["device_identity"]["allowed_scopes"] == ["device_manage", "http_api"]
     assert ExtendedKeyUsageOID.CLIENT_AUTH in extended_key_usage
     assert certificate_response.status_code == 200
@@ -875,6 +902,7 @@ def test_managed_device_identity_rejects_certificate_csr_for_wrong_device(
     assert issue_response.json()["error_code"] == "COMMAND_ARGUMENT_INVALID"
     assert issue_response.json()["details"]["csr_common_name"] == "other-device"
     assert identity_response.json()[0]["certificate_fingerprints"] == []
+    assert identity_response.json()[0]["certificate_records"] == []
 
 
 def test_managed_device_identity_rejects_certificate_issue_with_mismatched_ca_key(

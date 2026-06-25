@@ -20,6 +20,8 @@ class IssuedDeviceCertificate:
     serial_number: str
     not_before: datetime
     not_after: datetime
+    subject: str
+    issuer: str
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -27,8 +29,10 @@ class IssuedDeviceCertificate:
             "certificate_fingerprint": self.certificate_fingerprint,
             "ca_certificate_pem": self.ca_certificate_pem,
             "serial_number": self.serial_number,
-            "not_before": self.not_before.isoformat(),
-            "not_after": self.not_after.isoformat(),
+            "not_before": _datetime_payload(self.not_before),
+            "not_after": _datetime_payload(self.not_after),
+            "subject": self.subject,
+            "issuer": self.issuer,
         }
 
 
@@ -190,6 +194,8 @@ class DeviceCertificateIssuer:
             serial_number=str(certificate.serial_number),
             not_before=not_before,
             not_after=not_after,
+            subject=certificate.subject.rfc4514_string(),
+            issuer=certificate.issuer.rfc4514_string(),
         )
 
     def _validate_ca_certificate(self) -> None:
@@ -233,3 +239,7 @@ def certificate_request_common_name(csr: x509.CertificateSigningRequest) -> str 
     if not attributes:
         return None
     return attributes[0].value
+
+
+def _datetime_payload(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")

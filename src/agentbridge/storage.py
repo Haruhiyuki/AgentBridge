@@ -22,6 +22,7 @@ from agentbridge.domain import (
     BotDeliveryStatus,
     ChatContext,
     CommandResult,
+    DeviceCertificateRecord,
     DeviceIdentity,
     DeviceIdentityScope,
     DeviceIdentityStatus,
@@ -578,6 +579,7 @@ class InMemoryRepository:
         allowed_scopes: set[DeviceIdentityScope] | None = None,
         allowed_resource_ids: set[str] | None = None,
         certificate_fingerprints: set[str] | None = None,
+        certificate_records: list[DeviceCertificateRecord] | None = None,
     ) -> DeviceIdentity:
         normalized_device_id = device_id.strip()
         if not normalized_device_id:
@@ -612,6 +614,12 @@ class InMemoryRepository:
                 if allowed_resource_ids is not None
                 else (set(existing.allowed_resource_ids) if existing else set())
             )
+            identity_certificate_records = self._device_certificate_records_for_update(
+                existing=existing,
+                fingerprints=identity_certificate_fingerprints,
+                updated_by=updated_by,
+                certificate_records=certificate_records,
+            )
             identity_key_hash = key_hash if key_hash is not None else (
                 existing.key_hash if existing else None
             )
@@ -642,6 +650,7 @@ class InMemoryRepository:
                 allowed_scopes=identity_scopes,
                 allowed_resource_ids=identity_resource_ids,
                 certificate_fingerprints=identity_certificate_fingerprints,
+                certificate_records=identity_certificate_records,
                 created_by=existing.created_by if existing else updated_by,
                 created_at=existing.created_at if existing else now,
                 revoked_at=None,
@@ -649,6 +658,52 @@ class InMemoryRepository:
             )
             self.device_identities[identity.device_id] = identity
             return identity
+
+    def _device_certificate_records_for_update(
+        self,
+        *,
+        existing: DeviceIdentity | None,
+        fingerprints: set[str],
+        updated_by: str,
+        certificate_records: list[DeviceCertificateRecord] | None,
+    ) -> list[DeviceCertificateRecord]:
+        if certificate_records is not None:
+            return list(certificate_records)
+        now = utc_now()
+        records = list(existing.certificate_records) if existing else []
+        known_fingerprints = {record.fingerprint for record in records}
+        updated_records: list[DeviceCertificateRecord] = []
+        for record in records:
+            if record.fingerprint not in fingerprints and record.removed_at is None:
+                updated_records.append(
+                    record.model_copy(
+                        update={"removed_at": now, "removed_by": updated_by}
+                    )
+                )
+            elif record.fingerprint in fingerprints and record.removed_at is not None:
+                updated_records.append(
+                    record.model_copy(
+                        update={
+                            "removed_at": None,
+                            "removed_by": None,
+                            "source": "fingerprint_import",
+                            "issued_by": updated_by,
+                            "issued_at": now,
+                        }
+                    )
+                )
+            else:
+                updated_records.append(record)
+        for fingerprint in sorted(fingerprints.difference(known_fingerprints)):
+            updated_records.append(
+                DeviceCertificateRecord(
+                    fingerprint=fingerprint,
+                    source="fingerprint_import",
+                    issued_by=updated_by,
+                    issued_at=now,
+                )
+            )
+        return updated_records
 
     def get_device_identity(self, device_id: str) -> DeviceIdentity:
         with self._lock:

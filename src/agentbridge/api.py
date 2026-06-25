@@ -2052,6 +2052,9 @@ def device_identity_public_payload(identity: DeviceIdentity) -> dict[str, object
         "allowed_scopes": sorted(scope.value for scope in identity.allowed_scopes),
         "allowed_resource_ids": sorted(identity.allowed_resource_ids),
         "certificate_fingerprints": sorted(identity.certificate_fingerprints),
+        "certificate_records": [
+            record.model_dump(mode="json") for record in identity.certificate_records
+        ],
         "created_by": identity.created_by,
         "created_at": identity.created_at.isoformat(),
         "revoked_at": identity.revoked_at.isoformat() if identity.revoked_at else None,
