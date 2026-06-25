@@ -208,9 +208,9 @@ optional caller-supplied `device_key`. `allowed_scopes` can narrow the key or ma
 certificate fingerprint to one or more scopes: `http_api`, `audit_read`,
 `bot_gateway_read`, `bot_gateway_manage`, `onebot_event_ingest`, `command_parse`,
 `command_execute`, `device_manage`, `policy_read`, `policy_manage`, `group_role_manage`,
-`chat_context_manage`, `project_read`, `project_manage`, `session_manage`, `session_send`,
-`session_event_ingest`, `interaction_read`, `interaction_manage`, `terminal_read`,
-`terminal_control`, `session_events_ws`, `rendered_events_ws`, `terminal_ws`, and
+`chat_context_manage`, `project_read`, `project_manage`, `session_read`, `session_manage`,
+`session_send`, `session_event_ingest`, `interaction_read`, `interaction_manage`,
+`terminal_read`, `terminal_control`, `session_events_ws`, `rendered_events_ws`, `terminal_ws`, and
 `bot_gateway_ws`;
 omitting it grants all current scopes.
 Managed device credentials need `audit_read` to call audit and event history HTTP read APIs,
@@ -225,9 +225,10 @@ update, or delete access/approval policies,
 `chat_context_manage` to create chat contexts or update their active project/session
 pointers, `project_read` to list projects, show project details, or list workspaces,
 `project_manage` to create projects, add workspaces, or bind projects to
-chat spaces, `session_manage` to create or close sessions and acquire or release writer
-leases, `session_send` to enqueue session turns, `session_event_ingest` to ingest
-Terminal Agent session events, `interaction_read` to list or show interactions,
+chat spaces, `session_read` to list or show sessions, `session_manage` to create
+or close sessions and acquire or release writer leases, `session_send` to enqueue
+session turns, `session_event_ingest` to ingest Terminal Agent session events,
+`interaction_read` to list or show interactions,
 `interaction_manage` to create interactions or answer, cancel, and vote on them,
 `terminal_read` to call terminal snapshot, terminal status,
 or lifecycle status HTTP routes, and `terminal_control` to call terminal start,

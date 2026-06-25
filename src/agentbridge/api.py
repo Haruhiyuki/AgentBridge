@@ -2232,6 +2232,14 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         )
     ):
         return DeviceIdentityScope.PROJECT_READ
+    if method == "GET" and (
+        path == "/api/v1/sessions"
+        or (
+            len(path_segments) == 5
+            and path_segments[:4] == ["", "api", "v1", "sessions"]
+        )
+    ):
+        return DeviceIdentityScope.SESSION_READ
     if method == "POST" and path == "/api/v1/sessions":
         return DeviceIdentityScope.SESSION_MANAGE
     if (

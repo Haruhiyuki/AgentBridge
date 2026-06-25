@@ -3448,6 +3448,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       "chat_context_manage",
       "project_read",
       "project_manage",
+      "session_read",
       "session_manage",
       "session_send",
       "session_event_ingest",

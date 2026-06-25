@@ -200,6 +200,7 @@ class DeviceIdentityScope(StrEnum):
     CHAT_CONTEXT_MANAGE = "chat_context_manage"
     PROJECT_READ = "project_read"
     PROJECT_MANAGE = "project_manage"
+    SESSION_READ = "session_read"
     SESSION_MANAGE = "session_manage"
     SESSION_SEND = "session_send"
     SESSION_EVENT_INGEST = "session_event_ingest"
