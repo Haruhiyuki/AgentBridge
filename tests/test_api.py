@@ -1224,6 +1224,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "session_send" in html
     assert "session_event_ingest" in html
     assert "interaction_manage" in html
+    assert "terminal_read" in html
     assert "terminal_control" in html
     assert "certificate-fingerprints" in html
     assert "generated-key" in html
@@ -3365,10 +3366,6 @@ def test_managed_device_identity_requires_terminal_control_scope_for_terminal_ht
         "x-agentbridge-device-key": "managed-secret",
     }
     regular_http_response = client.get("/api/v1/projects", headers=key_headers)
-    lifecycle_status_response = client.get(
-        "/api/v1/terminal/lifecycle-monitor",
-        headers=key_headers,
-    )
     start_response = client.post(
         f"/api/v1/sessions/{session_id}/terminal/start",
         json={
@@ -3386,9 +3383,126 @@ def test_managed_device_identity_requires_terminal_control_scope_for_terminal_ht
 
     assert create_response.status_code == 200
     assert regular_http_response.status_code == 200
-    assert lifecycle_status_response.status_code == 200
     assert start_response.status_code == 403
     assert run_once_response.status_code == 403
+
+
+def test_managed_device_identity_requires_terminal_read_scope_for_terminal_http_reads(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-terminal-read-scope",
+        prefix="terminal-read-scope",
+        name="Terminal Read Scope",
+    )
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/terminal/start",
+        json={
+            "actor": actor,
+            "command": "fake-cli",
+            "trace_id": "terminal-read-scope-start",
+        },
+    )
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-terminal-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "terminal-read-scope-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-terminal-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    regular_http_response = client.get("/api/v1/projects", headers=key_headers)
+    lifecycle_status_response = client.get(
+        "/api/v1/terminal/lifecycle-monitor",
+        headers=key_headers,
+    )
+    snapshot_response = client.get(
+        f"/api/v1/sessions/{session_id}/terminal/snapshot",
+        headers=key_headers,
+    )
+    status_response = client.get(
+        f"/api/v1/sessions/{session_id}/terminal/status",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert create_response.status_code == 200
+    assert start_response.status_code == 200
+    assert regular_http_response.status_code == 200
+    assert lifecycle_status_response.status_code == 403
+    assert snapshot_response.status_code == 403
+    assert status_response.status_code == 403
+
+
+def test_managed_device_identity_terminal_read_scope_allows_terminal_http_reads(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-terminal-read-manager-scope",
+        prefix="terminal-read-manager-scope",
+        name="Terminal Read Manager Scope",
+    )
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/terminal/start",
+        json={
+            "actor": actor,
+            "command": "fake-cli",
+            "trace_id": "terminal-read-manager-start",
+        },
+    )
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "terminal-read-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "terminal_read"],
+            "trace_id": "terminal-read-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "terminal-read-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    lifecycle_status_response = client.get(
+        "/api/v1/terminal/lifecycle-monitor",
+        headers=headers,
+    )
+    snapshot_response = client.get(
+        f"/api/v1/sessions/{session_id}/terminal/snapshot",
+        headers=headers,
+    )
+    status_response = client.get(
+        f"/api/v1/sessions/{session_id}/terminal/status",
+        headers=headers,
+    )
+
+    assert create_response.status_code == 200
+    assert start_response.status_code == 200
+    assert lifecycle_status_response.status_code == 200
+    assert snapshot_response.status_code == 200
+    assert snapshot_response.json() == {"snapshot": ""}
+    assert status_response.status_code == 200
+    assert status_response.json()["started"] is True
+    assert status_response.json()["running"] is True
 
 
 def test_managed_device_identity_terminal_control_scope_allows_terminal_http_apis(

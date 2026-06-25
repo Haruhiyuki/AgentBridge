@@ -418,6 +418,7 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
             DeviceIdentityScope.SESSION_SEND,
             DeviceIdentityScope.SESSION_EVENT_INGEST,
             DeviceIdentityScope.SESSION_EVENTS_WS,
+            DeviceIdentityScope.TERMINAL_READ,
             DeviceIdentityScope.TERMINAL_CONTROL,
         },
         certificate_fingerprints={"SHA256:AA:BB:CC"},
@@ -465,6 +466,7 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
         DeviceIdentityScope.SESSION_SEND,
         DeviceIdentityScope.SESSION_EVENT_INGEST,
         DeviceIdentityScope.SESSION_EVENTS_WS,
+        DeviceIdentityScope.TERMINAL_READ,
         DeviceIdentityScope.TERMINAL_CONTROL,
     }
     assert restored_identity.certificate_fingerprints == {"aabbcc"}

@@ -209,9 +209,9 @@ certificate fingerprint to one or more scopes: `http_api`, `bot_gateway_manage`,
 `onebot_event_ingest`, `command_parse`, `command_execute`, `device_manage`,
 `policy_manage`, `group_role_manage`, `chat_context_manage`, `project_manage`,
 `session_manage`, `session_send`, `session_event_ingest`, `interaction_manage`,
-`terminal_control`, `session_events_ws`, `rendered_events_ws`, `terminal_ws`, and
-`bot_gateway_ws`; omitting it grants all current scopes. Managed device credentials
-need `bot_gateway_manage` to call Bot Gateway HTTP mutation APIs,
+`terminal_read`, `terminal_control`, `session_events_ws`, `rendered_events_ws`,
+`terminal_ws`, and `bot_gateway_ws`; omitting it grants all current scopes.
+Managed device credentials need `bot_gateway_manage` to call Bot Gateway HTTP mutation APIs,
 `onebot_event_ingest` to receive OneBot inbound events, `command_parse` to call
 `/api/v1/commands/parse`, `command_execute` to call `/api/v1/commands/execute`,
 `device_manage` to call `/api/v1/device-identities` and its child routes,
@@ -222,8 +222,9 @@ pointers, `project_manage` to create projects, add workspaces, or bind projects 
 chat spaces, `session_manage` to create or close sessions and acquire or release writer
 leases, `session_send` to enqueue session turns, `session_event_ingest` to ingest
 Terminal Agent session events, `interaction_manage` to create interactions or answer,
-cancel, and vote on them, and `terminal_control` to call terminal start, restart,
-input, or lifecycle run-once HTTP routes. Command execution, direct turn enqueue, and
+cancel, and vote on them, `terminal_read` to call terminal snapshot, terminal status,
+or lifecycle status HTTP routes, and `terminal_control` to call terminal start,
+restart, input, or lifecycle run-once HTTP routes. Command execution, direct turn enqueue, and
 OneBot inbound commands still evaluate the effective actor through RBAC and access
 policy.
 `certificate_fingerprints` can bind one or more

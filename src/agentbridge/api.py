@@ -2261,6 +2261,15 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         and path_segments[5] in {"answer", "cancel", "vote"}
     ):
         return DeviceIdentityScope.INTERACTION_MANAGE
+    if path == "/api/v1/terminal/lifecycle-monitor":
+        return DeviceIdentityScope.TERMINAL_READ
+    if (
+        len(path_segments) >= 7
+        and path_segments[:4] == ["", "api", "v1", "sessions"]
+        and path_segments[5] == "terminal"
+        and path_segments[6] in {"snapshot", "status"}
+    ):
+        return DeviceIdentityScope.TERMINAL_READ
     if path == "/api/v1/terminal/lifecycle-monitor/run-once":
         return DeviceIdentityScope.TERMINAL_CONTROL
     if (
