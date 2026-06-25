@@ -14,6 +14,7 @@ from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
     AccessPolicyEffect,
     Actor,
+    AuditOutcome,
     DeviceIdentityScope,
     DeviceIdentityStatus,
     InteractionType,
@@ -315,6 +316,14 @@ def test_sqlalchemy_repository_lists_filtered_audit_events(tmp_path):
         visibility=Visibility.GROUP,
         trace_id="audit-session-two",
     )
+    scalar_audit = first_repo.append_audit(
+        action="audit.scalar",
+        actor_id=maintainer.id,
+        outcome=AuditOutcome.ALLOWED,
+        trace_id="audit-scalar",
+        project_id=project.id,
+        details={"flags": {"ok": True, "missing": None}, "count": 3},
+    )
 
     restored = SQLAlchemyRepository(database_url)
 
@@ -401,6 +410,24 @@ def test_sqlalchemy_repository_lists_filtered_audit_events(tmp_path):
         )
         == []
     )
+    bool_details = restored.list_audit_events(
+        action="audit.scalar",
+        details_field="flags.ok",
+        details_value="true",
+    )
+    assert [event.id for event in bool_details] == [scalar_audit.id]
+    null_details = restored.list_audit_events(
+        action="audit.scalar",
+        details_field="flags.missing",
+        details_value="null",
+    )
+    assert [event.id for event in null_details] == [scalar_audit.id]
+    numeric_details = restored.list_audit_events(
+        action="audit.scalar",
+        details_field="count",
+        details_value="3",
+    )
+    assert [event.id for event in numeric_details] == [scalar_audit.id]
     with engine.connect() as connection:
         details_text = connection.execute(
             text(
@@ -569,6 +596,65 @@ def test_sqlalchemy_repository_lists_filtered_semantic_events(tmp_path):
         payload_query="100%",
     )
     assert [event.id for event in literal_percent_filtered] == [percent_event.id]
+    true_scalar_event = control.emit_event(
+        event_type="assistant.delta",
+        source=SemanticEventSource.TERMINAL_AGENT,
+        trace_id="event-search-scalar-true",
+        project_id=project.id,
+        session_id=second_session.id,
+        payload={"flags": {"ok": True, "missing": None}, "count": 3},
+    )
+    false_scalar_event = control.emit_event(
+        event_type="assistant.delta",
+        source=SemanticEventSource.TERMINAL_AGENT,
+        trace_id="event-search-scalar-false",
+        project_id=project.id,
+        session_id=second_session.id,
+        payload={"flags": {"ok": False}, "count": 4},
+    )
+    true_payload = restored.list_semantic_events(
+        project_id=project.id,
+        event_type="assistant.delta",
+        payload_field="flags.ok",
+        payload_value="true",
+    )
+    assert [event.id for event in true_payload] == [true_scalar_event.id]
+    false_payload = restored.list_semantic_events(
+        project_id=project.id,
+        event_type="assistant.delta",
+        payload_field="flags.ok",
+        payload_value="false",
+    )
+    assert [event.id for event in false_payload] == [false_scalar_event.id]
+    null_payload = restored.list_semantic_events(
+        project_id=project.id,
+        event_type="assistant.delta",
+        payload_field="flags.missing",
+        payload_value="null",
+    )
+    assert [event.id for event in null_payload] == [true_scalar_event.id]
+    field_exists_payload = restored.list_semantic_events(
+        project_id=project.id,
+        event_type="assistant.delta",
+        payload_field="flags.missing",
+    )
+    assert [event.id for event in field_exists_payload] == [true_scalar_event.id]
+    numeric_payload = restored.list_semantic_events(
+        project_id=project.id,
+        event_type="assistant.delta",
+        payload_field="count",
+        payload_value="3",
+    )
+    assert [event.id for event in numeric_payload] == [true_scalar_event.id]
+    assert (
+        restored.list_semantic_events(
+            project_id=project.id,
+            event_type="assistant.delta",
+            payload_field="flags.ok",
+            payload_value="1",
+        )
+        == []
+    )
     assert (
         restored.list_semantic_events(
             project_id=project.id,

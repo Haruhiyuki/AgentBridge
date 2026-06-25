@@ -42,6 +42,7 @@ from agentbridge.domain import (
 from agentbridge.storage import (
     InMemoryRepository,
     normalized_payload_query,
+    payload_field_matches,
     payload_field_path,
     payload_search_text,
     utc_datetime_key,
@@ -258,17 +259,30 @@ bot_delivery_records_table = Table(
 )
 
 
-def apply_json_field_filter(stmt, root, *, field: str | None, expected: str | None):
+def should_apply_sql_json_field_value_filter(expected: str | None) -> bool:
+    normalized_expected = normalized_payload_query(expected)
+    if normalized_expected is None:
+        return False
+    if normalized_expected in {"true", "false", "null", "none"}:
+        return False
+    return not normalized_expected.startswith(("{", "["))
+
+
+def apply_json_field_candidate_filter(
+    stmt,
+    root,
+    *,
+    field: str | None,
+    expected: str | None,
+):
     path = payload_field_path(field)
-    if path is None:
+    if path is None or not should_apply_sql_json_field_value_filter(expected):
         return stmt
     expression = root
     for segment in path:
         expression = expression[segment]
     text_expression = expression.as_string()
     normalized_expected = normalized_payload_query(expected)
-    if normalized_expected is None:
-        return stmt.where(text_expression.is_not(None))
     return stmt.where(func.lower(text_expression) == normalized_expected)
 
 
@@ -484,7 +498,7 @@ class SQLAlchemyRepository(InMemoryRepository):
             stmt = stmt.where(
                 audit_events_table.c.created_at <= utc_datetime_key(created_to)
             )
-        stmt = apply_json_field_filter(
+        stmt = apply_json_field_candidate_filter(
             stmt,
             audit_events_table.c.payload["details"],
             field=details_field,
@@ -503,6 +517,12 @@ class SQLAlchemyRepository(InMemoryRepository):
         with self._lock, self.engine.connect() as connection:
             for row in connection.execute(stmt):
                 event = AuditEvent.model_validate(row.payload)
+                if not payload_field_matches(
+                    event.details,
+                    details_field,
+                    details_value,
+                ):
+                    continue
                 events.append(event)
                 if len(events) >= max_results:
                     break
@@ -551,7 +571,7 @@ class SQLAlchemyRepository(InMemoryRepository):
             stmt = stmt.where(
                 semantic_events_table.c.created_at <= utc_datetime_key(created_to)
             )
-        stmt = apply_json_field_filter(
+        stmt = apply_json_field_candidate_filter(
             stmt,
             semantic_events_table.c.payload["payload"],
             field=payload_field,
@@ -570,6 +590,12 @@ class SQLAlchemyRepository(InMemoryRepository):
         with self._lock, self.engine.connect() as connection:
             for row in connection.execute(stmt):
                 event = SemanticEvent.model_validate(row.payload)
+                if not payload_field_matches(
+                    event.payload,
+                    payload_field,
+                    payload_value,
+                ):
+                    continue
                 events.append(event)
                 if len(events) >= max_results:
                     break

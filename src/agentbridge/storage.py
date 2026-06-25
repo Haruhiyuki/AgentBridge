@@ -136,7 +136,9 @@ def payload_field_value(payload: object, path: tuple[str, ...]) -> object:
 def payload_value_search_text(value: object) -> str:
     if isinstance(value, str):
         return value.casefold()
-    if value is None or isinstance(value, (bool, int, float)):
+    if value is None or isinstance(value, bool):
+        return json.dumps(value).casefold()
+    if isinstance(value, (int, float)):
         return str(value).casefold()
     return payload_search_text(value)
 
