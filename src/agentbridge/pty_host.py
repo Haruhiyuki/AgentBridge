@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hmac
 import json
 import os
@@ -193,7 +194,12 @@ class PtyHostTerminalBackend:
             "PTY Host 不可用。",
             next_step="请启动 agentbridge-pty-host，或切换终端后端。",
             status_code=503,
-            details={"reason": str(exc), "socket_path": str(self.socket_path)},
+            details={
+                "reason": str(exc),
+                "socket_path": str(self.socket_path),
+                "errno": exc.errno,
+                "exception": type(exc).__name__,
+            },
         )
 
     def current_auth_token(self) -> str:
@@ -225,7 +231,7 @@ class PtyHostSupervisor:
                 return False
             self._raise_if_auth_failed(health_error)
             previous_process = self.process
-            self._remove_stale_socket()
+            self._remove_stale_socket(health_error)
             self.process = subprocess.Popen(
                 self.start_command(),
                 stdin=subprocess.DEVNULL,
@@ -376,19 +382,71 @@ class PtyHostSupervisor:
             )
         return env
 
-    def _remove_stale_socket(self) -> None:
+    def _remove_stale_socket(self, health_error: AgentBridgeError | None) -> None:
         socket_path = self.config.socket_path.expanduser()
         if not socket_path.exists():
             return
         if not socket_path.is_socket():
-            raise AgentBridgeError(
+            error = AgentBridgeError(
                 ErrorCode.RESOURCE_CONFLICT,
                 "PTY Host socket 路径已被非 socket 文件占用。",
                 next_step="请移除该路径或配置新的 AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET。",
                 status_code=409,
                 details={"socket_path": str(socket_path)},
             )
-        socket_path.unlink()
+            self.last_error = error.message
+            raise error
+        if not self._stale_socket_unlink_allowed(health_error):
+            details: dict[str, object] = {"socket_path": str(socket_path)}
+            if health_error is not None:
+                details.update(
+                    {
+                        "health_error_code": health_error.code.value,
+                        "health_error_message": health_error.message,
+                        "health_error_details": health_error.details,
+                    }
+                )
+            error = AgentBridgeError(
+                ErrorCode.RESOURCE_CONFLICT,
+                "PTY Host socket 存在但健康检查未证明它已过期。",
+                next_step=(
+                    "请检查 agentbridge-pty-host 日志、token、权限和进程状态；"
+                    "确认没有活跃 host 后再手动移除该 socket。"
+                ),
+                status_code=409,
+                details=details,
+            )
+            self.last_error = error.message
+            raise error
+        try:
+            socket_path.unlink()
+        except OSError as exc:
+            error = AgentBridgeError(
+                ErrorCode.RESOURCE_CONFLICT,
+                "PTY Host stale socket 清理失败。",
+                next_step="请检查 socket 路径权限后重试。",
+                status_code=409,
+                details={
+                    "socket_path": str(socket_path),
+                    "reason": str(exc),
+                    "errno": exc.errno,
+                    "exception": type(exc).__name__,
+                },
+            )
+            self.last_error = error.message
+            raise error from exc
+
+    def _stale_socket_unlink_allowed(
+        self, health_error: AgentBridgeError | None
+    ) -> bool:
+        if health_error is None:
+            return False
+        if health_error.code != ErrorCode.PLATFORM_CAPABILITY_MISSING:
+            return False
+        return health_error.details.get("errno") in {
+            errno.ECONNREFUSED,
+            errno.ENOENT,
+        }
 
 
 class PtyHostServer(socketserver.ThreadingUnixStreamServer):

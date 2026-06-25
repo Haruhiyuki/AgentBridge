@@ -7,7 +7,7 @@ import socket
 import subprocess
 import time
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from uuid import uuid4
 
 import pytest
@@ -906,6 +906,54 @@ def test_pty_host_supervisor_preserves_active_socket_on_auth_failure(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_pty_host_supervisor_preserves_socket_on_health_timeout(tmp_path):
+    socket_path = Path(f"/tmp/agentbridge-pty-host-{uuid4().hex}.sock")
+    stop_event = Event()
+    connections: list[socket.socket] = []
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.bind(str(socket_path))
+    listener.listen()
+    listener.settimeout(0.05)
+
+    def accept_connections() -> None:
+        while not stop_event.is_set():
+            try:
+                connection, _ = listener.accept()
+            except TimeoutError:
+                continue
+            except OSError:
+                break
+            connections.append(connection)
+
+    thread = Thread(target=accept_connections, daemon=True)
+    thread.start()
+    try:
+        supervisor = PtyHostSupervisor(
+            PtyHostSupervisorConfig(
+                socket_path=socket_path,
+                startup_timeout_seconds=0.1,
+                poll_interval_seconds=0.01,
+            )
+        )
+
+        with pytest.raises(AgentBridgeError) as exc_info:
+            supervisor.ensure_running()
+
+        assert exc_info.value.code == ErrorCode.RESOURCE_CONFLICT
+        assert socket_path.exists()
+        assert supervisor.start_count == 0
+        assert supervisor.restart_count == 0
+        assert supervisor.last_error == "PTY Host socket 存在但健康检查未证明它已过期。"
+    finally:
+        stop_event.set()
+        listener.close()
+        for connection in connections:
+            connection.close()
+        thread.join(timeout=2)
+        if socket_path.exists():
+            socket_path.unlink()
 
 
 def test_pty_host_backend_auto_starts_host_and_cleans_stale_socket(monkeypatch, tmp_path):
