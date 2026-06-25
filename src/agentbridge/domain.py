@@ -1,0 +1,339 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+class ErrorCode(StrEnum):
+    COMMAND_UNKNOWN = "COMMAND_UNKNOWN"
+    COMMAND_ARGUMENT_INVALID = "COMMAND_ARGUMENT_INVALID"
+    TARGET_PROJECT_AMBIGUOUS = "TARGET_PROJECT_AMBIGUOUS"
+    TARGET_PROJECT_REQUIRED = "TARGET_PROJECT_REQUIRED"
+    TARGET_SESSION_REQUIRED = "TARGET_SESSION_REQUIRED"
+    TARGET_SESSION_AMBIGUOUS = "TARGET_SESSION_AMBIGUOUS"
+    PERMISSION_DENIED = "PERMISSION_DENIED"
+    RESOURCE_CONFLICT = "RESOURCE_CONFLICT"
+    INTERACTION_EXPIRED = "INTERACTION_EXPIRED"
+    LEASE_CONFLICT = "LEASE_CONFLICT"
+    QUOTA_EXCEEDED = "QUOTA_EXCEEDED"
+    PLATFORM_CAPABILITY_MISSING = "PLATFORM_CAPABILITY_MISSING"
+    NOT_FOUND = "NOT_FOUND"
+    WORKSPACE_PATH_DENIED = "WORKSPACE_PATH_DENIED"
+
+
+class AgentBridgeError(Exception):
+    def __init__(
+        self,
+        code: ErrorCode,
+        message: str,
+        *,
+        next_step: str | None = None,
+        status_code: int = 400,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.next_step = next_step or "检查命令参数后重试。"
+        self.status_code = status_code
+        self.details = details or {}
+
+    def to_payload(self, trace_id: str | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "error_code": self.code.value,
+            "message": self.message,
+            "side_effect": "未执行副作用。",
+            "next_step": self.next_step,
+        }
+        if trace_id:
+            payload["trace_id"] = trace_id
+        if self.details:
+            payload["details"] = self.details
+        return payload
+
+
+class ProjectStatus(StrEnum):
+    PENDING = "pending"
+    ACTIVE = "active"
+    READ_ONLY = "read_only"
+    SUSPENDED = "suspended"
+    ARCHIVED = "archived"
+
+
+class WorkspaceType(StrEnum):
+    SHARED = "shared"
+    EXCLUSIVE = "exclusive"
+    GIT_WORKTREE = "git_worktree"
+    EPHEMERAL_COPY = "ephemeral_copy"
+    READ_ONLY = "read_only"
+
+
+class AgentType(StrEnum):
+    CLAUDE = "claude"
+    CODEX = "codex"
+    GENERIC_TUI = "generic_tui"
+
+
+class Visibility(StrEnum):
+    PRIVATE = "private"
+    THREAD = "thread"
+    GROUP = "group"
+    PROJECT = "project"
+    ORGANIZATION = "organization"
+
+
+class SessionStatus(StrEnum):
+    CREATING = "creating"
+    STARTING = "starting"
+    IDLE = "idle"
+    RUNNING = "running"
+    WAITING_INTERACTION = "waiting_interaction"
+    HUMAN_CONTROLLED = "human_controlled"
+    SUSPENDED = "suspended"
+    RECOVERING = "recovering"
+    ERROR = "error"
+    CLOSING = "closing"
+    CLOSED = "closed"
+    ARCHIVED = "archived"
+
+
+class TurnStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    WAITING_INTERACTION = "waiting_interaction"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class InteractionType(StrEnum):
+    QUESTION = "question"
+    APPROVAL = "approval"
+    PLAN = "plan"
+
+
+class InteractionStatus(StrEnum):
+    PENDING = "pending"
+    PARTIALLY_APPROVED = "partially_approved"
+    RESOLVED = "resolved"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
+class LeaseOwnerType(StrEnum):
+    BOT = "bot"
+    HUMAN = "human"
+    WEB_ADMIN = "web_admin"
+    SYSTEM = "system"
+
+
+class AuditOutcome(StrEnum):
+    ALLOWED = "allowed"
+    DENIED = "denied"
+    FAILED = "failed"
+
+
+class Actor(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    roles: set[str] = Field(default_factory=lambda: {"member"})
+
+
+class Project(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str
+    slug: str
+    aliases: list[str] = Field(default_factory=list)
+    description: str | None = None
+    status: ProjectStatus = ProjectStatus.ACTIVE
+    default_agent: AgentType = AgentType.CLAUDE
+    policy_id: str | None = None
+    created_by: str
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("slug")
+    @classmethod
+    def normalize_slug(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("slug must not be empty")
+        return normalized
+
+
+class Workspace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    project_id: str
+    machine_id: str
+    path: str
+    allowed_root: str
+    type: WorkspaceType = WorkspaceType.SHARED
+    is_writable: bool = True
+    max_write_sessions: int = 1
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ProjectBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    chat_context_id: str
+    project_id: str
+    alias_in_chat: str | None = None
+    is_default: bool = False
+    visibility: Visibility = Visibility.GROUP
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ChatContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    bot_instance_id: str
+    platform: str
+    chat_space_id: str
+    thread_id: str | None = None
+    user_id: str | None = None
+    active_project_id: str | None = None
+    active_session_id: str | None = None
+    pointer_version: int = 0
+
+
+class AgentSession(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    short_code: str
+    name: str
+    project_id: str
+    workspace_id: str
+    agent_type: AgentType
+    visibility: Visibility
+    status: SessionStatus = SessionStatus.IDLE
+    created_by: str
+    active_turn_id: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class Turn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    session_id: str
+    prompt: str
+    actor_id: str
+    status: TurnStatus = TurnStatus.QUEUED
+    queued_at: datetime = Field(default_factory=utc_now)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class WriterLease(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    owner_type: LeaseOwnerType
+    owner_id: str
+    epoch: int
+    issued_at: datetime = Field(default_factory=utc_now)
+    expires_at: datetime
+    renewable: bool = True
+
+    @classmethod
+    def issue(
+        cls,
+        *,
+        session_id: str,
+        owner_type: LeaseOwnerType,
+        owner_id: str,
+        epoch: int,
+        ttl_seconds: int,
+    ) -> WriterLease:
+        now = utc_now()
+        return cls(
+            session_id=session_id,
+            owner_type=owner_type,
+            owner_id=owner_id,
+            epoch=epoch,
+            issued_at=now,
+            expires_at=now + timedelta(seconds=ttl_seconds),
+        )
+
+    def is_active(self, now: datetime | None = None) -> bool:
+        return (now or utc_now()) < self.expires_at
+
+
+class Interaction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    session_id: str
+    turn_id: str | None = None
+    type: InteractionType
+    status: InteractionStatus = InteractionStatus.PENDING
+    prompt: str
+    options: list[str] = Field(default_factory=list)
+    required_votes: int = 1
+    votes: dict[str, bool] = Field(default_factory=dict)
+    answer: str | None = None
+    version: int = 1
+    expires_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    resolved_at: datetime | None = None
+
+
+class CommandInvocation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    trace_id: str
+    idempotency_key: str
+    raw_text: str
+    canonical_command: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    actor: Actor
+    chat_context_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class CommandResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    invocation_id: str
+    trace_id: str
+    canonical_command: str
+    title: str
+    message: str
+    data: dict[str, Any] = Field(default_factory=dict)
+    audit_id: str | None = None
+
+
+class AuditEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    action: str
+    actor_id: str
+    outcome: AuditOutcome
+    trace_id: str
+    chat_context_id: str | None = None
+    project_id: str | None = None
+    session_id: str | None = None
+    interaction_id: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+    previous_hash: str | None = None
+    entry_hash: str
