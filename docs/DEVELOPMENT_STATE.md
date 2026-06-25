@@ -26,6 +26,7 @@ Implemented in this slice:
 - Idempotent command execution by idempotency key.
 - Optimistic locking for active project/session pointers.
 - Writer lease epoch handling with local human preemption over bot control.
+- Writer lease acquisition enforces Workspace `max_write_sessions`, preventing parallel write leases across sessions that share a capped writable Workspace.
 - Audit hash chain for command and domain state changes.
 - Filtered audit API through `GET /api/v1/audit`, backed by repository-level newest-first queries bounded by `limit` and supporting action, actor, trace, project, session, and interaction filters for operational review; SQLAlchemy uses indexed action/actor columns before payload-level filters.
 - Ordered semantic event streams for project/session state changes.
@@ -186,7 +187,7 @@ Not implemented yet:
 - Audit listing is a repository concern. In-memory and SQLAlchemy repositories return bounded newest-first results; the SQLAlchemy path filters action/actor in the database and then applies project/session/interaction/trace payload filters until the requested limit is reached.
 - Semantic event replay and semantic event search are separate repository contracts. Replay APIs preserve per-stream ascending `seq` behavior for clients, while `/api/v1/events` and `list_semantic_events` provide bounded newest-first operational search across streams using SQLAlchemy routing columns. The current `q` search inspects serialized JSON payload/details after indexed filters, which is useful for operations but does not replace a normalized payload query layer.
 - SQLAlchemy persistence is currently a single-process write-through snapshot repository. Runtime connection pooling is configurable and migration deployment is documented, but multi-process production deployments still need row-level updates, stronger transaction boundaries, and explicit concurrent-writer policy.
-- Terminal input must pass through the AgentBridge gateway. Direct `tmux attach` remains outside the safety model because it bypasses writer leases.
+- Terminal input must pass through the AgentBridge gateway. Direct `tmux attach` remains outside the safety model because it bypasses writer leases and Workspace write-capacity checks.
 - The local Terminal Agent socket is token-gated, chmodded to `0600`, checks same-user Unix peer credentials by default, and can reread `AGENTBRIDGE_LOCAL_TOKEN_FILE` per request for local token rotation. Windows named-pipe parity and broader production credential lifecycle policy remain future hardening work.
 - Local console/daemon clients open a fresh socket per request and retry connection for short restart windows. Long offline periods still need explicit user-facing reconnect state during raw TTY passthrough.
 - Console raw mode is still an input/control passthrough over the Terminal Agent socket, not a full terminal emulator. Its daemon output stream consumes backend cursor chunks; with `AGENTBRIDGE_TERMINAL_BACKEND=pty` those chunks come from a stdlib PTY reader loop, while fake/tmux remain snapshot-derived.

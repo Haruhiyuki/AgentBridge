@@ -931,6 +931,7 @@ class InMemoryRepository:
                             "current_epoch": current.epoch,
                         },
                     )
+            self._require_workspace_write_capacity(session)
             epoch = self.lease_epochs.get(session_id, 0) + 1
             lease = WriterLease.issue(
                 session_id=session_id,
@@ -946,6 +947,39 @@ class InMemoryRepository:
                     update={"status": SessionStatus.HUMAN_CONTROLLED, "updated_at": utc_now()}
                 )
             return lease
+
+    def _require_workspace_write_capacity(self, session: AgentSession) -> None:
+        workspace = self.get_workspace(session.workspace_id)
+        if not workspace.is_writable:
+            raise AgentBridgeError(
+                ErrorCode.LEASE_CONFLICT,
+                "Workspace 当前不允许写入租约。",
+                next_step="请选择可写 Workspace，或仅以只读方式查看会话。",
+                status_code=409,
+                details={"workspace_id": workspace.id},
+            )
+        max_write_sessions = max(0, workspace.max_write_sessions)
+        active_write_sessions = [
+            lease.session_id
+            for lease in self.leases.values()
+            if lease.session_id != session.id
+            and lease.is_active()
+            and self.sessions.get(lease.session_id) is not None
+            and self.sessions[lease.session_id].workspace_id == workspace.id
+        ]
+        if len(active_write_sessions) >= max_write_sessions:
+            raise AgentBridgeError(
+                ErrorCode.LEASE_CONFLICT,
+                "Workspace 写入租约已达到并发上限。",
+                next_step="等待其他会话释放写入租约，或为并行任务使用独立 Workspace。",
+                status_code=409,
+                details={
+                    "workspace_id": workspace.id,
+                    "max_write_sessions": max_write_sessions,
+                    "active_write_sessions": len(active_write_sessions),
+                    "active_session_ids": sorted(active_write_sessions),
+                },
+            )
 
     @staticmethod
     def _lease_priority(owner_type: LeaseOwnerType) -> int:

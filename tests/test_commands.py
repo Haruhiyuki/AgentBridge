@@ -478,6 +478,78 @@ def test_human_lease_preempts_bot_and_old_epoch_is_rejected(tmp_path):
     )
 
 
+def test_workspace_write_lease_capacity_blocks_parallel_writers(tmp_path):
+    control = ControlPlane()
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    project = control.create_project(actor=maintainer, name="Backend", trace_id="project")
+    workspace = control.add_workspace(
+        actor=maintainer,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="workspace",
+    )
+    first_session = control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="First Writer",
+        agent_type=project.default_agent,
+        visibility="group",
+        trace_id="first-session",
+    )
+    second_session = control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Second Writer",
+        agent_type=project.default_agent,
+        visibility="group",
+        trace_id="second-session",
+    )
+    first_lease = control.acquire_lease(
+        actor=maintainer,
+        session_id=first_session.id,
+        owner_type=LeaseOwnerType.WEB_ADMIN,
+        owner_id=maintainer.id,
+        ttl_seconds=300,
+        trace_id="first-lease",
+    )
+
+    with pytest.raises(AgentBridgeError) as exc_info:
+        control.acquire_lease(
+            actor=maintainer,
+            session_id=second_session.id,
+            owner_type=LeaseOwnerType.WEB_ADMIN,
+            owner_id=maintainer.id,
+            ttl_seconds=300,
+            trace_id="second-lease-conflict",
+        )
+
+    assert exc_info.value.code == ErrorCode.LEASE_CONFLICT
+    assert exc_info.value.details["workspace_id"] == workspace.id
+    assert exc_info.value.details["max_write_sessions"] == 1
+    assert exc_info.value.details["active_write_sessions"] == 1
+
+    control.release_lease(
+        actor=maintainer,
+        session_id=first_session.id,
+        epoch=first_lease.epoch,
+        trace_id="release-first-lease",
+    )
+    second_lease = control.acquire_lease(
+        actor=maintainer,
+        session_id=second_session.id,
+        owner_type=LeaseOwnerType.WEB_ADMIN,
+        owner_id=maintainer.id,
+        ttl_seconds=300,
+        trace_id="second-lease",
+    )
+
+    assert second_lease.epoch == 1
+
+
 def test_session_event_stream_is_ordered_replayable_and_idempotent(tmp_path):
     control = ControlPlane()
     commands = CommandService(control)
