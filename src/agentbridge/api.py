@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import csv
 import hashlib
 import hmac
@@ -8,11 +9,16 @@ import io
 import json
 import os
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic
+from typing import Any
 
 import uvicorn
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -2117,13 +2123,59 @@ def canonical_json(data: object) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def audit_archive_signing_key() -> tuple[str, str]:
+@dataclass(frozen=True)
+class AuditArchiveSigner:
+    algorithm: str
+    key_id: str
+    hmac_key: str | None = None
+    private_key: Any | None = None
+    public_key_sha256: str | None = None
+
+    def sign(self, canonical_archive: str) -> dict[str, object]:
+        data = canonical_archive.encode("utf-8")
+        if self.algorithm == "HMAC-SHA256":
+            if self.hmac_key is None:
+                raise RuntimeError("hmac signer missing key")
+            return {
+                "encoding": "hex",
+                "value": hmac.new(
+                    self.hmac_key.encode("utf-8"),
+                    data,
+                    hashlib.sha256,
+                ).hexdigest(),
+            }
+        if isinstance(self.private_key, ed25519.Ed25519PrivateKey):
+            signature = self.private_key.sign(data)
+        elif isinstance(self.private_key, rsa.RSAPrivateKey):
+            signature = self.private_key.sign(
+                data,
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH,
+                ),
+                hashes.SHA256(),
+            )
+        elif isinstance(self.private_key, ec.EllipticCurvePrivateKey):
+            signature = self.private_key.sign(data, ec.ECDSA(hashes.SHA256()))
+        else:
+            raise RuntimeError("unsupported audit archive signer")
+        payload: dict[str, object] = {
+            "encoding": "base64",
+            "value": base64.b64encode(signature).decode("ascii"),
+        }
+        if self.public_key_sha256:
+            payload["public_key_sha256"] = self.public_key_sha256
+        return payload
+
+
+def audit_archive_hmac_signing_key() -> tuple[str, str]:
     keys, configured = tokens_from_env("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY")
     if keys:
         key_id = os.environ.get("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID", "").strip()
         return keys[0], key_id or "default"
     next_step = (
-        "Set AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY or "
+        "Set AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_FILE, "
+        "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY, or "
         "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_FILE."
     )
     if configured:
@@ -2136,15 +2188,113 @@ def audit_archive_signing_key() -> tuple[str, str]:
     )
 
 
+def audit_archive_signer() -> AuditArchiveSigner:
+    asymmetric_signer = audit_archive_asymmetric_signer()
+    if asymmetric_signer is not None:
+        return asymmetric_signer
+    signing_key, key_id = audit_archive_hmac_signing_key()
+    return AuditArchiveSigner(
+        algorithm="HMAC-SHA256",
+        key_id=key_id,
+        hmac_key=signing_key,
+    )
+
+
+def audit_archive_asymmetric_signer() -> AuditArchiveSigner | None:
+    private_key_file = os.environ.get(
+        "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_FILE", ""
+    ).strip()
+    if not private_key_file:
+        return None
+    key_id = os.environ.get("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID", "").strip()
+    try:
+        private_key_pem = Path(private_key_file).expanduser().read_bytes()
+    except OSError as exc:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "Audit archive signing private key file is not readable.",
+            next_step=(
+                "Check AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_FILE "
+                "and file permissions."
+            ),
+            status_code=400,
+        ) from exc
+    try:
+        private_key = serialization.load_pem_private_key(
+            private_key_pem,
+            password=audit_archive_private_key_password(),
+        )
+    except (TypeError, ValueError, UnsupportedAlgorithm) as exc:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "Audit archive signing private key could not be loaded.",
+            next_step=(
+                "Use an unencrypted PEM private key or configure "
+                "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_PASSWORD(_FILE)."
+            ),
+            status_code=400,
+        ) from exc
+    algorithm = audit_archive_private_key_algorithm(private_key)
+    public_key_der = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return AuditArchiveSigner(
+        algorithm=algorithm,
+        key_id=key_id or "default-asymmetric",
+        private_key=private_key,
+        public_key_sha256=hashlib.sha256(public_key_der).hexdigest(),
+    )
+
+
+def audit_archive_private_key_password() -> bytes | None:
+    password = os.environ.get("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_PASSWORD", "")
+    if password:
+        return password.encode("utf-8")
+    password_file = os.environ.get(
+        "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_PASSWORD_FILE", ""
+    ).strip()
+    if not password_file:
+        return None
+    try:
+        value = Path(password_file).expanduser().read_text(encoding="utf-8").strip()
+        return value.encode("utf-8") if value else None
+    except OSError as exc:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "Audit archive signing private key password file is not readable.",
+            next_step=(
+                "Check AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_PASSWORD_FILE "
+                "and file permissions."
+            ),
+            status_code=400,
+        ) from exc
+
+
+def audit_archive_private_key_algorithm(private_key: Any) -> str:
+    if isinstance(private_key, ed25519.Ed25519PrivateKey):
+        return "Ed25519"
+    if isinstance(private_key, rsa.RSAPrivateKey):
+        return "RSA-PSS-SHA256"
+    if isinstance(private_key, ec.EllipticCurvePrivateKey):
+        return "ECDSA-SHA256"
+    raise AgentBridgeError(
+        ErrorCode.COMMAND_ARGUMENT_INVALID,
+        "Audit archive signing private key type is not supported.",
+        next_step="Use an Ed25519, RSA, or ECDSA PEM private key.",
+        status_code=400,
+    )
+
+
 def signed_audit_archive(
     events: list[AuditEvent], *, filters: dict[str, object]
 ) -> dict[str, object]:
-    signing_key, key_id = audit_archive_signing_key()
+    signer = audit_archive_signer()
     records = [event.model_dump(mode="json") for event in events]
     archive = {
         "format": "signed_audit_archive",
         "version": 1,
-        "algorithm": "HMAC-SHA256",
+        "algorithm": signer.algorithm,
         "exported_at": utc_now().isoformat(),
         "filters": filters,
         "record_count": len(records),
@@ -2154,18 +2304,14 @@ def signed_audit_archive(
     }
     canonical_archive = canonical_json(archive)
     archive_sha256 = hashlib.sha256(canonical_archive.encode("utf-8")).hexdigest()
-    signature = hmac.new(
-        signing_key.encode("utf-8"),
-        canonical_archive.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
+    signature = signer.sign(canonical_archive)
     return {
         "archive": archive,
         "signature": {
-            "algorithm": "HMAC-SHA256",
-            "key_id": key_id,
+            "algorithm": signer.algorithm,
+            "key_id": signer.key_id,
             "archive_sha256": archive_sha256,
-            "value": signature,
+            **signature,
         },
     }
 

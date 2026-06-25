@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -8,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from fastapi.testclient import TestClient
 
@@ -3301,6 +3302,70 @@ def test_audit_archive_export_requires_signing_key(tmp_path):
     assert response.status_code == 400
     assert response.json()["error_code"] == "COMMAND_ARGUMENT_INVALID"
     assert "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY" in response.json()["next_step"]
+
+
+def test_audit_archive_export_supports_asymmetric_private_key(monkeypatch, tmp_path):
+    private_key = ed25519.Ed25519PrivateKey.generate()
+    private_key_path = tmp_path / "audit-signing-key.pem"
+    private_key_path.write_bytes(
+        private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    monkeypatch.setenv(
+        "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_FILE",
+        str(private_key_path),
+    )
+    monkeypatch.setenv("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY", "hmac-fallback")
+    monkeypatch.setenv("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID", "ed25519-test-key")
+    client = TestClient(create_app())
+    actor = {"id": "admin-ui", "roles": ["admin"]}
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": actor,
+            "name": "Asymmetric Audit Backend",
+            "trace_id": "test-audit-asymmetric-project",
+        },
+    )
+
+    response = client.get(
+        "/api/v1/audit/export",
+        params={
+            "action": "project.created",
+            "project_id": project_response.json()["id"],
+            "format": "archive",
+        },
+    )
+
+    assert response.status_code == 200
+    archive_payload = response.json()
+    archive = archive_payload["archive"]
+    canonical_archive = json.dumps(
+        archive,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    signature = archive_payload["signature"]
+    private_key.public_key().verify(
+        base64.b64decode(signature["value"]),
+        canonical_archive.encode("utf-8"),
+    )
+    public_key_der = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    assert archive["algorithm"] == "Ed25519"
+    assert signature["algorithm"] == "Ed25519"
+    assert signature["encoding"] == "base64"
+    assert signature["key_id"] == "ed25519-test-key"
+    assert signature["archive_sha256"] == hashlib.sha256(
+        canonical_archive.encode("utf-8")
+    ).hexdigest()
+    assert signature["public_key_sha256"] == hashlib.sha256(public_key_der).hexdigest()
 
 
 def test_command_execute_api_creates_project_session_and_turn(tmp_path):

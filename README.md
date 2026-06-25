@@ -320,11 +320,14 @@ Audit records can be queried through `GET /api/v1/audit` with optional `actor_id
 `limit` filters. `q` performs a case-insensitive contains match over audit
 `details`. Results are bounded and returned newest first for operational review.
 The same filters can be exported through `GET /api/v1/audit/export?format=json`
-or `format=csv`. Set `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY` or
-`AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_FILE` to enable
-`format=archive`, which returns a signed archive JSON document. The archive signs the
-canonical `archive` object with HMAC-SHA256 and includes the signing `key_id`
-from `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID` when configured.
+or `format=csv`. Set `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_FILE` to enable
+asymmetric `format=archive` signing with an Ed25519, RSA, or ECDSA PEM private key;
+`AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_PRIVATE_KEY_PASSWORD(_FILE)` can unlock encrypted
+keys. If no private key is configured, `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY` or
+`AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_FILE` enables the existing HMAC-SHA256 archive
+signature path. Archive signatures include the signing `key_id` from
+`AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID` when configured, and asymmetric signatures
+also include `public_key_sha256` for offline verifier key selection.
 
 Semantic events can be searched across streams through `GET /api/v1/events` with
 optional `project_id`, `session_id`, `turn_id`, `interaction_id`, `event_type`,
