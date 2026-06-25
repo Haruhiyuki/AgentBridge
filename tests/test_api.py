@@ -145,10 +145,17 @@ def test_audit_events_admin_ui_serves_dashboard():
     html = response.text
     assert "AgentBridge Audit & Events" in html
     assert "/api/v1/audit" in html
+    assert "/api/v1/events" in html
     assert "/api/v1/sessions/${encodeURIComponent(sessionId)}/events" in html
     assert "/api/v1/sessions/${encodeURIComponent(sessionId)}/events/ws" in html
     assert "async function refreshAudit()" in html
     assert "async function refreshEvents()" in html
+    assert "async function searchEvents()" in html
+    assert "event-search" in html
+    assert "event-project" in html
+    assert "event-type" in html
+    assert "event-source" in html
+    assert "event-trace" in html
     assert "event-live-connect" in html
     assert "function connectEventsLive()" in html
 

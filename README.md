@@ -379,8 +379,9 @@ delivery operations dashboard. The project/session page lists projects, adds
 workspaces, creates sessions, and closes selected sessions through the same REST APIs
 used by external clients. The interaction page lists and filters questions/approvals,
 creates new interactions, answers questions, votes on approvals, and cancels pending
-items. The audit/event page filters audit records, replays session semantic events, and
-can live-tail a selected session's event stream over WebSocket.
+items. The audit/event page filters audit records, searches semantic events across
+streams, replays session semantic events, and can live-tail a selected session's event
+stream over WebSocket.
 The policy editor lists rules, edits allow/deny match criteria, runs
 `/api/v1/access-policy/simulate`, and saves through the same audited REST APIs.
 

@@ -90,7 +90,7 @@ ADMIN_HOME_HTML = """<!doctype html>
     </a>
     <a href="/admin/audit">
       <strong>Audit & Events</strong>
-      <span>Audit chain filters, event replay, live tail</span>
+      <span>Audit chain filters, event search, replay, live tail</span>
     </a>
     <a href="/admin/terminal-lifecycle">
       <strong>Terminal Lifecycle</strong>
@@ -279,7 +279,7 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
       background: var(--panel-muted);
       flex-wrap: wrap;
     }
-    button, input {
+    button, input, select {
       min-height: 34px;
       padding: 6px 10px;
       border: 1px solid var(--line);
@@ -414,12 +414,43 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
     </section>
     <section>
       <div class="toolbar">
-        <button id="event-refresh" type="button">Load Events</button>
+        <button id="event-refresh" type="button">Replay Session</button>
+        <button id="event-search" type="button">Search Events</button>
         <button id="event-live-connect" class="primary" type="button">Connect Live</button>
         <button id="event-live-disconnect" type="button" disabled>Disconnect</button>
         <label class="compact">
+          Project ID
+          <input id="event-project" autocomplete="off">
+        </label>
+        <label class="compact">
           Session ID
           <input id="event-session" autocomplete="off">
+        </label>
+        <label class="compact">
+          Type
+          <input id="event-type" autocomplete="off" placeholder="assistant.delta">
+        </label>
+        <label class="compact">
+          Source
+          <select id="event-source">
+            <option value=""></option>
+            <option value="control_plane">control_plane</option>
+            <option value="terminal_agent">terminal_agent</option>
+            <option value="bot_gateway">bot_gateway</option>
+            <option value="admin_web">admin_web</option>
+          </select>
+        </label>
+        <label class="compact">
+          Trace
+          <input id="event-trace" autocomplete="off" placeholder="optional">
+        </label>
+        <label class="compact">
+          Turn
+          <input id="event-turn" autocomplete="off" placeholder="optional">
+        </label>
+        <label class="compact">
+          Interaction
+          <input id="event-interaction" autocomplete="off" placeholder="optional">
         </label>
         <label class="compact">
           After Seq
@@ -438,7 +469,7 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
               <th>Seq</th>
               <th>Type</th>
               <th>Source</th>
-              <th>Turn</th>
+              <th>Session</th>
               <th>Trace</th>
             </tr>
           </thead>
@@ -510,7 +541,9 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
           document.querySelectorAll("#audit-records tr").forEach((row) => {
             row.classList.toggle("selected", row.dataset.auditId === selectedAuditId);
           });
+          if (record.project_id) $("event-project").value = record.project_id;
           if (record.session_id) $("event-session").value = record.session_id;
+          if (record.trace_id) $("event-trace").value = record.trace_id;
         });
         return tr;
       });
@@ -538,7 +571,7 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
           event.seq,
           event.type,
           event.source,
-          event.turn_id || "",
+          event.session_id || "",
           event.trace_id,
         ]) {
           appendCell(tr, value);
@@ -653,6 +686,22 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
       renderEvents(events);
     }
 
+    async function searchEvents() {
+      setText("event-status", "Searching");
+      const events = await requestJson(`/api/v1/events${paramsFrom([
+        ["project_id", "event-project"],
+        ["session_id", "event-session"],
+        ["event_type", "event-type"],
+        ["source", "event-source"],
+        ["trace_id", "event-trace"],
+        ["turn_id", "event-turn"],
+        ["interaction_id", "event-interaction"],
+        ["limit", "event-limit"],
+      ])}`);
+      renderEvents(events);
+      setText("event-status", `${events.length} events, newest first`);
+    }
+
     async function run(action) {
       try {
         $("error").textContent = "";
@@ -664,6 +713,7 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
 
     $("audit-refresh").addEventListener("click", () => run(refreshAudit));
     $("event-refresh").addEventListener("click", () => run(refreshEvents));
+    $("event-search").addEventListener("click", () => run(searchEvents));
     $("event-live-connect").addEventListener("click", () => run(connectEventsLive));
     $("event-live-disconnect").addEventListener("click", disconnectEventsLive);
     refreshAudit().catch((error) => {
