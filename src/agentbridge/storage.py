@@ -70,11 +70,20 @@ def is_within(child: Path, parent: Path) -> bool:
 
 
 def payload_contains_query(payload: object, query: str | None) -> bool:
+    normalized_query = normalized_payload_query(query)
+    if normalized_query is None:
+        return True
+    return normalized_query in payload_search_text(payload)
+
+
+def normalized_payload_query(query: str | None) -> str | None:
     if query is None:
-        return True
+        return None
     normalized_query = query.strip().casefold()
-    if not normalized_query:
-        return True
+    return normalized_query or None
+
+
+def payload_search_text(payload: object) -> str:
     try:
         serialized = json.dumps(
             payload,
@@ -84,7 +93,7 @@ def payload_contains_query(payload: object, query: str | None) -> bool:
         )
     except TypeError:
         serialized = str(payload)
-    return normalized_query in serialized.casefold()
+    return serialized.casefold()
 
 
 def created_at_in_range(

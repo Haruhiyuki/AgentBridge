@@ -40,7 +40,8 @@ from agentbridge.domain import (
 )
 from agentbridge.storage import (
     InMemoryRepository,
-    payload_contains_query,
+    normalized_payload_query,
+    payload_search_text,
     utc_datetime_key,
 )
 
@@ -201,6 +202,7 @@ audit_events_table = Table(
     Column("session_id", String(64), nullable=True, index=True),
     Column("interaction_id", String(64), nullable=True, index=True),
     Column("created_at", String(64), nullable=False, index=True),
+    Column("details_text", String, nullable=False, index=True),
     Column("entry_hash", String(128), nullable=False, unique=True),
     Column("payload", JSON, nullable=False),
 )
@@ -220,6 +222,7 @@ semantic_events_table = Table(
     Column("turn_id", String(64), nullable=True, index=True),
     Column("interaction_id", String(64), nullable=True, index=True),
     Column("created_at", String(64), nullable=False, index=True),
+    Column("payload_text", String, nullable=False, index=True),
     Column("idempotency_key", String(512), nullable=True, unique=True),
     Column("payload", JSON, nullable=False),
     UniqueConstraint("stream_id", "seq", name="uq_semantic_events_stream_seq"),
@@ -463,15 +466,22 @@ class SQLAlchemyRepository(InMemoryRepository):
             stmt = stmt.where(
                 audit_events_table.c.created_at <= utc_datetime_key(created_to)
             )
+        normalized_query = normalized_payload_query(payload_query)
+        if normalized_query is not None:
+            stmt = stmt.where(
+                audit_events_table.c.details_text.contains(
+                    normalized_query,
+                    autoescape=True,
+                )
+            )
 
         events: list[AuditEvent] = []
         with self._lock, self.engine.connect() as connection:
             for row in connection.execute(stmt):
                 event = AuditEvent.model_validate(row.payload)
-                if payload_contains_query(event.details, payload_query):
-                    events.append(event)
-                    if len(events) >= max_results:
-                        break
+                events.append(event)
+                if len(events) >= max_results:
+                    break
         return events
 
     def list_semantic_events(
@@ -515,18 +525,22 @@ class SQLAlchemyRepository(InMemoryRepository):
             stmt = stmt.where(
                 semantic_events_table.c.created_at <= utc_datetime_key(created_to)
             )
+        normalized_query = normalized_payload_query(payload_query)
+        if normalized_query is not None:
+            stmt = stmt.where(
+                semantic_events_table.c.payload_text.contains(
+                    normalized_query,
+                    autoescape=True,
+                )
+            )
 
         events: list[SemanticEvent] = []
         with self._lock, self.engine.connect() as connection:
             for row in connection.execute(stmt):
                 event = SemanticEvent.model_validate(row.payload)
-                if payload_contains_query(
-                    event.payload,
-                    payload_query,
-                ):
-                    events.append(event)
-                    if len(events) >= max_results:
-                        break
+                events.append(event)
+                if len(events) >= max_results:
+                    break
         return events
 
     def _persist_state(self) -> None:
@@ -753,6 +767,7 @@ class SQLAlchemyRepository(InMemoryRepository):
                         "session_id": event.session_id,
                         "interaction_id": event.interaction_id,
                         "created_at": utc_datetime_key(event.created_at),
+                        "details_text": payload_search_text(event.details),
                         "entry_hash": event.entry_hash,
                         "payload": event.model_dump(mode="json"),
                     }
@@ -776,6 +791,7 @@ class SQLAlchemyRepository(InMemoryRepository):
                         "turn_id": event.turn_id,
                         "interaction_id": event.interaction_id,
                         "created_at": utc_datetime_key(event.created_at),
+                        "payload_text": payload_search_text(event.payload),
                         "idempotency_key": event.idempotency_key,
                         "payload": event.model_dump(mode="json"),
                     }

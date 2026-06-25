@@ -114,7 +114,7 @@ def test_event_query_column_migrations_backfill_payload(tmp_path):
                 """
                 SELECT
                   source, trace_id, project_id, session_id, turn_id, interaction_id,
-                  created_at
+                  created_at, payload_text
                 FROM semantic_events
                 WHERE id = :id
                 """
@@ -126,7 +126,7 @@ def test_event_query_column_migrations_backfill_payload(tmp_path):
                 """
                 SELECT
                   trace_id, chat_context_id, project_id, session_id, interaction_id,
-                  created_at
+                  created_at, details_text
                 FROM audit_events
                 WHERE id = :id
                 """
@@ -141,12 +141,14 @@ def test_event_query_column_migrations_backfill_payload(tmp_path):
     assert row.turn_id == "turn_legacy"
     assert row.interaction_id == "int_legacy"
     assert row.created_at == "2026-06-25T00:00:00.000000+00:00"
+    assert '"text": "legacy"' in row.payload_text
     assert audit_row.trace_id == "legacy-audit"
     assert audit_row.chat_context_id == "ctx_legacy"
     assert audit_row.project_id == "prj_legacy"
     assert audit_row.session_id == "sess_legacy"
     assert audit_row.interaction_id == "int_legacy"
     assert audit_row.created_at == "2026-06-25T00:01:00.000000+00:00"
+    assert '"session_id": "sess_legacy"' in audit_row.details_text
 
 
 def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
@@ -380,9 +382,20 @@ def test_sqlalchemy_repository_lists_filtered_audit_events(tmp_path):
     ]
     workspace_query = restored.list_audit_events(
         action="project.workspace_added",
-        payload_query=workspace.id,
+        payload_query=workspace.id.upper(),
     )
     assert [event.details["workspace_id"] for event in workspace_query] == [workspace.id]
+    with engine.connect() as connection:
+        details_text = connection.execute(
+            text(
+                """
+                SELECT details_text
+                FROM audit_events
+                WHERE action = 'project.workspace_added'
+                """
+            )
+        ).scalar_one()
+    assert workspace.id in details_text
     assert (
         restored.list_audit_events(
             action="project.workspace_added",
@@ -468,18 +481,25 @@ def test_sqlalchemy_repository_lists_filtered_semantic_events(tmp_path):
     payload_filtered = restored.list_semantic_events(
         project_id=project.id,
         event_type="assistant.delta",
-        payload_query="second",
+        payload_query="SECOND",
     )
     assert [event.id for event in payload_filtered] == [second_event.id]
     engine = create_engine(database_url)
     with engine.connect() as connection:
-        stored_created_at = connection.execute(
-            text("SELECT created_at FROM semantic_events WHERE id = :id"),
+        row = connection.execute(
+            text(
+                """
+                SELECT created_at, payload_text
+                FROM semantic_events
+                WHERE id = :id
+                """
+            ),
             {"id": second_event.id},
-        ).scalar_one()
-    assert stored_created_at == second_event.created_at.astimezone(UTC).isoformat(
+        ).one()
+    assert row.created_at == second_event.created_at.astimezone(UTC).isoformat(
         timespec="microseconds"
     )
+    assert '"text": "second"' in row.payload_text
     windowed = restored.list_semantic_events(
         session_id=second_session.id,
         event_type="assistant.delta",
@@ -495,6 +515,28 @@ def test_sqlalchemy_repository_lists_filtered_semantic_events(tmp_path):
         )
         == []
     )
+    percent_event = control.emit_event(
+        event_type="assistant.delta",
+        source=SemanticEventSource.TERMINAL_AGENT,
+        trace_id="event-search-percent",
+        project_id=project.id,
+        session_id=second_session.id,
+        payload={"text": "100% complete"},
+    )
+    control.emit_event(
+        event_type="assistant.delta",
+        source=SemanticEventSource.TERMINAL_AGENT,
+        trace_id="event-search-wildcard-like",
+        project_id=project.id,
+        session_id=second_session.id,
+        payload={"text": "100x complete"},
+    )
+    literal_percent_filtered = restored.list_semantic_events(
+        project_id=project.id,
+        event_type="assistant.delta",
+        payload_query="100%",
+    )
+    assert [event.id for event in literal_percent_filtered] == [percent_event.id]
     assert (
         restored.list_semantic_events(
             project_id=project.id,
