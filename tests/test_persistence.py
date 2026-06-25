@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+from alembic.config import Config
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, text
 
 from agentbridge.api import create_app
 from agentbridge.commands import CommandService
@@ -18,6 +23,73 @@ from agentbridge.domain import (
 from agentbridge.persistence import SQLAlchemyRepository
 from agentbridge.policy import Permission
 from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService, TerminalStatus
+from alembic import command
+
+
+def test_semantic_event_query_column_migration_backfills_payload(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'migration-backfill.db'}"
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", database_url)
+    config.set_main_option("path_separator", "os")
+
+    command.upgrade(config, "0007_access_policy_rules")
+    engine = create_engine(database_url)
+    legacy_payload = {
+        "id": "evt_legacy",
+        "stream_id": "session:sess_legacy",
+        "seq": 1,
+        "type": "assistant.delta",
+        "source": "terminal_agent",
+        "trace_id": "legacy-trace",
+        "idempotency_key": None,
+        "project_id": "prj_legacy",
+        "session_id": "sess_legacy",
+        "turn_id": "turn_legacy",
+        "interaction_id": "int_legacy",
+        "payload": {"text": "legacy"},
+        "created_at": "2026-06-25T00:00:00+00:00",
+    }
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO semantic_events
+                  (id, position, stream_id, seq, type, idempotency_key, payload)
+                VALUES
+                  (:id, :position, :stream_id, :seq, :type, :idempotency_key, :payload)
+                """
+            ),
+            {
+                "id": "evt_legacy",
+                "position": 1,
+                "stream_id": "session:sess_legacy",
+                "seq": 1,
+                "type": "assistant.delta",
+                "idempotency_key": None,
+                "payload": json.dumps(legacy_payload),
+            },
+        )
+
+    command.upgrade(config, "head")
+
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                """
+                SELECT source, trace_id, project_id, session_id, turn_id, interaction_id
+                FROM semantic_events
+                WHERE id = :id
+                """
+            ),
+            {"id": "evt_legacy"},
+        ).one()
+
+    assert row.source == "terminal_agent"
+    assert row.trace_id == "legacy-trace"
+    assert row.project_id == "prj_legacy"
+    assert row.session_id == "sess_legacy"
+    assert row.turn_id == "turn_legacy"
+    assert row.interaction_id == "int_legacy"
 
 
 def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
@@ -214,6 +286,81 @@ def test_sqlalchemy_repository_lists_filtered_audit_events(tmp_path):
         first_session.id,
     ]
     assert restored.list_audit_events(action="session.created", actor_id="missing") == []
+
+
+def test_sqlalchemy_repository_lists_filtered_semantic_events(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'event-query.db'}"
+    maintainer = Actor(id="usr_events", roles={"maintainer"})
+
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    control = ControlPlane(repository=first_repo)
+    project = control.create_project(
+        actor=maintainer,
+        name="Event Backend",
+        trace_id="event-project",
+    )
+    workspace = control.add_workspace(
+        actor=maintainer,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="event-workspace",
+    )
+    first_session = control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="First Event Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="event-session-one",
+    )
+    second_session = control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Second Event Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="event-session-two",
+    )
+    first_event = control.emit_event(
+        event_type="assistant.delta",
+        source=SemanticEventSource.TERMINAL_AGENT,
+        trace_id="event-search-one",
+        project_id=project.id,
+        session_id=first_session.id,
+        payload={"text": "first"},
+    )
+    second_event = control.emit_event(
+        event_type="assistant.delta",
+        source=SemanticEventSource.TERMINAL_AGENT,
+        trace_id="event-search-two",
+        project_id=project.id,
+        session_id=second_session.id,
+        payload={"text": "second"},
+    )
+
+    restored = SQLAlchemyRepository(database_url)
+
+    newest = restored.list_semantic_events(
+        project_id=project.id,
+        event_type="assistant.delta",
+        source=SemanticEventSource.TERMINAL_AGENT,
+        limit=1,
+    )
+    assert [event.id for event in newest] == [second_event.id]
+
+    trace_filtered = restored.list_semantic_events(trace_id="event-search-one")
+    assert [event.id for event in trace_filtered] == [first_event.id]
+
+    session_filtered = restored.list_semantic_events(
+        session_id=first_session.id,
+        event_type="assistant.delta",
+    )
+    assert [event.id for event in session_filtered] == [first_event.id]
+    assert restored.list_semantic_events(trace_id="missing") == []
 
 
 def test_terminal_lifecycle_tracking_recovers_from_persisted_events(tmp_path):

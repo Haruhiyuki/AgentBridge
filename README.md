@@ -159,6 +159,12 @@ Audit records can be queried through `GET /api/v1/audit` with optional `actor_id
 `action`, `project_id`, `session_id`, `interaction_id`, `trace_id`, and `limit`
 filters. Results are bounded and returned newest first for operational review.
 
+Semantic events can be searched across streams through `GET /api/v1/events` with
+optional `project_id`, `session_id`, `turn_id`, `interaction_id`, `event_type`,
+`source`, `trace_id`, and `limit` filters. This search endpoint returns bounded
+newest-first results for operational investigation; use the session replay endpoints
+when a client needs stream-order replay from `after_seq`.
+
 ## Terminal WebSocket
 
 Browser/native clients can send terminal control frames through:

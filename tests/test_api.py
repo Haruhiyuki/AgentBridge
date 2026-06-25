@@ -891,7 +891,7 @@ def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
     }
     actor = {"id": "usr_1", "roles": ["maintainer"]}
 
-    client.post(
+    project_response = client.post(
         "/api/v1/commands/execute",
         json={
             "raw_text": f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
@@ -900,6 +900,7 @@ def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
             "idempotency_key": "event-api-project",
         },
     )
+    project_id = project_response.json()["data"]["project_id"]
     session_response = client.post(
         "/api/v1/commands/execute",
         json={
@@ -931,14 +932,54 @@ def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
             "payload": {"text": "hello again"},
         },
     )
+    second = client.post(
+        f"/api/v1/sessions/{session_id}/events",
+        json={
+            "type": "assistant.delta",
+            "source": "terminal_agent",
+            "trace_id": "terminal-2",
+            "idempotency_key": "terminal-event-2",
+            "payload": {"text": "newest"},
+        },
+    )
 
     assert first.status_code == 200
     assert duplicate.status_code == 200
     assert duplicate.json()["id"] == first.json()["id"]
+    assert second.status_code == 200
 
     events_response = client.get(f"/api/v1/sessions/{session_id}/events", params={"after_seq": 1})
     assert events_response.status_code == 200
-    assert [event["type"] for event in events_response.json()] == ["assistant.delta"]
+    assert [event["type"] for event in events_response.json()] == [
+        "assistant.delta",
+        "assistant.delta",
+    ]
+
+    search_response = client.get(
+        "/api/v1/events",
+        params={
+            "session_id": session_id,
+            "event_type": "assistant.delta",
+            "source": "terminal_agent",
+            "limit": 1,
+        },
+    )
+    trace_response = client.get("/api/v1/events", params={"trace_id": "terminal-1"})
+    project_response = client.get(
+        "/api/v1/events",
+        params={
+            "project_id": project_id,
+            "event_type": "session.created",
+            "source": "control_plane",
+        },
+    )
+
+    assert search_response.status_code == 200
+    assert [event["trace_id"] for event in search_response.json()] == ["terminal-2"]
+    assert trace_response.status_code == 200
+    assert [event["id"] for event in trace_response.json()] == [first.json()["id"]]
+    assert project_response.status_code == 200
+    assert [event["session_id"] for event in project_response.json()] == [session_id]
 
 
 def test_rendered_events_api_returns_documents_and_text_messages(tmp_path):

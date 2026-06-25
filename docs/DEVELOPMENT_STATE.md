@@ -30,6 +30,7 @@ Implemented in this slice:
 - Filtered audit API through `GET /api/v1/audit`, backed by repository-level newest-first queries bounded by `limit` and supporting action, actor, trace, project, session, and interaction filters for operational review; SQLAlchemy uses indexed action/actor columns before payload-level filters.
 - Ordered semantic event streams for project/session state changes.
 - REST event replay through `GET /api/v1/sessions/{id}/events`.
+- Cross-stream semantic event search through `GET /api/v1/events`, backed by repository-level newest-first queries bounded by `limit` and supporting project, session, turn, interaction, event type, source, and trace filters for operational investigation.
 - Idempotent Terminal Agent event ingestion through `POST /api/v1/sessions/{id}/events`.
 - Session semantic event WebSocket stream through `/api/v1/sessions/{id}/events/ws`, with `after_seq` replay and live tailing.
 - Bot-facing rendered event WebSocket stream through `/api/v1/sessions/{id}/rendered-events/ws`, returning render documents plus OneBot/plain-text messages.
@@ -132,6 +133,7 @@ Implemented in this slice:
 - Audit/event Admin Web page can live-tail a selected session's semantic event stream over `/api/v1/sessions/{id}/events/ws`, while retaining manual REST replay for bounded event history inspection.
 - Optional `AGENTBRIDGE_ADMIN_TOKEN` browser gate for `/admin*` pages, accepting one-time `admin_token` query unlock, HttpOnly/SameSite cookie sessions, bearer tokens, or `X-AgentBridge-Admin-Token` headers.
 - Alembic migration `0007_access_policy_rules` persists access policy rules.
+- Alembic migration `0008_semantic_event_query_columns` adds indexed semantic event routing columns for source, trace, project, session, turn, and interaction search.
 - Project, session, interaction, approval, group-role, policy-management, and terminal checks now pass resource type/id plus stable attributes into access policy evaluation.
 - Terminal REST and WebSocket paths reuse Control Plane `terminal` resource checks, so session-specific terminal rules are enforced outside the main command flow as well.
 - Focused unit/API tests for the above.
@@ -146,7 +148,7 @@ Not implemented yet:
 - Platform-specific rich card/button transport adapters and outbound message edit extensions beyond standard OneBot V11.
 - Native action/callback support for platforms that expose buttons or interactions.
 - Broader per-adapter action callback state beyond command-carrying callbacks.
-- Fully normalized relational query layer for large semantic event searches and arbitrary audit cross-field searches; audit action/actor filtering now uses indexed columns, while project/session/interaction/trace filters still derive from persisted payload snapshots.
+- Fully normalized relational query layer for arbitrary payload search and complex audit/event cross-field searches; audit and semantic event routing filters now use indexed columns where available, while deeper payload semantics remain snapshot-derived.
 - PostgreSQL-specific operational hardening, connection pooling policy, and migration deployment docs.
 
 ## Important Decisions
@@ -155,6 +157,7 @@ Not implemented yet:
 - Unknown ASCII-looking `/agent` management commands are rejected instead of being silently treated as prompts. Non-command free text still becomes `ask` to support the documented shortcut pattern.
 - Semantic events are separate from audit records: events drive product state replay and Bot rendering, while audit records preserve security/accountability history.
 - Audit listing is a repository concern. In-memory and SQLAlchemy repositories return bounded newest-first results; the SQLAlchemy path filters action/actor in the database and then applies project/session/interaction/trace payload filters until the requested limit is reached.
+- Semantic event replay and semantic event search are separate repository contracts. Replay APIs preserve per-stream ascending `seq` behavior for clients, while `/api/v1/events` and `list_semantic_events` provide bounded newest-first operational search across streams using SQLAlchemy routing columns.
 - SQLAlchemy persistence is currently a single-process write-through snapshot repository. It is sufficient for restart recovery and contract tests, but multi-process production deployments need row-level updates and stronger transaction boundaries.
 - Terminal input must pass through the AgentBridge gateway. Direct `tmux attach` remains outside the safety model because it bypasses writer leases.
 - The local Terminal Agent socket is token-gated and chmodded to `0600`; production hardening still needs OS user checks, token rotation, and Windows named-pipe parity.
@@ -210,7 +213,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 ## Next Development Backlog
 
 1. Harden PTY host recovery beyond watchdog plus command restart, including cross-platform socket/pipe cleanup, Windows ConPTY/Named Pipe parity, and clearer operator policy for non-idempotent CLI restarts.
-2. Expand the Admin Web UI beyond project/session operations, interaction/approval operations, audit/event live exploration, access policy, terminal lifecycle, and Bot delivery operations, including additional live dashboards and richer relational search.
+2. Expand the Admin Web UI beyond project/session operations, interaction/approval operations, audit/event live exploration, access policy, terminal lifecycle, and Bot delivery operations, including additional live dashboards and UI access to richer semantic event search.
 3. Replace the MVP HTTP API/WebSocket/admin token gates with mTLS/device-key auth.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.
 5. Add platform-specific rich card/button transport adapters and outbound edit extensions.

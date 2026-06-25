@@ -912,6 +912,34 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         return [event.model_dump(mode="json") for event in events]
 
+    @app.get("/api/v1/events")
+    def search_events(
+        control: ControlPlane = Depends(get_control),
+        project_id: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        interaction_id: str | None = None,
+        event_type: str | None = None,
+        source: SemanticEventSource | None = None,
+        trace_id: str | None = None,
+        limit: int = 100,
+    ):
+        if session_id is not None:
+            control.repository.get_session(session_id)
+        elif project_id is not None:
+            control.repository.get_project(project_id)
+        events = control.repository.list_semantic_events(
+            project_id=project_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            interaction_id=interaction_id,
+            event_type=event_type,
+            source=source,
+            trace_id=trace_id,
+            limit=limit,
+        )
+        return [event.model_dump(mode="json") for event in events]
+
     @app.get("/api/v1/sessions/{session_id}/rendered-events")
     def list_rendered_events(
         session_id: str,

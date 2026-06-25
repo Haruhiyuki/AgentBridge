@@ -31,6 +31,7 @@ from agentbridge.domain import (
     Project,
     ProjectBinding,
     SemanticEvent,
+    SemanticEventSource,
     Turn,
     Workspace,
     WriterLease,
@@ -190,6 +191,12 @@ semantic_events_table = Table(
     Column("stream_id", String(255), nullable=False, index=True),
     Column("seq", Integer, nullable=False),
     Column("type", String(255), nullable=False, index=True),
+    Column("source", String(64), nullable=True, index=True),
+    Column("trace_id", String(255), nullable=True, index=True),
+    Column("project_id", String(64), nullable=True, index=True),
+    Column("session_id", String(64), nullable=True, index=True),
+    Column("turn_id", String(64), nullable=True, index=True),
+    Column("interaction_id", String(64), nullable=True, index=True),
     Column("idempotency_key", String(512), nullable=True, unique=True),
     Column("payload", JSON, nullable=False),
     UniqueConstraint("stream_id", "seq", name="uq_semantic_events_stream_seq"),
@@ -408,6 +415,45 @@ class SQLAlchemyRepository(InMemoryRepository):
                     events.append(event)
                     if len(events) >= max_results:
                         break
+        return events
+
+    def list_semantic_events(
+        self,
+        *,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        interaction_id: str | None = None,
+        event_type: str | None = None,
+        source: SemanticEventSource | None = None,
+        trace_id: str | None = None,
+        limit: int = 100,
+    ) -> list[SemanticEvent]:
+        max_results = self._clamp_event_search_limit(limit)
+        stmt = select(semantic_events_table).order_by(
+            semantic_events_table.c.position.desc()
+        )
+        if project_id is not None:
+            stmt = stmt.where(semantic_events_table.c.project_id == project_id)
+        if session_id is not None:
+            stmt = stmt.where(semantic_events_table.c.session_id == session_id)
+        if turn_id is not None:
+            stmt = stmt.where(semantic_events_table.c.turn_id == turn_id)
+        if interaction_id is not None:
+            stmt = stmt.where(semantic_events_table.c.interaction_id == interaction_id)
+        if event_type is not None:
+            stmt = stmt.where(semantic_events_table.c.type == event_type)
+        if source is not None:
+            stmt = stmt.where(semantic_events_table.c.source == source.value)
+        if trace_id is not None:
+            stmt = stmt.where(semantic_events_table.c.trace_id == trace_id)
+
+        events: list[SemanticEvent] = []
+        with self._lock, self.engine.connect() as connection:
+            for row in connection.execute(stmt):
+                events.append(SemanticEvent.model_validate(row.payload))
+                if len(events) >= max_results:
+                    break
         return events
 
     def _persist_state(self) -> None:
@@ -629,6 +675,12 @@ class SQLAlchemyRepository(InMemoryRepository):
                         "stream_id": event.stream_id,
                         "seq": event.seq,
                         "type": event.type,
+                        "source": event.source.value,
+                        "trace_id": event.trace_id,
+                        "project_id": event.project_id,
+                        "session_id": event.session_id,
+                        "turn_id": event.turn_id,
+                        "interaction_id": event.interaction_id,
                         "idempotency_key": event.idempotency_key,
                         "payload": event.model_dump(mode="json"),
                     }

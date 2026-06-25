@@ -1142,6 +1142,40 @@ class InMemoryRepository:
                 events = [event for event in events if event.seq > after_seq]
             return events[:limit]
 
+    def list_semantic_events(
+        self,
+        *,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        interaction_id: str | None = None,
+        event_type: str | None = None,
+        source: SemanticEventSource | None = None,
+        trace_id: str | None = None,
+        limit: int = 100,
+    ) -> list[SemanticEvent]:
+        max_results = self._clamp_event_search_limit(limit)
+        with self._lock:
+            events: list[SemanticEvent] = []
+            for event in reversed(self.semantic_events):
+                if (
+                    (project_id is None or event.project_id == project_id)
+                    and (session_id is None or event.session_id == session_id)
+                    and (turn_id is None or event.turn_id == turn_id)
+                    and (interaction_id is None or event.interaction_id == interaction_id)
+                    and (event_type is None or event.type == event_type)
+                    and (source is None or event.source == source)
+                    and (trace_id is None or event.trace_id == trace_id)
+                ):
+                    events.append(event)
+                    if len(events) >= max_results:
+                        break
+            return events
+
+    @staticmethod
+    def _clamp_event_search_limit(limit: int) -> int:
+        return max(1, min(limit, 1000))
+
     @staticmethod
     def _event_stream_id(project_id: str | None, session_id: str | None) -> str:
         if session_id:
