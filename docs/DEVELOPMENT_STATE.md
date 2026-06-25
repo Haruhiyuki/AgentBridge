@@ -33,11 +33,14 @@ Implemented in this slice:
 - SQLAlchemy-backed repository enabled with `AGENTBRIDGE_DATABASE_URL`.
 - Alembic initial migration for projects, workspaces, chat contexts, bindings, sessions, turns, interactions, writer leases, command idempotency records, audit events, and semantic events.
 - Recovery tests proving persisted control-plane state survives repository re-instantiation.
+- Terminal Agent input gateway with fake and tmux backends.
+- Terminal start/input/snapshot REST endpoints for MVP integration tests.
+- Terminal input enforcement against current writer lease owner and epoch, with rejected/accepted semantic events.
 - Focused unit/API tests for the above.
 
 Not implemented yet:
 
-- Terminal Agent process, tmux/PTY broker, or visible terminal launch.
+- Long-running Terminal Agent process, brokered PTY host, and visible local console attachment.
 - NoneBot/OneBot adapter and renderer.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
@@ -52,6 +55,7 @@ Not implemented yet:
 - Unknown ASCII-looking `/agent` management commands are rejected instead of being silently treated as prompts. Non-command free text still becomes `ask` to support the documented shortcut pattern.
 - Semantic events are separate from audit records: events drive product state replay and Bot rendering, while audit records preserve security/accountability history.
 - SQLAlchemy persistence is currently a single-process write-through snapshot repository. It is sufficient for restart recovery and contract tests, but multi-process production deployments need row-level updates and stronger transaction boundaries.
+- Terminal input must pass through the AgentBridge gateway. Direct `tmux attach` remains outside the safety model because it bypasses writer leases.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
 
 ## Verification
@@ -68,7 +72,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 ## Next Development Backlog
 
 1. Refine the repository boundary so SQLAlchemy writes are row-level instead of full snapshots.
-2. Implement Terminal Agent MVP using tmux control mode and a fake CLI fixture.
+2. Add a real Terminal Agent process around the terminal gateway, with local socket auth and tmux lifecycle supervision.
 3. Add Bot Gateway event subscription and renderer intermediate representation.
 4. Add plain-text/OneBot V11 rendering with golden snapshots.
 5. Expand policy engine to explicit role bindings, approval quorum, and risk levels.

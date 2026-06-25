@@ -14,9 +14,10 @@ This repository currently contains the first executable backend slice:
 - `/agent` command parser and executor for project/session routing, turn enqueueing, lease control, and idempotent invocation handling.
 - Ordered semantic event streams with replay and idempotent Terminal Agent event ingestion.
 - Optional SQLAlchemy persistence with an Alembic-managed schema.
+- Terminal input gateway with fake/tmux backends and writer-lease epoch enforcement.
 - REST API routes aligned with the design document's service interface.
 
-Terminal Agent, NoneBot integration, Admin Web, and real PTY/tmux control are planned next milestones.
+NoneBot integration, Admin Web, visible local console attachment, and real Claude/Codex adapters are planned next milestones.
 
 ## Development
 
@@ -46,6 +47,16 @@ uv run uvicorn agentbridge.api:create_app --factory --reload
 ```
 
 For local throwaway development, `AGENTBRIDGE_AUTO_CREATE_SCHEMA=true` can create tables on startup. Production deployments should run Alembic migrations explicitly.
+
+## Terminal Backend
+
+The API uses a fake terminal backend by default for local contract tests. To use tmux for MVP experiments:
+
+```bash
+export AGENTBRIDGE_TERMINAL_BACKEND=tmux
+```
+
+Terminal input is accepted only when the request carries the current writer lease `epoch`, owner type, and owner ID. Stale Bot/Web inputs are rejected after human or higher-priority control preempts the lease.
 
 ## API Smoke Test
 

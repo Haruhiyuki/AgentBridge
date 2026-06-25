@@ -19,7 +19,14 @@ from agentbridge.domain import (
     WorkspaceType,
 )
 from agentbridge.persistence import SQLAlchemyRepository
+from agentbridge.policy import Permission
 from agentbridge.storage import InMemoryRepository
+from agentbridge.terminal_agent import (
+    FakeTerminalBackend,
+    TerminalAgentService,
+    TerminalInputKind,
+    TmuxTerminalBackend,
+)
 
 
 class ActorPayload(BaseModel):
@@ -143,6 +150,29 @@ class IngestSessionEventRequest(BaseModel):
     payload: dict[str, object] = Field(default_factory=dict)
 
 
+class StartTerminalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    command: str = "sh"
+    trace_id: str = "api"
+
+
+class TerminalInputRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    epoch: int
+    owner_type: LeaseOwnerType
+    owner_id: str
+    type: TerminalInputKind = TerminalInputKind.TEXT
+    data: str
+    request_id: str | None = None
+    cols: int | None = None
+    rows: int | None = None
+    trace_id: str = "api"
+
+
 class CommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -158,8 +188,10 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     app = FastAPI(title="AgentBridge Control Plane", version="0.1.0")
     control = control_plane or ControlPlane(repository=create_repository_from_env())
     commands = CommandService(control)
+    terminal = TerminalAgentService(control, backend=create_terminal_backend_from_env())
     app.state.control = control
     app.state.commands = commands
+    app.state.terminal = terminal
 
     @app.exception_handler(AgentBridgeError)
     async def agentbridge_error_handler(_, exc: AgentBridgeError):
@@ -170,6 +202,9 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
 
     def get_commands() -> CommandService:
         return app.state.commands
+
+    def get_terminal() -> TerminalAgentService:
+        return app.state.terminal
 
     @app.get("/api/v1/health")
     def health(control: ControlPlane = Depends(get_control)):
@@ -397,6 +432,55 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         return event.model_dump(mode="json")
 
+    @app.post("/api/v1/sessions/{session_id}/terminal/start")
+    def start_terminal(
+        session_id: str,
+        payload: StartTerminalRequest,
+        control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
+    ):
+        actor = payload.actor.to_actor()
+        control.policy.require(actor, Permission.TERMINAL_CONTROL)
+        terminal_service.start_session(
+            session_id=session_id,
+            command=payload.command,
+            trace_id=payload.trace_id,
+        )
+        return {"status": "started"}
+
+    @app.post("/api/v1/sessions/{session_id}/terminal/input")
+    def submit_terminal_input(
+        session_id: str,
+        payload: TerminalInputRequest,
+        control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
+    ):
+        actor = payload.actor.to_actor()
+        control.policy.require(actor, Permission.TERMINAL_CONTROL)
+        request_id = terminal_service.submit_input(
+            session_id=session_id,
+            epoch=payload.epoch,
+            owner_type=payload.owner_type,
+            owner_id=payload.owner_id,
+            kind=payload.type,
+            data=payload.data,
+            trace_id=payload.trace_id,
+            request_id=payload.request_id,
+            cols=payload.cols,
+            rows=payload.rows,
+        )
+        return {"request_id": request_id}
+
+    @app.get("/api/v1/sessions/{session_id}/terminal/snapshot")
+    def terminal_snapshot(
+        session_id: str,
+        control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
+    ):
+        actor = Actor(id="api", roles={"admin"})
+        control.policy.require(actor, Permission.SESSION_VIEW)
+        return {"snapshot": terminal_service.snapshot(session_id=session_id)}
+
     @app.post("/api/v1/commands/parse")
     def parse_command(
         payload: CommandRequest,
@@ -467,6 +551,13 @@ def create_repository_from_env() -> InMemoryRepository:
         database_url,
         create_schema=auto_create_schema in {"1", "true", "yes", "on"},
     )
+
+
+def create_terminal_backend_from_env():
+    backend = os.environ.get("AGENTBRIDGE_TERMINAL_BACKEND", "fake").lower()
+    if backend == "tmux":
+        return TmuxTerminalBackend()
+    return FakeTerminalBackend()
 
 
 def run() -> None:
