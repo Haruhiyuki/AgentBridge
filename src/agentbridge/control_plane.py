@@ -1846,7 +1846,10 @@ class ControlPlane:
             raise AgentBridgeError(
                 ErrorCode.COMMAND_ARGUMENT_INVALID,
                 "设备授权 scope 不能为空。",
-                next_step="请至少选择一个 transport scope，或省略 allowed_scopes 使用默认值。",
+                next_step=(
+                    "请至少选择一个 device identity scope，"
+                    "或省略 allowed_scopes 使用默认值。"
+                ),
                 details={
                     "allowed_scopes": sorted(scope.value for scope in DeviceIdentityScope)
                 },

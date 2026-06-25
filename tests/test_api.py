@@ -283,7 +283,7 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
             "device_id": "laptop",
             "display_name": "Maintainer laptop",
             "device_key": "managed-secret",
-            "allowed_scopes": ["http_api"],
+            "allowed_scopes": ["http_api", "device_manage"],
             "certificate_fingerprints": ["SHA256:AA:BB:CC"],
             "trace_id": "managed-device-create",
         },
@@ -333,7 +333,7 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
     assert created["device_id"] == "laptop"
     assert created["display_name"] == "Maintainer laptop"
     assert created["status"] == "active"
-    assert created["allowed_scopes"] == ["http_api"]
+    assert created["allowed_scopes"] == ["device_manage", "http_api"]
     assert created["certificate_fingerprints"] == ["aabbcc"]
     assert created["device_key"] == "managed-secret"
     assert "key_hash" not in created
@@ -346,7 +346,7 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
     assert list_response.status_code == 200
     listed = list_response.json()[0]
     assert listed["device_id"] == "laptop"
-    assert listed["allowed_scopes"] == ["http_api"]
+    assert listed["allowed_scopes"] == ["device_manage", "http_api"]
     assert listed["certificate_fingerprints"] == ["aabbcc"]
     assert listed["last_used_at"] is not None
     assert "device_key" not in listed
@@ -367,7 +367,7 @@ def test_managed_device_identity_can_be_certificate_only():
             "actor": actor,
             "device_id": "cert-only",
             "display_name": "Certificate only device",
-            "allowed_scopes": ["http_api"],
+            "allowed_scopes": ["http_api", "device_manage"],
             "certificate_fingerprints": ["SHA256:AA:BB:CC"],
             "trace_id": "managed-device-cert-only-create",
         },
@@ -402,6 +402,51 @@ def test_managed_device_identity_can_be_certificate_only():
     assert key_response.status_code == 403
     assert revoke_response.status_code == 200
     assert revoked_certificate_response.status_code == 403
+
+
+def test_managed_device_identity_requires_device_manage_scope_for_device_api():
+    client = TestClient(create_app())
+    actor = {"id": "security-admin", "roles": ["admin"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": actor,
+            "device_id": "readonly-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "managed-device-readonly-create",
+        },
+    )
+    key_http_response = client.get(
+        "/api/v1/projects",
+        headers={
+            "x-agentbridge-device-id": "readonly-device",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+    key_device_api_response = client.get(
+        "/api/v1/device-identities",
+        headers={
+            "x-agentbridge-device-id": "readonly-device",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+    cert_http_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+    cert_device_api_response = client.get(
+        "/api/v1/device-identities",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert create_response.status_code == 200
+    assert key_http_response.status_code == 200
+    assert cert_http_response.status_code == 200
+    assert key_device_api_response.status_code == 403
+    assert cert_device_api_response.status_code == 403
 
 
 def test_project_session_admin_ui_serves_dashboard():
@@ -454,6 +499,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "async function revokeDevice()" in html
     assert "auth-device-key" in html
     assert "allowed-scopes" in html
+    assert "device_manage" in html
     assert "certificate-fingerprints" in html
     assert "generated-key" in html
 

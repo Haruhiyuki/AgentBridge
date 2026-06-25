@@ -2159,19 +2159,34 @@ def http_api_request_authorized(
         and not client_certificate_fingerprints_configured()
     ):
         return True
+    required_scope = http_api_required_device_scope(request)
     presented_tokens = http_api_presented_tokens(request)
     return (
         client_certificate_authorized(
             request.headers,
             control=control,
-            required_scope=DeviceIdentityScope.HTTP_API,
+            required_scope=required_scope,
         )
-        or http_device_key_authorized(request, device_keys, control=control)
+        or http_device_key_authorized(
+            request,
+            device_keys,
+            control=control,
+            required_scope=required_scope,
+        )
         or any(
             matching_token(presented_token, expected_tokens)
             for presented_token in presented_tokens
         )
     )
+
+
+def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
+    path = request.url.path.rstrip("/")
+    if path == "/api/v1/device-identities" or path.startswith(
+        "/api/v1/device-identities/"
+    ):
+        return DeviceIdentityScope.DEVICE_MANAGE
+    return DeviceIdentityScope.HTTP_API
 
 
 def http_api_expected_tokens() -> list[str]:
@@ -2213,6 +2228,7 @@ def http_device_key_authorized(
     device_keys: dict[str, str],
     *,
     control: ControlPlane | None = None,
+    required_scope: DeviceIdentityScope,
 ) -> bool:
     device_id = request.headers.get("x-agentbridge-device-id")
     presented_key = request.headers.get("x-agentbridge-device-key")
@@ -2233,7 +2249,7 @@ def http_device_key_authorized(
         device_id,
         presented_key,
         control,
-        required_scope=DeviceIdentityScope.HTTP_API,
+        required_scope=required_scope,
     )
 
 
