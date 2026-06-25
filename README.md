@@ -16,6 +16,7 @@ This repository currently contains the first executable backend slice:
 - Optional SQLAlchemy persistence with an Alembic-managed schema.
 - Terminal input gateway with fake/tmux backends and writer-lease epoch enforcement.
 - Local Terminal Agent daemon over a token-protected Unix socket.
+- Local Console Client that acquires human lease on first input and forwards terminal input.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
 - REST API routes aligned with the design document's service interface.
 
@@ -81,6 +82,18 @@ curl http://127.0.0.1:8000/api/v1/sessions/<session-id>/rendered-events
 ```
 
 The current renderer targets reliable text fallback for OneBot-style platforms. Rich buttons/cards and platform-specific delivery state are planned for the Bot Gateway layer.
+
+## Console Client
+
+Attach to a session through the local Terminal Agent socket:
+
+```bash
+export AGENTBRIDGE_LOCAL_TOKEN=...
+export AGENTBRIDGE_TERMINAL_SOCKET="$HOME/.agentbridge/terminal-agent.sock"
+uv run agentbridge-console <session-id> --start --command sh
+```
+
+The current console runs in line mode. Before forwarding the first line, it requests a `human` writer lease and then sends input with the returned epoch. Use `--send`, `--paste`, or `--snapshot` for scripted checks, and `--release` to release the lease on exit.
 
 ## API Smoke Test
 

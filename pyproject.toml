@@ -25,6 +25,7 @@ dev = [
 
 [project.scripts]
 agentbridge-api = "agentbridge.api:run"
+agentbridge-console = "agentbridge.console_client:run"
 agentbridge-terminal-agent = "agentbridge.terminal_daemon:run"
 
 [tool.pytest.ini_options]

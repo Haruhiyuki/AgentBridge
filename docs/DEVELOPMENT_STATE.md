@@ -36,6 +36,8 @@ Implemented in this slice:
 - Terminal Agent input gateway with fake and tmux backends.
 - Local Terminal Agent daemon using JSONL over a Unix socket with token authentication.
 - Local daemon actions for `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, and `snapshot`.
+- Local Console Client command `agentbridge-console`.
+- Console Client acquires a human writer lease on first input, caches the epoch, forwards text/paste/signal/resize through the daemon, and can release the lease on exit.
 - Terminal input request idempotency now prevents duplicate backend writes for repeated request IDs.
 - Terminal start/input/snapshot REST endpoints for MVP integration tests.
 - Terminal input enforcement against current writer lease owner and epoch, with rejected/accepted semantic events.
@@ -46,7 +48,7 @@ Implemented in this slice:
 
 Not implemented yet:
 
-- Brokered PTY host, visible local console attachment, and desktop terminal auto-launch.
+- Raw TTY console mode, brokered PTY host, desktop terminal auto-launch, and terminal resize observation.
 - NoneBot/OneBot adapter and renderer.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
@@ -64,6 +66,7 @@ Not implemented yet:
 - SQLAlchemy persistence is currently a single-process write-through snapshot repository. It is sufficient for restart recovery and contract tests, but multi-process production deployments need row-level updates and stronger transaction boundaries.
 - Terminal input must pass through the AgentBridge gateway. Direct `tmux attach` remains outside the safety model because it bypasses writer leases.
 - The local Terminal Agent socket is token-gated and chmodded to `0600`; production hardening still needs OS user checks, token rotation, and Windows named-pipe parity.
+- The first Console Client is line-mode to validate the lease boundary. Raw mode and visible TUI passthrough remain separate work because they need careful terminal state restoration.
 - Rendering is split into platform-neutral documents and platform renderers. The first renderer intentionally targets text fallback so unsupported Bot platforms still receive coherent output.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
 
@@ -81,7 +84,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 ## Next Development Backlog
 
 1. Add tmux lifecycle supervision tests around the local daemon, including restart/reconnect behavior.
-2. Add a local Console Client that connects to the Unix socket, acquires human lease on first key, and forwards input.
+2. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
 3. Add Bot Gateway event subscription and delivery workers using the renderer.
 4. Add OneBot V11 adapter contract tests and message delivery idempotency.
 5. Expand policy engine to explicit role bindings, approval quorum, and risk levels.
