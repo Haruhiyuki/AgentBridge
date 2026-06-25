@@ -328,9 +328,11 @@ allowlist.
 
 Audit records can be queried through `GET /api/v1/audit` with optional `actor_id`,
 `action`, `project_id`, `session_id`, `interaction_id`, `trace_id`, `q`,
-`created_from`, `created_to`, and `limit` filters. `q` performs a case-insensitive
-contains match over audit `details`; `created_from` and `created_to` accept ISO-8601
-datetimes. Results are bounded and returned newest first for operational review.
+`details_field`, `details_value`, `created_from`, `created_to`, and `limit` filters.
+`q` performs a case-insensitive contains match over audit `details`; `details_field`
+supports dot-separated JSON object paths with an optional exact `details_value`;
+`created_from` and `created_to` accept ISO-8601 datetimes. Results are bounded and
+returned newest first for operational review.
 The same filters can be exported through `GET /api/v1/audit/export?format=json`
 or `format=csv`. Set `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_COMMAND` to sign
 `format=archive` exports through an external KMS/HSM/Vault command that receives the
@@ -346,11 +348,13 @@ and verification guidance.
 
 Semantic events can be searched across streams through `GET /api/v1/events` with
 optional `project_id`, `session_id`, `turn_id`, `interaction_id`, `event_type`,
-`source`, `trace_id`, `q`, `created_from`, `created_to`, and `limit` filters. `q`
-performs a case-insensitive contains match over event `payload`; `created_from` and
-`created_to` accept ISO-8601 datetimes. This search endpoint returns bounded
-newest-first results for operational investigation; use the session replay endpoints
-when a client needs stream-order replay from `after_seq`.
+`source`, `trace_id`, `q`, `payload_field`, `payload_value`, `created_from`,
+`created_to`, and `limit` filters. `q` performs a case-insensitive contains match over
+event `payload`; `payload_field` supports dot-separated JSON object paths with an
+optional exact `payload_value`; `created_from` and `created_to` accept ISO-8601
+datetimes. This search endpoint returns bounded newest-first results for operational
+investigation; use the session replay endpoints when a client needs stream-order replay
+from `after_seq`.
 
 ## Terminal WebSocket
 

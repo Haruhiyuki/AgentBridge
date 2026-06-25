@@ -96,6 +96,51 @@ def payload_search_text(payload: object) -> str:
     return serialized.casefold()
 
 
+_MISSING = object()
+
+
+def payload_field_path(field: str | None) -> tuple[str, ...] | None:
+    if field is None:
+        return None
+    parts = tuple(part.strip() for part in field.split(".") if part.strip())
+    return parts or None
+
+
+def payload_field_matches(
+    payload: object,
+    field: str | None,
+    expected: str | None,
+) -> bool:
+    path = payload_field_path(field)
+    if path is None:
+        return True
+    value = payload_field_value(payload, path)
+    if value is _MISSING:
+        return False
+    normalized_expected = normalized_payload_query(expected)
+    if normalized_expected is None:
+        return True
+    return payload_value_search_text(value) == normalized_expected
+
+
+def payload_field_value(payload: object, path: tuple[str, ...]) -> object:
+    value = payload
+    for part in path:
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+            continue
+        return _MISSING
+    return value
+
+
+def payload_value_search_text(value: object) -> str:
+    if isinstance(value, str):
+        return value.casefold()
+    if value is None or isinstance(value, (bool, int, float)):
+        return str(value).casefold()
+    return payload_search_text(value)
+
+
 def created_at_in_range(
     created_at: datetime,
     *,
@@ -1930,6 +1975,8 @@ class InMemoryRepository:
         interaction_id: str | None = None,
         trace_id: str | None = None,
         payload_query: str | None = None,
+        details_field: str | None = None,
+        details_value: str | None = None,
         created_from: datetime | None = None,
         created_to: datetime | None = None,
         limit: int = 100,
@@ -1946,6 +1993,11 @@ class InMemoryRepository:
                     and (interaction_id is None or event.interaction_id == interaction_id)
                     and (trace_id is None or event.trace_id == trace_id)
                     and payload_contains_query(event.details, payload_query)
+                    and payload_field_matches(
+                        event.details,
+                        details_field,
+                        details_value,
+                    )
                     and created_at_in_range(
                         event.created_at,
                         created_from=created_from,
@@ -2029,6 +2081,8 @@ class InMemoryRepository:
         source: SemanticEventSource | None = None,
         trace_id: str | None = None,
         payload_query: str | None = None,
+        payload_field: str | None = None,
+        payload_value: str | None = None,
         created_from: datetime | None = None,
         created_to: datetime | None = None,
         limit: int = 100,
@@ -2046,6 +2100,11 @@ class InMemoryRepository:
                     and (source is None or event.source == source)
                     and (trace_id is None or event.trace_id == trace_id)
                     and payload_contains_query(event.payload, payload_query)
+                    and payload_field_matches(
+                        event.payload,
+                        payload_field,
+                        payload_value,
+                    )
                     and created_at_in_range(
                         event.created_at,
                         created_from=created_from,

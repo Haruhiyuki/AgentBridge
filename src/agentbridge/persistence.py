@@ -15,6 +15,7 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     delete,
+    func,
     select,
 )
 from sqlalchemy.engine import Engine
@@ -41,6 +42,7 @@ from agentbridge.domain import (
 from agentbridge.storage import (
     InMemoryRepository,
     normalized_payload_query,
+    payload_field_path,
     payload_search_text,
     utc_datetime_key,
 )
@@ -256,6 +258,20 @@ bot_delivery_records_table = Table(
 )
 
 
+def apply_json_field_filter(stmt, root, *, field: str | None, expected: str | None):
+    path = payload_field_path(field)
+    if path is None:
+        return stmt
+    expression = root
+    for segment in path:
+        expression = expression[segment]
+    text_expression = expression.as_string()
+    normalized_expected = normalized_payload_query(expected)
+    if normalized_expected is None:
+        return stmt.where(text_expression.is_not(None))
+    return stmt.where(func.lower(text_expression) == normalized_expected)
+
+
 class SQLAlchemyRepository(InMemoryRepository):
     """Write-through SQLAlchemy repository for single-process MVP persistence."""
 
@@ -440,6 +456,8 @@ class SQLAlchemyRepository(InMemoryRepository):
         interaction_id: str | None = None,
         trace_id: str | None = None,
         payload_query: str | None = None,
+        details_field: str | None = None,
+        details_value: str | None = None,
         created_from: datetime | None = None,
         created_to: datetime | None = None,
         limit: int = 100,
@@ -466,6 +484,12 @@ class SQLAlchemyRepository(InMemoryRepository):
             stmt = stmt.where(
                 audit_events_table.c.created_at <= utc_datetime_key(created_to)
             )
+        stmt = apply_json_field_filter(
+            stmt,
+            audit_events_table.c.payload["details"],
+            field=details_field,
+            expected=details_value,
+        )
         normalized_query = normalized_payload_query(payload_query)
         if normalized_query is not None:
             stmt = stmt.where(
@@ -495,6 +519,8 @@ class SQLAlchemyRepository(InMemoryRepository):
         source: SemanticEventSource | None = None,
         trace_id: str | None = None,
         payload_query: str | None = None,
+        payload_field: str | None = None,
+        payload_value: str | None = None,
         created_from: datetime | None = None,
         created_to: datetime | None = None,
         limit: int = 100,
@@ -525,6 +551,12 @@ class SQLAlchemyRepository(InMemoryRepository):
             stmt = stmt.where(
                 semantic_events_table.c.created_at <= utc_datetime_key(created_to)
             )
+        stmt = apply_json_field_filter(
+            stmt,
+            semantic_events_table.c.payload["payload"],
+            field=payload_field,
+            expected=payload_value,
+        )
         normalized_query = normalized_payload_query(payload_query)
         if normalized_query is not None:
             stmt = stmt.where(

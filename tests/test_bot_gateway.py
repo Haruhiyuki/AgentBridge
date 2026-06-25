@@ -165,13 +165,13 @@ def test_bot_gateway_delivers_filtered_semantic_events_idempotently():
 
     first = gateway.deliver_events(
         chat_context_id=context.id,
-        event_type="device_identity.certificates_scanned",
-        trace_id="security-scan-alert",
+        payload_field="status_counts.expired",
+        payload_value="1",
     )
     second = gateway.deliver_events(
         chat_context_id=context.id,
-        event_type="device_identity.certificates_scanned",
-        trace_id="security-scan-alert",
+        payload_field="status_counts.expired",
+        payload_value="1",
     )
 
     assert [record.status for record in first] == [BotDeliveryStatus.SENT]

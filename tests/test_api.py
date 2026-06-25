@@ -2759,9 +2759,13 @@ def test_audit_events_admin_ui_serves_dashboard():
     assert "event-source" in html
     assert "event-trace" in html
     assert "audit-query" in html
+    assert "audit-details-field" in html
+    assert "audit-details-value" in html
     assert "audit-created-from" in html
     assert "audit-created-to" in html
     assert "event-query" in html
+    assert "event-payload-field" in html
+    assert "event-payload-value" in html
     assert "event-created-from" in html
     assert "event-created-to" in html
     assert "event-live-connect" in html
@@ -3458,6 +3462,31 @@ def test_audit_api_filters_and_limits_records(tmp_path, monkeypatch):
         "/api/v1/audit",
         params={"action": "project.workspace_added", "q": workspace["id"]},
     )
+    details_field_response = client.get(
+        "/api/v1/audit",
+        params={
+            "action": "project.workspace_added",
+            "details_field": "workspace_id",
+            "details_value": workspace["id"],
+        },
+    )
+    details_field_missing_response = client.get(
+        "/api/v1/audit",
+        params={
+            "action": "project.workspace_added",
+            "details_field": "workspace_id",
+            "details_value": "missing-workspace",
+        },
+    )
+    details_field_export_response = client.get(
+        "/api/v1/audit/export",
+        params={
+            "action": "project.workspace_added",
+            "details_field": "workspace_id",
+            "details_value": workspace["id"],
+            "format": "json",
+        },
+    )
     payload_missing_response = client.get(
         "/api/v1/audit",
         params={"action": "project.workspace_added", "q": "missing-workspace"},
@@ -3557,6 +3586,17 @@ def test_audit_api_filters_and_limits_records(tmp_path, monkeypatch):
     assert [event["details"]["workspace_id"] for event in payload_response.json()] == [
         workspace["id"]
     ]
+    assert details_field_response.status_code == 200
+    assert [
+        event["details"]["workspace_id"] for event in details_field_response.json()
+    ] == [workspace["id"]]
+    assert details_field_missing_response.status_code == 200
+    assert details_field_missing_response.json() == []
+    assert details_field_export_response.status_code == 200
+    assert details_field_export_response.json()["count"] == 1
+    assert details_field_export_response.json()["records"][0]["details"][
+        "workspace_id"
+    ] == workspace["id"]
     assert payload_missing_response.status_code == 200
     assert payload_missing_response.json() == []
     assert missing_response.status_code == 200
@@ -5221,7 +5261,7 @@ def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
             "source": "terminal_agent",
             "trace_id": "terminal-2",
             "idempotency_key": "terminal-event-2",
-            "payload": {"text": "newest"},
+            "payload": {"text": "newest", "metadata": {"kind": "final"}},
         },
     )
 
@@ -5250,6 +5290,22 @@ def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
     payload_response = client.get(
         "/api/v1/events",
         params={"session_id": session_id, "q": "newest"},
+    )
+    payload_field_response = client.get(
+        "/api/v1/events",
+        params={
+            "session_id": session_id,
+            "payload_field": "metadata.kind",
+            "payload_value": "final",
+        },
+    )
+    payload_field_missing_response = client.get(
+        "/api/v1/events",
+        params={
+            "session_id": session_id,
+            "payload_field": "metadata.kind",
+            "payload_value": "draft",
+        },
     )
     payload_missing_response = client.get(
         "/api/v1/events",
@@ -5282,7 +5338,8 @@ def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
         "/api/v1/events/rendered",
         params={
             "session_id": session_id,
-            "q": "newest",
+            "payload_field": "metadata.kind",
+            "payload_value": "final",
             "created_from": event_window_from,
             "created_to": event_window_to,
         },
@@ -5302,6 +5359,12 @@ def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
     assert [event["id"] for event in trace_response.json()] == [first.json()["id"]]
     assert payload_response.status_code == 200
     assert [event["id"] for event in payload_response.json()] == [second.json()["id"]]
+    assert payload_field_response.status_code == 200
+    assert [event["id"] for event in payload_field_response.json()] == [
+        second.json()["id"]
+    ]
+    assert payload_field_missing_response.status_code == 200
+    assert payload_field_missing_response.json() == []
     assert payload_missing_response.status_code == 200
     assert payload_missing_response.json() == []
     assert time_response.status_code == 200

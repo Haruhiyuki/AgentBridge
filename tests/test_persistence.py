@@ -385,6 +385,22 @@ def test_sqlalchemy_repository_lists_filtered_audit_events(tmp_path):
         payload_query=workspace.id.upper(),
     )
     assert [event.details["workspace_id"] for event in workspace_query] == [workspace.id]
+    workspace_field_query = restored.list_audit_events(
+        action="project.workspace_added",
+        details_field="workspace_id",
+        details_value=workspace.id,
+    )
+    assert [event.details["workspace_id"] for event in workspace_field_query] == [
+        workspace.id
+    ]
+    assert (
+        restored.list_audit_events(
+            action="project.workspace_added",
+            details_field="workspace_id",
+            details_value="missing-workspace",
+        )
+        == []
+    )
     with engine.connect() as connection:
         details_text = connection.execute(
             text(
@@ -457,7 +473,7 @@ def test_sqlalchemy_repository_lists_filtered_semantic_events(tmp_path):
         trace_id="event-search-two",
         project_id=project.id,
         session_id=second_session.id,
-        payload={"text": "second"},
+        payload={"text": "second", "metadata": {"kind": "final"}},
     )
 
     restored = SQLAlchemyRepository(database_url)
@@ -484,6 +500,22 @@ def test_sqlalchemy_repository_lists_filtered_semantic_events(tmp_path):
         payload_query="SECOND",
     )
     assert [event.id for event in payload_filtered] == [second_event.id]
+    field_filtered = restored.list_semantic_events(
+        project_id=project.id,
+        event_type="assistant.delta",
+        payload_field="metadata.kind",
+        payload_value="final",
+    )
+    assert [event.id for event in field_filtered] == [second_event.id]
+    assert (
+        restored.list_semantic_events(
+            project_id=project.id,
+            event_type="assistant.delta",
+            payload_field="metadata.kind",
+            payload_value="draft",
+        )
+        == []
+    )
     engine = create_engine(database_url)
     with engine.connect() as connection:
         row = connection.execute(

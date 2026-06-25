@@ -716,6 +716,14 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
           <input id="audit-query" autocomplete="off" placeholder="details text">
         </label>
         <label class="compact">
+          Details Field
+          <input id="audit-details-field" autocomplete="off" placeholder="workspace_id">
+        </label>
+        <label class="compact">
+          Details Value
+          <input id="audit-details-value" autocomplete="off" placeholder="exact value">
+        </label>
+        <label class="compact">
           From
           <input id="audit-created-from" type="datetime-local">
         </label>
@@ -788,6 +796,14 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
         <label class="compact">
           Query
           <input id="event-query" autocomplete="off" placeholder="payload text">
+        </label>
+        <label class="compact">
+          Payload Field
+          <input id="event-payload-field" autocomplete="off" placeholder="text">
+        </label>
+        <label class="compact">
+          Payload Value
+          <input id="event-payload-value" autocomplete="off" placeholder="exact value">
         </label>
         <label class="compact">
           From
@@ -872,6 +888,8 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
         ["actor_id", "audit-actor"],
         ["session_id", "audit-session"],
         ["q", "audit-query"],
+        ["details_field", "audit-details-field"],
+        ["details_value", "audit-details-value"],
         ["created_from", "audit-created-from"],
         ["created_to", "audit-created-to"],
         ["limit", "audit-limit"],
@@ -1060,6 +1078,8 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
         ["turn_id", "event-turn"],
         ["interaction_id", "event-interaction"],
         ["q", "event-query"],
+        ["payload_field", "event-payload-field"],
+        ["payload_value", "event-payload-value"],
         ["created_from", "event-created-from"],
         ["created_to", "event-created-to"],
         ["limit", "event-limit"],

@@ -252,6 +252,8 @@ class BotGatewayService:
         source: SemanticEventSource | None = None,
         trace_id: str | None = None,
         payload_query: str | None = None,
+        payload_field: str | None = None,
+        payload_value: str | None = None,
         limit: int = 100,
     ) -> list[BotDeliveryRecord]:
         if not has_delivery_filter(
@@ -263,6 +265,8 @@ class BotGatewayService:
             source=source,
             trace_id=trace_id,
             payload_query=payload_query,
+            payload_field=payload_field,
+            payload_value=payload_value,
         ):
             raise AgentBridgeError(
                 ErrorCode.COMMAND_ARGUMENT_INVALID,
@@ -287,6 +291,8 @@ class BotGatewayService:
             source=source,
             trace_id=trace_id,
             payload_query=payload_query,
+            payload_field=payload_field,
+            payload_value=payload_value,
             limit=limit,
         )
         records: list[BotDeliveryRecord] = []
@@ -920,6 +926,8 @@ def has_delivery_filter(
     source: SemanticEventSource | None,
     trace_id: str | None,
     payload_query: str | None,
+    payload_field: str | None = None,
+    payload_value: str | None = None,
 ) -> bool:
     return any(
         (
@@ -931,6 +939,8 @@ def has_delivery_filter(
             source is not None,
             bool(trace_id),
             bool(payload_query),
+            bool(payload_field),
+            bool(payload_value),
         )
     )
 
