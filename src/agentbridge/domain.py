@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from agentbridge.device_auth import normalize_certificate_fingerprint
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -236,7 +238,7 @@ class DeviceCertificateRecord(BaseModel):
     @field_validator("fingerprint")
     @classmethod
     def validate_fingerprint(cls, value: str) -> str:
-        normalized = value.strip().lower()
+        normalized = normalize_certificate_fingerprint(value)
         if not normalized:
             raise ValueError("certificate fingerprint must not be empty")
         return normalized

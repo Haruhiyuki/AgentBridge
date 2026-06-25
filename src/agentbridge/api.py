@@ -8,7 +8,7 @@ import io
 import json
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
 
@@ -49,6 +49,7 @@ from agentbridge.domain import (
     AuditEvent,
     BotDeliveryResultAction,
     BotDeliveryStatus,
+    DeviceCertificateRecord,
     DeviceIdentity,
     DeviceIdentityScope,
     DeviceIdentityStatus,
@@ -2055,6 +2056,7 @@ def device_identity_public_payload(identity: DeviceIdentity) -> dict[str, object
         "certificate_records": [
             record.model_dump(mode="json") for record in identity.certificate_records
         ],
+        "certificate_health": device_identity_certificate_health(identity),
         "created_by": identity.created_by,
         "created_at": identity.created_at.isoformat(),
         "revoked_at": identity.revoked_at.isoformat() if identity.revoked_at else None,
@@ -2062,6 +2064,131 @@ def device_identity_public_payload(identity: DeviceIdentity) -> dict[str, object
             identity.last_used_at.isoformat() if identity.last_used_at else None
         ),
     }
+
+
+def device_identity_certificate_health(
+    identity: DeviceIdentity,
+    *,
+    now: datetime | None = None,
+    warning_days: int | None = None,
+) -> dict[str, object]:
+    current_time = _aware_utc(now or utc_now())
+    warning_window_days = (
+        max(1, warning_days)
+        if warning_days is not None
+        else device_certificate_expiry_warning_days_from_env()
+    )
+    warning_cutoff = current_time + timedelta(days=warning_window_days)
+    active_fingerprints = {
+        fingerprint
+        for value in identity.certificate_fingerprints
+        if (fingerprint := normalize_certificate_fingerprint(value))
+    }
+    active_records = _active_certificate_records_by_fingerprint(identity)
+    expiries = [
+        _aware_utc(record.not_after)
+        for record in active_records.values()
+        if record.not_after is not None
+    ]
+    expired_fingerprints = sorted(
+        fingerprint
+        for fingerprint, record in active_records.items()
+        if record.not_after is not None
+        and _aware_utc(record.not_after) <= current_time
+    )
+    expiring_fingerprints = sorted(
+        fingerprint
+        for fingerprint, record in active_records.items()
+        if record.not_after is not None
+        and current_time < _aware_utc(record.not_after) <= warning_cutoff
+    )
+    untracked_count = len(active_fingerprints.difference(active_records))
+    missing_validity_count = sum(
+        1 for record in active_records.values() if record.not_after is None
+    )
+    if identity.status == DeviceIdentityStatus.REVOKED:
+        status = "revoked"
+    elif not active_fingerprints:
+        status = "none"
+    elif expired_fingerprints:
+        status = "expired"
+    elif expiring_fingerprints:
+        status = "expiring"
+    elif untracked_count or missing_validity_count:
+        status = "unknown"
+    else:
+        status = "ok"
+    next_expires_at = min(expiries) if expiries else None
+    return {
+        "status": status,
+        "warning_days": warning_window_days,
+        "active_certificate_count": len(active_fingerprints),
+        "tracked_certificate_count": len(active_records),
+        "untracked_certificate_count": untracked_count,
+        "missing_validity_count": missing_validity_count,
+        "expired_count": len(expired_fingerprints),
+        "expiring_count": len(expiring_fingerprints),
+        "expired_fingerprints": expired_fingerprints,
+        "expiring_fingerprints": expiring_fingerprints,
+        "next_expires_at": (
+            _datetime_payload(next_expires_at) if next_expires_at else None
+        ),
+    }
+
+
+def device_certificate_expiry_warning_days_from_env() -> int:
+    return max(
+        1,
+        env_int(
+            "AGENTBRIDGE_DEVICE_CERT_EXPIRY_WARNING_DAYS",
+            default=14,
+        ),
+    )
+
+
+def _active_certificate_records_by_fingerprint(
+    identity: DeviceIdentity,
+) -> dict[str, DeviceCertificateRecord]:
+    active_fingerprints = {
+        fingerprint
+        for value in identity.certificate_fingerprints
+        if (fingerprint := normalize_certificate_fingerprint(value))
+    }
+    records: dict[str, DeviceCertificateRecord] = {}
+    for record in identity.certificate_records:
+        if record.fingerprint in active_fingerprints and record.removed_at is None:
+            records[record.fingerprint] = record
+    return records
+
+
+def _managed_device_certificate_active(
+    identity: DeviceIdentity,
+    presented_fingerprint: str,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    fingerprint = normalize_certificate_fingerprint(presented_fingerprint)
+    active_fingerprints = {
+        normalized
+        for value in identity.certificate_fingerprints
+        if (normalized := normalize_certificate_fingerprint(value))
+    }
+    if not fingerprint or fingerprint not in active_fingerprints:
+        return False
+    record = _active_certificate_records_by_fingerprint(identity).get(fingerprint)
+    if record is None or record.not_after is None:
+        return True
+    return _aware_utc(record.not_after) > _aware_utc(now or utc_now())
+
+
+def _aware_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _datetime_payload(value: datetime) -> str:
+    return _aware_utc(value).isoformat().replace("+00:00", "Z")
 
 
 async def stream_session_events(
@@ -3323,12 +3450,7 @@ def matching_managed_device_certificate_fingerprint(
             continue
         if not device_identity_resource_allowed(identity, resource_ids):
             continue
-        fingerprints = {
-            fingerprint
-            for value in identity.certificate_fingerprints
-            if (fingerprint := normalize_certificate_fingerprint(value))
-        }
-        if presented_fingerprint in fingerprints:
+        if _managed_device_certificate_active(identity, presented_fingerprint):
             control.repository.mark_device_identity_used(identity.device_id)
             return True
     return False

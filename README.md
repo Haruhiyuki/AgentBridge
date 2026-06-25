@@ -268,7 +268,10 @@ identity through
 allowed scopes, and resource allowlist, audits the added/removed fingerprints, and
 rejects removing the last credential from a certificate-only device. Device identity
 responses include `certificate_records`, retaining per-fingerprint source, issuance
-metadata where available, and removal timestamps for operational audit.
+metadata where available, and removal timestamps for operational audit. Responses also
+include `certificate_health`, which reports `ok`, `expiring`, `expired`, `unknown`,
+`none`, or `revoked` based on active certificate records; known expired managed
+certificates are rejected during client-certificate fingerprint authentication.
 Set `AGENTBRIDGE_DEVICE_CERT_CA_CERT_FILE` and
 `AGENTBRIDGE_DEVICE_CERT_CA_KEY_FILE` to enable CSR-based certificate issuance through
 `POST /api/v1/device-identities/{device_id}/certificates/issue`. The CSR Common Name
@@ -278,7 +281,8 @@ subject, issuer, and validity window on the managed identity, and preserve exist
 key/scope/resource settings. `AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD`
 or `AGENTBRIDGE_DEVICE_CERT_CA_KEY_PASSWORD_FILE` can unlock encrypted CA keys, and
 `AGENTBRIDGE_DEVICE_CERT_DEFAULT_VALIDITY_DAYS` defaults new certificates to 30 days
-when the request omits `validity_days`.
+when the request omits `validity_days`. `AGENTBRIDGE_DEVICE_CERT_EXPIRY_WARNING_DAYS`
+sets the certificate health expiring window and defaults to 14 days.
 
 For deployments behind a TLS-terminating reverse proxy that verifies client
 certificates, set `AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS` or

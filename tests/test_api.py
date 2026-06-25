@@ -14,7 +14,14 @@ from fastapi.testclient import TestClient
 
 from agentbridge.api import create_app
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, DeviceIdentityScope, TurnStatus, Visibility
+from agentbridge.domain import (
+    Actor,
+    DeviceCertificateRecord,
+    DeviceIdentityScope,
+    TurnStatus,
+    Visibility,
+    utc_now,
+)
 from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService
 
 
@@ -849,6 +856,12 @@ def test_managed_device_identity_issues_ca_backed_certificate(monkeypatch, tmp_p
     assert issued_record["issuer"] == issued["issuer"]
     assert issued_record["not_after"] == issued["not_after"]
     assert issued_record["removed_at"] is None
+    certificate_health = issued["device_identity"]["certificate_health"]
+    assert certificate_health["status"] == "expiring"
+    assert certificate_health["warning_days"] == 14
+    assert certificate_health["expiring_count"] == 1
+    assert certificate_health["expiring_fingerprints"] == [issued_fingerprint]
+    assert certificate_health["next_expires_at"] == issued["not_after"]
     assert issued["device_identity"]["allowed_scopes"] == ["device_manage", "http_api"]
     assert ExtendedKeyUsageOID.CLIENT_AUTH in extended_key_usage
     assert certificate_response.status_code == 200
@@ -903,6 +916,74 @@ def test_managed_device_identity_rejects_certificate_csr_for_wrong_device(
     assert issue_response.json()["details"]["csr_common_name"] == "other-device"
     assert identity_response.json()[0]["certificate_fingerprints"] == []
     assert identity_response.json()[0]["certificate_records"] == []
+    assert identity_response.json()[0]["certificate_health"]["status"] == "none"
+
+
+def test_managed_device_identity_rejects_expired_tracked_certificate_fingerprint():
+    control = ControlPlane()
+    client = TestClient(create_app(control))
+    admin = Actor(id="security-admin", roles={"admin"})
+    identity, device_key = control.upsert_device_identity(
+        actor=admin,
+        device_id="expired-certificate-device",
+        display_name="Expired certificate device",
+        device_key="managed-secret",
+        allowed_scopes={
+            DeviceIdentityScope.HTTP_API,
+            DeviceIdentityScope.DEVICE_MANAGE,
+        },
+        certificate_fingerprints={"SHA256:AA:BB:CC"},
+        trace_id="managed-device-expired-certificate-create",
+    )
+    expired_at = utc_now() - timedelta(minutes=1)
+    control.repository.upsert_device_identity(
+        device_id=identity.device_id,
+        display_name=identity.display_name,
+        allowed_scopes=set(identity.allowed_scopes),
+        allowed_resource_ids=set(identity.allowed_resource_ids),
+        certificate_fingerprints=set(identity.certificate_fingerprints),
+        certificate_records=[
+            DeviceCertificateRecord(
+                fingerprint="aabbcc",
+                source="managed_ca",
+                serial_number="1234",
+                subject="CN=expired-certificate-device",
+                issuer="CN=AgentBridge Test CA",
+                not_before=expired_at - timedelta(days=1),
+                not_after=expired_at,
+                issued_by="security-admin",
+            )
+        ],
+        updated_by="security-admin",
+    )
+
+    certificate_response = client.get(
+        "/api/v1/commands",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+    key_response = client.get(
+        "/api/v1/commands",
+        headers={
+            "x-agentbridge-device-id": "expired-certificate-device",
+            "x-agentbridge-device-key": device_key,
+        },
+    )
+    identity_response = client.get(
+        "/api/v1/device-identities",
+        headers={
+            "x-agentbridge-device-id": "expired-certificate-device",
+            "x-agentbridge-device-key": device_key,
+        },
+    )
+
+    assert certificate_response.status_code == 403
+    assert key_response.status_code == 200
+    assert identity_response.status_code == 200
+    health = identity_response.json()[0]["certificate_health"]
+    assert health["status"] == "expired"
+    assert health["expired_count"] == 1
+    assert health["expired_fingerprints"] == ["aabbcc"]
+    assert health["next_expires_at"] is not None
 
 
 def test_managed_device_identity_rejects_certificate_issue_with_mismatched_ca_key(
@@ -2292,6 +2373,9 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "certificate-fingerprints-remove" in html
     assert "certificate-csr" in html
     assert "certificate-validity-days" in html
+    assert "Cert Health" in html
+    assert "formatCertificateHealth" in html
+    assert "certificate_health" in html
     assert "/certificates/issue" in html
     assert "/certificate-fingerprints/rotate" in html
     assert "allowed_resource_ids" in html

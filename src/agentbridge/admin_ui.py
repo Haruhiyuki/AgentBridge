@@ -3732,6 +3732,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
               <th>Scopes</th>
               <th>Resources</th>
               <th>Certs</th>
+              <th>Cert Health</th>
               <th>Created</th>
               <th>Last Used</th>
             </tr>
@@ -3900,6 +3901,19 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       return `/api/v1/device-identities${suffix ? `?${suffix}` : ""}`;
     }
 
+    function formatCertificateHealth(device) {
+      const health = device.certificate_health || {};
+      const status = health.status || "unknown";
+      const parts = [status];
+      if (health.expired_count) parts.push(`expired:${health.expired_count}`);
+      if (health.expiring_count) parts.push(`expiring:${health.expiring_count}`);
+      if (health.untracked_certificate_count) {
+        parts.push(`untracked:${health.untracked_certificate_count}`);
+      }
+      if (health.next_expires_at) parts.push(health.next_expires_at);
+      return parts.join(" ");
+    }
+
     function renderDevices(devices) {
       const rows = devices.map((device) => {
         const tr = document.createElement("tr");
@@ -3915,6 +3929,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
           (device.allowed_scopes || []).join(","),
           (device.allowed_resource_ids || []).join(",") || "all",
           (device.certificate_fingerprints || []).length,
+          formatCertificateHealth(device),
           device.created_at || "",
           device.last_used_at || "",
         ]) {
