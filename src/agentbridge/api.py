@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from time import monotonic
 
 import uvicorn
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -616,6 +618,48 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             )
         return rendered
 
+    @app.websocket("/api/v1/sessions/{session_id}/events/ws")
+    async def stream_events(
+        websocket: WebSocket,
+        session_id: str,
+        control: ControlPlane = Depends(get_control),
+        after_seq: int | None = None,
+        limit: int = 100,
+        poll_interval_seconds: float = 0.25,
+        idle_timeout_seconds: float | None = None,
+    ):
+        await stream_session_events(
+            websocket=websocket,
+            control=control,
+            session_id=session_id,
+            after_seq=after_seq,
+            limit=limit,
+            poll_interval_seconds=poll_interval_seconds,
+            idle_timeout_seconds=idle_timeout_seconds,
+            rendered=False,
+        )
+
+    @app.websocket("/api/v1/sessions/{session_id}/rendered-events/ws")
+    async def stream_rendered_events(
+        websocket: WebSocket,
+        session_id: str,
+        control: ControlPlane = Depends(get_control),
+        after_seq: int | None = None,
+        limit: int = 100,
+        poll_interval_seconds: float = 0.25,
+        idle_timeout_seconds: float | None = None,
+    ):
+        await stream_session_events(
+            websocket=websocket,
+            control=control,
+            session_id=session_id,
+            after_seq=after_seq,
+            limit=limit,
+            poll_interval_seconds=poll_interval_seconds,
+            idle_timeout_seconds=idle_timeout_seconds,
+            rendered=True,
+        )
+
     @app.post("/api/v1/sessions/{session_id}/events")
     def ingest_session_event(
         session_id: str,
@@ -937,6 +981,88 @@ def ensure_chat_context_id(payload: CommandRequest, control: ControlPlane) -> st
         return payload.chat_context_id
     context = control.get_or_create_chat_context(**payload.chat.model_dump())
     return context.id
+
+
+async def stream_session_events(
+    *,
+    websocket: WebSocket,
+    control: ControlPlane,
+    session_id: str,
+    after_seq: int | None,
+    limit: int,
+    poll_interval_seconds: float,
+    idle_timeout_seconds: float | None,
+    rendered: bool,
+) -> None:
+    await websocket.accept()
+    try:
+        control.repository.get_session(session_id)
+    except AgentBridgeError as exc:
+        await websocket.send_json({"type": "error", "error": exc.to_payload()})
+        await websocket.close(code=1008)
+        return
+
+    batch_limit = clamp_stream_limit(limit)
+    poll_interval = clamp_poll_interval(poll_interval_seconds)
+    idle_timeout = normalize_idle_timeout(idle_timeout_seconds)
+    last_seq = max(after_seq or 0, 0)
+    idle_started_at = monotonic()
+    renderer = OneBotV11TextRenderer() if rendered else None
+
+    try:
+        while True:
+            events = control.repository.list_events(
+                session_id=session_id,
+                after_seq=last_seq,
+                limit=batch_limit,
+            )
+            if events:
+                idle_started_at = monotonic()
+                for event in events:
+                    last_seq = max(last_seq, event.seq)
+                    if rendered:
+                        document = document_from_event(event)
+                        await websocket.send_json(
+                            {
+                                "type": "rendered_event",
+                                "event_id": event.id,
+                                "seq": event.seq,
+                                "event": event.model_dump(mode="json"),
+                                "document": document.model_dump(mode="json"),
+                                "text_messages": renderer.render(document) if renderer else [],
+                            }
+                        )
+                    else:
+                        await websocket.send_json(
+                            {
+                                "type": "semantic_event",
+                                "event": event.model_dump(mode="json"),
+                            }
+                        )
+                continue
+
+            if idle_timeout is not None and monotonic() - idle_started_at >= idle_timeout:
+                await websocket.send_json({"type": "idle_timeout", "last_seq": last_seq})
+                await websocket.close(code=1000)
+                return
+
+            await asyncio.sleep(poll_interval)
+    except WebSocketDisconnect:
+        return
+
+
+def clamp_stream_limit(limit: int) -> int:
+    return max(1, min(limit, 1000))
+
+
+def clamp_poll_interval(poll_interval_seconds: float) -> float:
+    return max(0.05, min(poll_interval_seconds, 5.0))
+
+
+def normalize_idle_timeout(idle_timeout_seconds: float | None) -> float | None:
+    if idle_timeout_seconds is None:
+        return None
+    return max(idle_timeout_seconds, 0.0)
 
 
 def create_repository_from_env() -> InMemoryRepository:

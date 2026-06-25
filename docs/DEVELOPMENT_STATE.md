@@ -30,6 +30,8 @@ Implemented in this slice:
 - Ordered semantic event streams for project/session state changes.
 - REST event replay through `GET /api/v1/sessions/{id}/events`.
 - Idempotent Terminal Agent event ingestion through `POST /api/v1/sessions/{id}/events`.
+- Session semantic event WebSocket stream through `/api/v1/sessions/{id}/events/ws`, with `after_seq` replay and live tailing.
+- Bot-facing rendered event WebSocket stream through `/api/v1/sessions/{id}/rendered-events/ws`, returning render documents plus OneBot/plain-text messages.
 - SQLAlchemy-backed repository enabled with `AGENTBRIDGE_DATABASE_URL`.
 - Alembic initial migration for projects, workspaces, chat contexts, bindings, sessions, turns, interactions, writer leases, command idempotency records, audit events, and semantic events.
 - Recovery tests proving persisted control-plane state survives repository re-instantiation.
@@ -90,7 +92,7 @@ Not implemented yet:
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
 - ABAC policy editor and project/group-level approval rule management.
-- WebSocket transport for Terminal Agent and Bot Gateway event delivery.
+- Authenticated Terminal Agent WebSocket command transport and production Bot Gateway push fan-out beyond the current session event streams.
 - Rich platform-specific renderer delivery state, message editing, and button/card support.
 - NoneBot plugin wrapper around the OneBot transport and inbound command/action event handling.
 - Native action/callback support for platforms that expose buttons or interactions.
@@ -119,6 +121,7 @@ Not implemented yet:
 - Approval policy snapshots are copied onto each approval interaction so later policy changes do not rewrite historical approval requirements.
 - OneBot inbound support currently executes text commands only. Callback/button semantics remain platform-specific and should enter through the same command execution path once supported by an adapter.
 - Group role bindings are scoped to a chat context and actor ID. This keeps OneBot user permissions local to the group/private context while still allowing command/API callers to carry bootstrap roles.
+- WebSocket session streams are read-side transports over immutable semantic events. They use `after_seq` cursors for replay/reconnect and do not mutate Bot delivery records.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
 
 ## Verification
@@ -139,3 +142,4 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 3. Add NoneBot plugin wrapper around the OneBot inbound/outbound adapters.
 4. Add adaptive delivery scheduling from live platform rate-limit responses.
 5. Expand policy engine to ABAC policy rules and project/group-level approval policy management.
+6. Add authenticated WebSocket client contracts for Terminal Agent command transport and Bot Gateway subscriber fan-out.

@@ -1,8 +1,42 @@
 from __future__ import annotations
 
+import threading
+
 from fastapi.testclient import TestClient
 
 from agentbridge.api import create_app
+
+
+def _create_session_with_project(
+    client, tmp_path, *, chat_space_id: str, prefix: str, name: str
+) -> str:
+    chat = {
+        "bot_instance_id": "bot-test",
+        "platform": "onebot.v11",
+        "chat_space_id": chat_space_id,
+    }
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    project_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+            "actor": actor,
+            "chat": chat,
+            "idempotency_key": f"{prefix}-project",
+        },
+    )
+    assert project_response.status_code == 200
+    session_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": f"/agent session new {name}",
+            "actor": actor,
+            "chat": chat,
+            "idempotency_key": f"{prefix}-session",
+        },
+    )
+    assert session_response.status_code == 200
+    return str(session_response.json()["data"]["session_id"])
 
 
 def test_health_endpoint_reports_memory_storage():
@@ -620,3 +654,104 @@ def test_rendered_events_api_returns_documents_and_text_messages(tmp_path):
     rendered = rendered_response.json()
     assert rendered[0]["document"]["blocks"][0]["title"] == "会话"
     assert "Render Session" in rendered[0]["text_messages"][0]
+
+
+def test_session_events_websocket_replays_semantic_events_and_idle_close(tmp_path):
+    client = TestClient(create_app())
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-events-ws",
+        prefix="event-ws",
+        name="Event WS",
+    )
+    event_response = client.post(
+        f"/api/v1/sessions/{session_id}/events",
+        json={
+            "type": "assistant.delta",
+            "source": "terminal_agent",
+            "trace_id": "terminal-ws",
+            "idempotency_key": "terminal-event-ws",
+            "payload": {"text": "streamed"},
+        },
+    )
+    assert event_response.status_code == 200
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/events/ws?after_seq=1&idle_timeout_seconds=0"
+    ) as websocket:
+        message = websocket.receive_json()
+        idle = websocket.receive_json()
+
+    assert message["type"] == "semantic_event"
+    assert message["event"]["type"] == "assistant.delta"
+    assert message["event"]["payload"] == {"text": "streamed"}
+    assert idle == {"type": "idle_timeout", "last_seq": message["event"]["seq"]}
+
+
+def test_session_events_websocket_streams_new_events(tmp_path):
+    app = create_app()
+    client = TestClient(app)
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-events-ws-live",
+        prefix="event-ws-live",
+        name="Event WS Live",
+    )
+
+    def emit_event() -> None:
+        session = app.state.control.repository.get_session(session_id)
+        app.state.control.emit_event(
+            event_type="assistant.delta",
+            source="terminal_agent",
+            trace_id="terminal-ws-live",
+            project_id=session.project_id,
+            session_id=session_id,
+            payload={"text": "live"},
+        )
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/events/ws"
+        "?after_seq=1&poll_interval_seconds=0.05&idle_timeout_seconds=1"
+    ) as websocket:
+        thread = threading.Thread(target=emit_event)
+        thread.start()
+        message = websocket.receive_json()
+        thread.join(timeout=1)
+
+    assert message["type"] == "semantic_event"
+    assert message["event"]["type"] == "assistant.delta"
+    assert message["event"]["payload"] == {"text": "live"}
+
+
+def test_rendered_events_websocket_replays_text_messages(tmp_path):
+    client = TestClient(create_app())
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-render-ws",
+        prefix="render-ws",
+        name="Render WS",
+    )
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/rendered-events/ws?idle_timeout_seconds=0"
+    ) as websocket:
+        message = websocket.receive_json()
+        idle = websocket.receive_json()
+
+    assert message["type"] == "rendered_event"
+    assert message["document"]["blocks"][0]["title"] == "会话"
+    assert "Render WS" in message["text_messages"][0]
+    assert idle == {"type": "idle_timeout", "last_seq": message["seq"]}
+
+
+def test_session_events_websocket_reports_missing_session():
+    client = TestClient(create_app())
+
+    with client.websocket_connect("/api/v1/sessions/missing/events/ws") as websocket:
+        message = websocket.receive_json()
+
+    assert message["type"] == "error"
+    assert message["error"]["error_code"] == "NOT_FOUND"

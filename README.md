@@ -90,6 +90,22 @@ curl http://127.0.0.1:8000/api/v1/sessions/<session-id>/rendered-events
 
 The current renderer targets reliable text fallback for OneBot-style platforms. Rich buttons/cards and platform-specific delivery state are planned for the Bot Gateway layer.
 
+## Event Streaming
+
+Session semantic events can be replayed and live-tailed over WebSocket:
+
+```bash
+wscat -c 'ws://127.0.0.1:8000/api/v1/sessions/<session-id>/events/ws?after_seq=42'
+```
+
+Use the rendered stream when a Bot-facing client wants the same event as a render document plus OneBot/plain-text fallback messages:
+
+```bash
+wscat -c 'ws://127.0.0.1:8000/api/v1/sessions/<session-id>/rendered-events/ws?after_seq=42'
+```
+
+Both streams emit replayed events first, then poll for new events. `after_seq`, `limit`, `poll_interval_seconds`, and `idle_timeout_seconds` are accepted as query parameters.
+
 ## Bot Gateway Delivery
 
 Rendered session events can be delivered through the MVP Bot Gateway service:
