@@ -86,12 +86,15 @@ Run the local Terminal Agent socket server:
 ```bash
 export AGENTBRIDGE_LOCAL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
 export AGENTBRIDGE_TERMINAL_SOCKET="$HOME/.agentbridge/terminal-agent.sock"
+export AGENTBRIDGE_TERMINAL_LIFECYCLE_POLL_INTERVAL_SECONDS=1
 uv run agentbridge-terminal-agent
 ```
 
 If `AGENTBRIDGE_LOCAL_TOKEN` is omitted, the daemon prints a generated token at startup. The socket file is created with mode `0600`. The JSONL socket protocol currently supports `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, `snapshot`, `status`, cursor-based `read_output`, and multi-frame `stream_output`.
 
-Local clients open a fresh connection per request and wait briefly for the Unix socket to reappear, so short daemon restarts do not immediately fail console operations. With the PTY backend, the daemon owns a local child process and streams PTY output through cursor frames. With the tmux backend, restarting the Agent process reuses an existing `agentbridge_<session-id>` tmux session instead of creating a duplicate.
+Local clients open a fresh connection per request and wait briefly for the Unix socket to reappear, so short daemon restarts do not immediately fail console operations. With the PTY backend, the daemon owns a local child process, streams PTY output through cursor frames, and runs a lightweight lifecycle monitor that emits `terminal.exited` when a started terminal exits. With the tmux backend, restarting the Agent process reuses an existing `agentbridge_<session-id>` tmux session instead of creating a duplicate.
+
+When the FastAPI process directly owns terminal backends, set `AGENTBRIDGE_TERMINAL_LIFECYCLE_MONITOR_ENABLED=true` to run the same lifecycle monitor from the API lifespan.
 
 ## Rendering
 

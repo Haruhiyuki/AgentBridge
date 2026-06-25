@@ -149,7 +149,7 @@ def test_terminal_agent_enforces_current_writer_lease_epoch(tmp_path):
     ]
 
 
-def test_terminal_status_emits_exit_event_once(tmp_path):
+def test_terminal_lifecycle_monitor_emits_exit_event_once(tmp_path):
     class ExitedBackend(FakeTerminalBackend):
         def status(self, *, session_id: str) -> TerminalStatus:
             self._require_started(session_id)
@@ -167,10 +167,10 @@ def test_terminal_status_emits_exit_event_once(tmp_path):
     _, session = create_session(control, tmp_path)
 
     terminal.start_session(session_id=session.id, command="fake-cli", trace_id="terminal-start")
-    first_status = terminal.status(session_id=session.id, trace_id="terminal-status-1")
-    second_status = terminal.status(session_id=session.id, trace_id="terminal-status-2")
+    first_observed = terminal.run_lifecycle_monitor_once(trace_id="terminal-monitor-1")
+    second_observed = terminal.run_lifecycle_monitor_once(trace_id="terminal-monitor-2")
 
-    assert first_status == second_status
+    assert first_observed[session.id] == second_observed[session.id]
     exited_events = [
         event
         for event in control.repository.list_events(session_id=session.id)

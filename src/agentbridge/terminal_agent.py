@@ -15,7 +15,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from threading import RLock, Thread
+from threading import Event, RLock, Thread, current_thread
 from typing import Protocol
 from uuid import uuid4
 
@@ -494,6 +494,13 @@ class TerminalAgentService:
         self.backend = backend or FakeTerminalBackend()
         self._terminal_start_generations: dict[str, int] = {}
         self._reported_terminal_exits: set[tuple[str, int]] = set()
+        self._lifecycle_lock = RLock()
+        self._lifecycle_stop_event = Event()
+        self._lifecycle_thread: Thread | None = None
+        self._lifecycle_interval_seconds = 1.0
+        self._lifecycle_run_count = 0
+        self._lifecycle_last_error: str | None = None
+        self._lifecycle_last_observed_count = 0
 
     def start_session(
         self,
@@ -505,9 +512,10 @@ class TerminalAgentService:
         session = self.control.repository.get_session(session_id)
         workspace = self.control.repository.get_workspace(session.workspace_id)
         self.backend.start(session_id=session_id, cwd=workspace.path, command=command)
-        self._terminal_start_generations[session_id] = (
-            self._terminal_start_generations.get(session_id, 0) + 1
-        )
+        with self._lifecycle_lock:
+            self._terminal_start_generations[session_id] = (
+                self._terminal_start_generations.get(session_id, 0) + 1
+            )
         self.control.emit_event(
             event_type="terminal.started",
             source=SemanticEventSource.TERMINAL_AGENT,
@@ -615,6 +623,74 @@ class TerminalAgentService:
         self._emit_terminal_exited_once(session=session, status=status, trace_id=trace_id)
         return status
 
+    def run_lifecycle_monitor_once(
+        self,
+        *,
+        trace_id: str = "terminal-lifecycle-monitor",
+    ) -> dict[str, TerminalStatus]:
+        with self._lifecycle_lock:
+            session_ids = list(self._terminal_start_generations)
+            self._lifecycle_run_count += 1
+        observed: dict[str, TerminalStatus] = {}
+        errors: list[str] = []
+        for session_id in session_ids:
+            try:
+                observed[session_id] = self.status(session_id=session_id, trace_id=trace_id)
+            except Exception as exc:
+                errors.append(f"{session_id}: {exc}")
+        with self._lifecycle_lock:
+            self._lifecycle_last_error = "; ".join(errors) if errors else None
+            self._lifecycle_last_observed_count = len(observed)
+        return observed
+
+    def start_lifecycle_monitor(self, *, interval_seconds: float = 1.0) -> bool:
+        with self._lifecycle_lock:
+            if self._lifecycle_thread and self._lifecycle_thread.is_alive():
+                return False
+            self._lifecycle_interval_seconds = max(float(interval_seconds), 0.05)
+            self._lifecycle_stop_event.clear()
+            self._lifecycle_thread = Thread(
+                target=self._run_lifecycle_monitor_loop,
+                name="agentbridge-terminal-lifecycle-monitor",
+                daemon=True,
+            )
+            self._lifecycle_thread.start()
+            return True
+
+    def stop_lifecycle_monitor(self, timeout: float = 5.0) -> bool:
+        with self._lifecycle_lock:
+            thread = self._lifecycle_thread
+            if thread is None:
+                return False
+            self._lifecycle_stop_event.set()
+        if thread is not current_thread():
+            thread.join(timeout=timeout)
+        with self._lifecycle_lock:
+            stopped = not thread.is_alive()
+            if stopped:
+                self._lifecycle_thread = None
+            return stopped
+
+    def is_lifecycle_monitor_running(self) -> bool:
+        with self._lifecycle_lock:
+            return bool(self._lifecycle_thread and self._lifecycle_thread.is_alive())
+
+    def lifecycle_monitor_status(self) -> dict[str, object]:
+        with self._lifecycle_lock:
+            return {
+                "running": bool(self._lifecycle_thread and self._lifecycle_thread.is_alive()),
+                "interval_seconds": self._lifecycle_interval_seconds,
+                "tracked_sessions": len(self._terminal_start_generations),
+                "run_count": self._lifecycle_run_count,
+                "last_error": self._lifecycle_last_error,
+                "last_observed_count": self._lifecycle_last_observed_count,
+            }
+
+    def _run_lifecycle_monitor_loop(self) -> None:
+        while not self._lifecycle_stop_event.is_set():
+            self.run_lifecycle_monitor_once()
+            self._lifecycle_stop_event.wait(self._lifecycle_interval_seconds)
+
     def _emit_terminal_exited_once(
         self,
         *,
@@ -624,10 +700,11 @@ class TerminalAgentService:
     ) -> None:
         if not status.started or status.running:
             return
-        generation = self._terminal_start_generations.get(session.id, 0)
-        exit_key = (session.id, generation)
-        if exit_key in self._reported_terminal_exits:
-            return
+        with self._lifecycle_lock:
+            generation = self._terminal_start_generations.get(session.id, 0)
+            exit_key = (session.id, generation)
+            if exit_key in self._reported_terminal_exits:
+                return
         self.control.emit_event(
             event_type="terminal.exited",
             source=SemanticEventSource.TERMINAL_AGENT,
@@ -642,4 +719,5 @@ class TerminalAgentService:
             },
             idempotency_key=f"terminal-exited:{session.id}:{generation}",
         )
-        self._reported_terminal_exits.add(exit_key)
+        with self._lifecycle_lock:
+            self._reported_terminal_exits.add(exit_key)

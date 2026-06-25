@@ -979,6 +979,19 @@ def test_terminal_websocket_accepts_commands_with_token(monkeypatch, tmp_path):
     }
 
 
+def test_terminal_lifecycle_monitor_can_autostart_from_api_env(monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_LIFECYCLE_MONITOR_ENABLED", "true")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_LIFECYCLE_POLL_INTERVAL_SECONDS", "60")
+
+    app = create_app()
+
+    assert app.state.terminal.is_lifecycle_monitor_running() is False
+    with TestClient(app):
+        assert app.state.terminal.is_lifecycle_monitor_running() is True
+        assert app.state.terminal.lifecycle_monitor_status()["interval_seconds"] == 60.0
+    assert app.state.terminal.is_lifecycle_monitor_running() is False
+
+
 def test_terminal_websocket_returns_error_frames_for_bad_lease(tmp_path):
     client = TestClient(create_app())
     actor = {"id": "usr_1", "roles": ["maintainer"]}

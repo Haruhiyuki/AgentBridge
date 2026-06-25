@@ -393,14 +393,27 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         rate_limiter=create_bot_rate_limiter_from_env(),
     )
     bot_retry_worker = create_bot_retry_worker_from_env(bot_gateway)
+    terminal_lifecycle_monitor_enabled = env_bool(
+        "AGENTBRIDGE_TERMINAL_LIFECYCLE_MONITOR_ENABLED",
+        default=False,
+    )
+    terminal_lifecycle_poll_interval_seconds = env_float(
+        "AGENTBRIDGE_TERMINAL_LIFECYCLE_POLL_INTERVAL_SECONDS",
+        default=1.0,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        if terminal_lifecycle_monitor_enabled:
+            terminal.start_lifecycle_monitor(
+                interval_seconds=terminal_lifecycle_poll_interval_seconds
+            )
         if bot_retry_worker.enabled:
             bot_retry_worker.start()
         try:
             yield
         finally:
+            terminal.stop_lifecycle_monitor()
             bot_retry_worker.stop()
 
     app = FastAPI(
@@ -413,6 +426,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     app.state.terminal = terminal
     app.state.bot_gateway = bot_gateway
     app.state.bot_retry_worker = bot_retry_worker
+    app.state.terminal_lifecycle_monitor_enabled = terminal_lifecycle_monitor_enabled
 
     @app.exception_handler(AgentBridgeError)
     async def agentbridge_error_handler(_, exc: AgentBridgeError):

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agentbridge.api import create_repository_from_env, create_terminal_backend_from_env
+from agentbridge.api import create_repository_from_env, create_terminal_backend_from_env, env_float
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, LeaseOwnerType
 from agentbridge.terminal_agent import TerminalAgentService, TerminalInputKind
@@ -20,6 +20,7 @@ from agentbridge.terminal_agent import TerminalAgentService, TerminalInputKind
 class LocalTerminalAgentConfig:
     socket_path: Path
     auth_token: str
+    lifecycle_poll_interval_seconds: float = 1.0
 
 
 class LocalTerminalAgentServer:
@@ -29,12 +30,16 @@ class LocalTerminalAgentServer:
         control: ControlPlane,
         terminal: TerminalAgentService,
         auth_token: str,
+        lifecycle_monitor_enabled: bool = True,
+        lifecycle_poll_interval_seconds: float = 1.0,
     ) -> None:
         if not auth_token:
             raise ValueError("auth_token must not be empty")
         self.control = control
         self.terminal = terminal
         self.auth_token = auth_token
+        self.lifecycle_monitor_enabled = lifecycle_monitor_enabled
+        self.lifecycle_poll_interval_seconds = max(float(lifecycle_poll_interval_seconds), 0.05)
         self._server: asyncio.AbstractServer | None = None
         self._socket_path: Path | None = None
 
@@ -49,8 +54,13 @@ class LocalTerminalAgentServer:
         self._server = await asyncio.start_unix_server(self._handle_client, path=str(socket_path))
         socket_path.chmod(0o600)
         self._socket_path = socket_path
+        if self.lifecycle_monitor_enabled:
+            self.terminal.start_lifecycle_monitor(
+                interval_seconds=self.lifecycle_poll_interval_seconds
+            )
 
     async def stop(self) -> None:
+        self.terminal.stop_lifecycle_monitor()
         if self._server:
             self._server.close()
             await self._server.wait_closed()
@@ -401,7 +411,14 @@ def config_from_env() -> LocalTerminalAgentConfig:
     if token is None:
         token = secrets.token_urlsafe(32)
         print(f"AGENTBRIDGE_LOCAL_TOKEN={token}", flush=True)
-    return LocalTerminalAgentConfig(socket_path=socket_path, auth_token=token)
+    return LocalTerminalAgentConfig(
+        socket_path=socket_path,
+        auth_token=token,
+        lifecycle_poll_interval_seconds=env_float(
+            "AGENTBRIDGE_TERMINAL_LIFECYCLE_POLL_INTERVAL_SECONDS",
+            default=1.0,
+        ),
+    )
 
 
 async def async_main() -> None:
@@ -413,6 +430,7 @@ async def async_main() -> None:
         control=control,
         terminal=terminal,
         auth_token=config.auth_token,
+        lifecycle_poll_interval_seconds=config.lifecycle_poll_interval_seconds,
     )
     await server.serve_forever(config.socket_path)
 

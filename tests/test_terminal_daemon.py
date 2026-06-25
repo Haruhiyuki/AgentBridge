@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, Visibility
-from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService
+from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService, TerminalStatus
 from agentbridge.terminal_daemon import LocalTerminalAgentClient, LocalTerminalAgentServer
 
 
@@ -244,5 +244,63 @@ def test_local_terminal_daemon_client_reconnects_after_socket_restart(tmp_path):
             await first_server.stop()
             if second_server is not None:
                 await second_server.stop()
+
+    asyncio.run(scenario())
+
+
+def test_local_terminal_daemon_lifecycle_monitor_emits_terminal_exit(tmp_path):
+    class ExitedBackend(FakeTerminalBackend):
+        def status(self, *, session_id: str) -> TerminalStatus:
+            self._require_started(session_id)
+            return TerminalStatus(
+                started=True,
+                running=False,
+                exit_code=9,
+                pid=4321,
+                output_cursor=len(self.snapshot(session_id=session_id)),
+                output_retained_chars=len(self.snapshot(session_id=session_id)),
+            )
+
+    async def scenario():
+        control = ControlPlane()
+        terminal = TerminalAgentService(control, backend=ExitedBackend())
+        session = create_session(control, tmp_path)
+        socket_path = Path(f"/tmp/agentbridge-lifecycle-{uuid4().hex}.sock")
+        server = LocalTerminalAgentServer(
+            control=control,
+            terminal=terminal,
+            auth_token="secret-token",
+            lifecycle_poll_interval_seconds=0.01,
+        )
+        await server.start(socket_path)
+        try:
+            client = LocalTerminalAgentClient(socket_path, "secret-token")
+            started = await client.request(
+                "start_session",
+                {
+                    "session_id": session.id,
+                    "command": "fake-cli",
+                    "trace_id": "daemon-lifecycle-start",
+                },
+            )
+            assert started["ok"] is True
+
+            deadline = asyncio.get_running_loop().time() + 2
+            exited_events = []
+            while asyncio.get_running_loop().time() < deadline:
+                exited_events = [
+                    event
+                    for event in control.repository.list_events(session_id=session.id)
+                    if event.type == "terminal.exited"
+                ]
+                if exited_events:
+                    break
+                await asyncio.sleep(0.02)
+
+            assert len(exited_events) == 1
+            assert exited_events[0].payload["exit_code"] == 9
+            assert terminal.lifecycle_monitor_status()["run_count"] > 0
+        finally:
+            await server.stop()
 
     asyncio.run(scenario())
