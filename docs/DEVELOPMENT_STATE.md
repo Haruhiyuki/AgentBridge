@@ -36,7 +36,8 @@ Implemented in this slice:
 - SQLAlchemy-backed repository enabled with `AGENTBRIDGE_DATABASE_URL`.
 - Alembic initial migration for projects, workspaces, chat contexts, bindings, sessions, turns, interactions, writer leases, command idempotency records, audit events, and semantic events.
 - Recovery tests proving persisted control-plane state survives repository re-instantiation.
-- Terminal Agent input gateway with fake and tmux backends.
+- Terminal Agent input gateway with fake, tmux, and stdlib PTY backends.
+- PTY backend launches local commands with `pty.openpty` and `subprocess.Popen`, owns process-group cleanup, reads the PTY master fd on a background thread, and exposes cursor-based output chunks.
 - Local Terminal Agent daemon using JSONL over a Unix socket with token authentication.
 - Local daemon actions for `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, `snapshot`, cursor-based `read_output`, and multi-frame `stream_output`.
 - Local Terminal Agent client waits briefly for Unix socket recovery, allowing console requests to survive short daemon restart windows.
@@ -44,7 +45,7 @@ Implemented in this slice:
 - Local Console Client command `agentbridge-console`.
 - Console Client acquires a human writer lease on first input, caches the epoch, forwards text/paste/signal/resize through the daemon, and can release the lease on exit.
 - Console Client raw TTY passthrough mode with safe terminal-state restoration, initial resize forwarding, `SIGWINCH` resize forwarding, Ctrl-C/Ctrl-D signal mapping, and Ctrl-] detach.
-- Terminal backends expose cursor-based output chunks through `read_output(after_cursor)`, with fake and tmux implementations backed by current snapshot state.
+- Terminal backends expose cursor-based output chunks through `read_output(after_cursor)`, with fake/tmux implementations backed by current snapshot state and the PTY backend backed by its reader loop buffer.
 - Console Client raw mode follows terminal output through daemon `stream_output` frames, appending cursor chunks and repainting when the backend reports a reset.
 - Terminal input request idempotency now prevents duplicate backend writes for repeated request IDs.
 - Terminal start/input/snapshot REST endpoints for MVP integration tests.
@@ -114,7 +115,7 @@ Implemented in this slice:
 
 Not implemented yet:
 
-- Brokered PTY host, native terminal output stream, and desktop terminal auto-launch.
+- Desktop terminal auto-launch, PTY restart recovery, bounded output retention, and production lifecycle supervision.
 - Richer OneBot renderer/action adapter and native NoneBot lifecycle registration helpers.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
@@ -135,7 +136,8 @@ Not implemented yet:
 - Terminal input must pass through the AgentBridge gateway. Direct `tmux attach` remains outside the safety model because it bypasses writer leases.
 - The local Terminal Agent socket is token-gated and chmodded to `0600`; production hardening still needs OS user checks, token rotation, and Windows named-pipe parity.
 - Local console/daemon clients open a fresh socket per request and retry connection for short restart windows. Long offline periods still need explicit user-facing reconnect state during raw TTY passthrough.
-- Console raw mode is still an input/control passthrough over the Terminal Agent socket, not a full terminal emulator. Its current output stream is daemon-pushed but backed by backend cursor snapshots; a true PTY read loop remains a separate milestone.
+- Console raw mode is still an input/control passthrough over the Terminal Agent socket, not a full terminal emulator. Its daemon output stream consumes backend cursor chunks; with `AGENTBRIDGE_TERMINAL_BACKEND=pty` those chunks come from a stdlib PTY reader loop, while fake/tmux remain snapshot-derived.
+- The stdlib PTY backend is opt-in for local experiments. Fake remains the default test backend, and tmux remains the resumable MVP backend after Agent process restarts.
 - The tmux backend treats an existing `agentbridge_<session-id>` session as resumable state after Agent restart, matching the design's MVP recovery path.
 - Rendering is split into platform-neutral documents and platform renderers. The first renderer intentionally targets text fallback so unsupported Bot platforms still receive coherent output.
 - Bot delivery idempotency is implemented before real platform integration so duplicate event replay cannot cause duplicate sends once a real transport is attached.
@@ -176,7 +178,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 
 ## Next Development Backlog
 
-1. Replace snapshot-backed daemon output frames with a true brokered PTY read loop and desktop terminal auto-launch.
+1. Add desktop terminal auto-launch plus production PTY lifecycle hardening, including restart recovery and bounded output retention.
 2. Add an admin policy editor UI for access policy rules with simulation before save.
 3. Replace the MVP WebSocket token gate with mTLS/device-key auth.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.

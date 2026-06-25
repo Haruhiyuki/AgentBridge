@@ -14,10 +14,10 @@ This repository currently contains the first executable backend slice:
 - `/agent` command parser and executor for project/session routing, turn enqueueing, lease control, and idempotent invocation handling.
 - Ordered semantic event streams with replay and idempotent Terminal Agent event ingestion.
 - Optional SQLAlchemy persistence with an Alembic-managed schema.
-- Terminal input gateway with fake/tmux backends and writer-lease epoch enforcement.
+- Terminal input gateway with fake, tmux, and stdlib PTY backends plus writer-lease epoch enforcement.
 - Local Terminal Agent daemon over a token-protected Unix socket.
 - Optional token-gated WebSocket streams and Terminal command transport.
-- Local Console Client with line-mode, scripted input, raw TTY passthrough, and snapshot-polled output observation through the lease gateway.
+- Local Console Client with line-mode, scripted input, raw TTY passthrough, and cursor-based output observation through the lease gateway.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
 - Bot Gateway delivery service with persistent idempotent delivery records, WebSocket render subscriptions, in-memory text transport, and OneBot V11 HTTP transport.
 - Optional NoneBot wrapper that normalizes message and action callback events into the existing `/agent` command path.
@@ -31,7 +31,7 @@ This repository currently contains the first executable backend slice:
 - Persistent access policy allow/deny rules with action/resource/actor/role/attribute matching and a simulation API.
 - REST API routes aligned with the design document's service interface.
 
-Admin Web, native brokered PTY output streaming, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
+Admin Web, desktop terminal auto-launch, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
 
 ## Development
 
@@ -64,13 +64,19 @@ For local throwaway development, `AGENTBRIDGE_AUTO_CREATE_SCHEMA=true` can creat
 
 ## Terminal Backend
 
-The API uses a fake terminal backend by default for local contract tests. To use tmux for MVP experiments:
+The API uses a fake terminal backend by default for local contract tests. Use the stdlib PTY backend for a local process with a real PTY reader loop:
+
+```bash
+export AGENTBRIDGE_TERMINAL_BACKEND=pty
+```
+
+Use tmux when you want the MVP restart path to reuse an existing `agentbridge_<session-id>` session:
 
 ```bash
 export AGENTBRIDGE_TERMINAL_BACKEND=tmux
 ```
 
-Terminal input is accepted only when the request carries the current writer lease `epoch`, owner type, and owner ID. Stale Bot/Web inputs are rejected after human or higher-priority control preempts the lease.
+Terminal input is accepted only when the request carries the current writer lease `epoch`, owner type, and owner ID. Stale Bot/Web inputs are rejected after human or higher-priority control preempts the lease. The PTY backend keeps output in cursor-addressable chunks from the PTY master fd; fake and tmux remain test/MVP backends.
 
 ## Local Terminal Agent
 
@@ -84,7 +90,7 @@ uv run agentbridge-terminal-agent
 
 If `AGENTBRIDGE_LOCAL_TOKEN` is omitted, the daemon prints a generated token at startup. The socket file is created with mode `0600`. The JSONL socket protocol currently supports `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, `snapshot`, cursor-based `read_output`, and multi-frame `stream_output`.
 
-Local clients open a fresh connection per request and wait briefly for the Unix socket to reappear, so short daemon restarts do not immediately fail console operations. With the tmux backend, restarting the Agent process reuses an existing `agentbridge_<session-id>` tmux session instead of creating a duplicate.
+Local clients open a fresh connection per request and wait briefly for the Unix socket to reappear, so short daemon restarts do not immediately fail console operations. With the PTY backend, the daemon owns a local child process and streams PTY output through cursor frames. With the tmux backend, restarting the Agent process reuses an existing `agentbridge_<session-id>` tmux session instead of creating a duplicate.
 
 ## Rendering
 

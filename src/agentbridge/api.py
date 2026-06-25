@@ -56,6 +56,7 @@ from agentbridge.renderer import (
 from agentbridge.storage import InMemoryRepository
 from agentbridge.terminal_agent import (
     FakeTerminalBackend,
+    PtyTerminalBackend,
     TerminalAgentService,
     TerminalInputKind,
     TmuxTerminalBackend,
@@ -1778,10 +1779,14 @@ def create_approval_policy_from_env() -> ApprovalPolicy:
 
 
 def create_terminal_backend_from_env():
-    backend = os.environ.get("AGENTBRIDGE_TERMINAL_BACKEND", "fake").lower()
+    backend = os.environ.get("AGENTBRIDGE_TERMINAL_BACKEND", "fake").strip().lower()
+    if backend == "fake":
+        return FakeTerminalBackend()
     if backend == "tmux":
         return TmuxTerminalBackend()
-    return FakeTerminalBackend()
+    if backend in {"pty", "local_pty"}:
+        return PtyTerminalBackend()
+    raise RuntimeError("AGENTBRIDGE_TERMINAL_BACKEND must be one of: fake, tmux, pty")
 
 
 def create_bot_transport_from_env():

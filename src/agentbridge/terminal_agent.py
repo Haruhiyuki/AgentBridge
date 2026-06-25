@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import fcntl
+import os
+import pty
 import re
+import select
+import shlex
 import shutil
+import signal as process_signal
+import struct
 import subprocess
+import termios
+from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from threading import RLock, Thread
 from typing import Protocol
 from uuid import uuid4
 
@@ -199,6 +209,204 @@ class TmuxTerminalBackend:
         safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id)
         return f"agentbridge_{safe}"
 
+
+@dataclass
+class PtySession:
+    process: subprocess.Popen[bytes]
+    master_fd: int
+    output: str = ""
+    closed: bool = False
+    lock: RLock = field(default_factory=RLock)
+    reader: Thread | None = None
+
+
+class PtyTerminalBackend:
+    def __init__(self) -> None:
+        if not hasattr(pty, "openpty"):
+            raise AgentBridgeError(
+                ErrorCode.PLATFORM_CAPABILITY_MISSING,
+                "当前平台不支持 PTY 后端。",
+                next_step="请使用 fake 或 tmux 终端后端。",
+                status_code=503,
+            )
+        self.sessions: dict[str, PtySession] = {}
+        self._lock = RLock()
+
+    def start(self, *, session_id: str, cwd: str, command: str) -> None:
+        with self._lock:
+            existing = self.sessions.get(session_id)
+            if existing:
+                if existing.process.poll() is None:
+                    return
+                self.terminate(session_id)
+            argv = shlex.split(command)
+            if not argv:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "PTY 启动命令不能为空。",
+                    next_step="请提供要启动的本地命令，例如 sh。",
+                )
+            Path(cwd).mkdir(parents=True, exist_ok=True)
+            master_fd, slave_fd = pty.openpty()
+            try:
+                process = subprocess.Popen(
+                    argv,
+                    cwd=cwd,
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    close_fds=True,
+                    start_new_session=True,
+                )
+            except OSError as exc:
+                os.close(master_fd)
+                os.close(slave_fd)
+                raise AgentBridgeError(
+                    ErrorCode.PLATFORM_CAPABILITY_MISSING,
+                    "PTY 命令启动失败。",
+                    next_step="请检查本地命令是否存在，或切换终端后端。",
+                    status_code=503,
+                    details={"reason": str(exc)},
+                ) from exc
+            finally:
+                with suppress(OSError):
+                    os.close(slave_fd)
+            session = PtySession(process=process, master_fd=master_fd)
+            reader = Thread(
+                target=self._read_loop,
+                args=(session,),
+                name=f"agentbridge-pty-{session_id}",
+                daemon=True,
+            )
+            session.reader = reader
+            self.sessions[session_id] = session
+            reader.start()
+
+    def write(self, *, session_id: str, data: str, kind: TerminalInputKind) -> None:
+        session = self._require_session(session_id)
+        if kind not in {TerminalInputKind.TEXT, TerminalInputKind.PASTE, TerminalInputKind.KEY}:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                f"PTY write 不支持输入类型：{kind.value}",
+                next_step="请使用 text、paste 或 key 输入类型。",
+            )
+        self._write_bytes(session, data.encode("utf-8"))
+
+    def signal(self, *, session_id: str, name: str) -> None:
+        session = self._require_session(session_id)
+        control_code = {"interrupt": b"\x03", "eof": b"\x04"}.get(name)
+        if control_code is None:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                f"不支持的终端信号：{name}",
+                next_step="当前支持 interrupt 和 eof。",
+            )
+        self._write_bytes(session, control_code)
+
+    def resize(self, *, session_id: str, cols: int, rows: int) -> None:
+        session = self._require_session(session_id)
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+        try:
+            fcntl.ioctl(session.master_fd, termios.TIOCSWINSZ, winsize)
+        except OSError as exc:
+            raise AgentBridgeError(
+                ErrorCode.RESOURCE_CONFLICT,
+                "PTY resize 失败。",
+                next_step="请检查 PTY 会话状态后重试。",
+                status_code=409,
+                details={"reason": str(exc)},
+            ) from exc
+
+    def snapshot(self, *, session_id: str) -> str:
+        session = self._require_session(session_id)
+        with session.lock:
+            return session.output
+
+    def read_output(self, *, session_id: str, after_cursor: int = 0) -> TerminalOutputChunk:
+        snapshot = self.snapshot(session_id=session_id)
+        cursor = len(snapshot)
+        if after_cursor < 0 or after_cursor > cursor:
+            return TerminalOutputChunk(
+                cursor=cursor,
+                data=snapshot,
+                snapshot=snapshot,
+                reset=True,
+            )
+        return TerminalOutputChunk(
+            cursor=cursor,
+            data=snapshot[after_cursor:],
+            snapshot=snapshot,
+        )
+
+    def terminate(self, session_id: str) -> None:
+        with self._lock:
+            session = self.sessions.pop(session_id, None)
+        if session is None:
+            return
+        if session.process.poll() is None:
+            try:
+                os.killpg(session.process.pid, process_signal.SIGTERM)
+            except OSError:
+                session.process.terminate()
+            try:
+                session.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(session.process.pid, process_signal.SIGKILL)
+                except OSError:
+                    session.process.kill()
+                session.process.wait(timeout=2)
+        with session.lock:
+            session.closed = True
+        with suppress(OSError):
+            os.close(session.master_fd)
+        if session.reader:
+            session.reader.join(timeout=1)
+
+    def _read_loop(self, session: PtySession) -> None:
+        while True:
+            with session.lock:
+                if session.closed:
+                    return
+            try:
+                readable, _, _ = select.select([session.master_fd], [], [], 0.1)
+            except OSError:
+                return
+            if session.master_fd in readable:
+                try:
+                    data = os.read(session.master_fd, 4096)
+                except OSError:
+                    return
+                if not data:
+                    return
+                text = data.decode("utf-8", errors="replace")
+                with session.lock:
+                    session.output += text
+            elif session.process.poll() is not None:
+                return
+
+    def _require_session(self, session_id: str) -> PtySession:
+        session = self.sessions.get(session_id)
+        if not session:
+            raise AgentBridgeError(
+                ErrorCode.RESOURCE_CONFLICT,
+                "PTY 会话尚未启动。",
+                next_step="请先启动终端后再发送输入。",
+                status_code=409,
+            )
+        return session
+
+    def _write_bytes(self, session: PtySession, data: bytes) -> None:
+        try:
+            os.write(session.master_fd, data)
+        except OSError as exc:
+            raise AgentBridgeError(
+                ErrorCode.RESOURCE_CONFLICT,
+                "PTY 写入失败。",
+                next_step="请检查 PTY 会话状态后重试。",
+                status_code=409,
+                details={"reason": str(exc)},
+            ) from exc
 
 class TerminalAgentService:
     def __init__(self, control: ControlPlane, backend: TerminalBackend | None = None) -> None:

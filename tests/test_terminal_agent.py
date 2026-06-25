@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 
-from agentbridge.api import create_app
+from agentbridge.api import create_app, create_terminal_backend_from_env
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, LeaseOwnerType, Visibility
 from agentbridge.terminal_agent import (
     FakeTerminalBackend,
+    PtyTerminalBackend,
     TerminalAgentService,
     TerminalInputKind,
     TerminalOutputChunk,
@@ -266,3 +268,52 @@ def test_tmux_backend_reuses_existing_session_after_agent_restart(monkeypatch, t
     assert restarted_backend.read_output(session_id="sess/one", after_cursor=6) == (
         TerminalOutputChunk(cursor=12, data="alive\n", snapshot="still alive\n")
     )
+
+
+def test_terminal_backend_env_selects_pty(monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_BACKEND", "pty")
+    try:
+        backend = create_terminal_backend_from_env()
+    except AgentBridgeError as exc:
+        if exc.code == ErrorCode.PLATFORM_CAPABILITY_MISSING:
+            pytest.skip("PTY backend is not available on this platform")
+        raise
+
+    assert isinstance(backend, PtyTerminalBackend)
+
+
+def test_pty_backend_streams_process_output(tmp_path):
+    cat = shutil.which("cat")
+    if cat is None:
+        pytest.skip("cat executable is required for PTY integration test")
+
+    backend = PtyTerminalBackend()
+    session_id = "pty-one"
+    backend.start(session_id=session_id, cwd=str(tmp_path), command=cat)
+    try:
+        backend.resize(session_id=session_id, cols=100, rows=30)
+        backend.write(
+            session_id=session_id,
+            data="hello pty\n",
+            kind=TerminalInputKind.TEXT,
+        )
+
+        deadline = time.monotonic() + 2
+        output = ""
+        while time.monotonic() < deadline:
+            chunk = backend.read_output(session_id=session_id, after_cursor=0)
+            output = chunk.snapshot
+            if "hello pty" in output:
+                break
+            time.sleep(0.05)
+
+        assert "hello pty" in output
+        reset_chunk = backend.read_output(session_id=session_id, after_cursor=999_999)
+        assert reset_chunk.reset is True
+        assert "hello pty" in reset_chunk.snapshot
+    finally:
+        try:
+            backend.signal(session_id=session_id, name="eof")
+        except AgentBridgeError:
+            pass
+        backend.terminate(session_id)
