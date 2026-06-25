@@ -5,10 +5,15 @@ import stat
 from pathlib import Path
 from uuid import uuid4
 
+import agentbridge.terminal_daemon as terminal_daemon
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, Visibility
 from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService, TerminalStatus
-from agentbridge.terminal_daemon import LocalTerminalAgentClient, LocalTerminalAgentServer
+from agentbridge.terminal_daemon import (
+    DesktopTerminalLauncher,
+    LocalTerminalAgentClient,
+    LocalTerminalAgentServer,
+)
 
 
 def create_session(control: ControlPlane, tmp_path):
@@ -68,6 +73,7 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
                 },
             )
             assert started["ok"] is True
+            assert started["data"]["desktop"] == {"launched": False, "pid": None, "error": None}
 
             lease_response = await client.request(
                 "acquire_human_lease",
@@ -149,6 +155,94 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
             await server.stop()
             assert not socket_path.exists()
 
+    asyncio.run(scenario())
+
+
+def test_desktop_terminal_launcher_passes_token_in_environment(monkeypatch, tmp_path):
+    calls: list[dict[str, object]] = []
+
+    class FakeProcess:
+        pid = 24680
+
+    def fake_popen(argv, **kwargs):
+        calls.append({"argv": argv, **kwargs})
+        return FakeProcess()
+
+    socket_path = tmp_path / "terminal-agent.sock"
+    monkeypatch.setattr(terminal_daemon.subprocess, "Popen", fake_popen)
+    launcher = DesktopTerminalLauncher(
+        enabled=True,
+        command_template="{console_command} {session_id} --socket {socket_path} --raw",
+        socket_path=socket_path,
+        auth_token="secret-token",
+    )
+
+    result = launcher.launch(session_id="ses_1")
+
+    assert result.to_payload() == {"launched": True, "pid": 24680, "error": None}
+    assert calls[0]["argv"] == [
+        "agentbridge-console",
+        "ses_1",
+        "--socket",
+        str(socket_path),
+        "--raw",
+    ]
+    assert "secret-token" not in " ".join(calls[0]["argv"])
+    env = calls[0]["env"]
+    assert env["AGENTBRIDGE_LOCAL_TOKEN"] == "secret-token"
+    assert env["AGENTBRIDGE_TERMINAL_SOCKET"] == str(socket_path)
+
+
+def test_local_terminal_daemon_auto_opens_desktop_terminal(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        pid = 13579
+
+    def fake_popen(argv, **kwargs):
+        calls.append(argv)
+        return FakeProcess()
+
+    async def scenario():
+        control = ControlPlane()
+        terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+        session = create_session(control, tmp_path)
+        socket_path = Path(f"/tmp/agentbridge-auto-open-{uuid4().hex}.sock")
+        launcher = DesktopTerminalLauncher(
+            enabled=True,
+            command_template="{console_command} {session_id}",
+            socket_path=socket_path,
+            auth_token="secret-token",
+        )
+        server = LocalTerminalAgentServer(
+            control=control,
+            terminal=terminal,
+            auth_token="secret-token",
+            desktop_launcher=launcher,
+        )
+        await server.start(socket_path)
+        try:
+            client = LocalTerminalAgentClient(socket_path, "secret-token")
+            started = await client.request(
+                "start_session",
+                {
+                    "session_id": session.id,
+                    "command": "fake-cli",
+                    "trace_id": "daemon-auto-open-start",
+                },
+            )
+
+            assert started["ok"] is True
+            assert started["data"]["desktop"] == {
+                "launched": True,
+                "pid": 13579,
+                "error": None,
+            }
+            assert calls == [["agentbridge-console", session.id]]
+        finally:
+            await server.stop()
+
+    monkeypatch.setattr(terminal_daemon.subprocess, "Popen", fake_popen)
     asyncio.run(scenario())
 
 

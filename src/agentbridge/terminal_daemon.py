@@ -6,11 +6,18 @@ import hmac
 import json
 import os
 import secrets
+import shlex
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agentbridge.api import create_repository_from_env, create_terminal_backend_from_env, env_float
+from agentbridge.api import (
+    create_repository_from_env,
+    create_terminal_backend_from_env,
+    env_bool,
+    env_float,
+)
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, LeaseOwnerType
 from agentbridge.terminal_agent import TerminalAgentService, TerminalInputKind
@@ -21,6 +28,75 @@ class LocalTerminalAgentConfig:
     socket_path: Path
     auth_token: str
     lifecycle_poll_interval_seconds: float = 1.0
+    desktop_auto_open_enabled: bool = False
+    desktop_open_command: str | None = None
+
+
+@dataclass(frozen=True)
+class DesktopTerminalLaunchResult:
+    launched: bool
+    pid: int | None = None
+    error: str | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        return {"launched": self.launched, "pid": self.pid, "error": self.error}
+
+
+class DesktopTerminalLauncher:
+    def __init__(
+        self,
+        *,
+        enabled: bool = False,
+        command_template: str | None = None,
+        socket_path: Path | None = None,
+        auth_token: str,
+    ) -> None:
+        self.enabled = enabled
+        self.command_template = command_template
+        self.socket_path = socket_path
+        self.auth_token = auth_token
+
+    def launch(self, *, session_id: str) -> DesktopTerminalLaunchResult:
+        if not self.enabled:
+            return DesktopTerminalLaunchResult(launched=False)
+        if not self.command_template:
+            return DesktopTerminalLaunchResult(
+                launched=False,
+                error="AGENTBRIDGE_TERMINAL_OPEN_COMMAND is required when auto-open is enabled",
+            )
+        if self.socket_path is None:
+            return DesktopTerminalLaunchResult(
+                launched=False,
+                error="Terminal Agent socket path is not available",
+            )
+        try:
+            command = self.command_template.format(
+                session_id=session_id,
+                socket_path=str(self.socket_path),
+                console_command="agentbridge-console",
+            )
+            argv = shlex.split(command)
+        except (KeyError, ValueError) as exc:
+            return DesktopTerminalLaunchResult(launched=False, error=str(exc))
+        if not argv:
+            return DesktopTerminalLaunchResult(launched=False, error="open command is empty")
+
+        env = dict(os.environ)
+        env["AGENTBRIDGE_LOCAL_TOKEN"] = self.auth_token
+        env["AGENTBRIDGE_TERMINAL_SOCKET"] = str(self.socket_path)
+        try:
+            process = subprocess.Popen(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                start_new_session=True,
+                env=env,
+            )
+        except OSError as exc:
+            return DesktopTerminalLaunchResult(launched=False, error=str(exc))
+        return DesktopTerminalLaunchResult(launched=True, pid=process.pid)
 
 
 class LocalTerminalAgentServer:
@@ -32,6 +108,7 @@ class LocalTerminalAgentServer:
         auth_token: str,
         lifecycle_monitor_enabled: bool = True,
         lifecycle_poll_interval_seconds: float = 1.0,
+        desktop_launcher: DesktopTerminalLauncher | None = None,
     ) -> None:
         if not auth_token:
             raise ValueError("auth_token must not be empty")
@@ -40,6 +117,9 @@ class LocalTerminalAgentServer:
         self.auth_token = auth_token
         self.lifecycle_monitor_enabled = lifecycle_monitor_enabled
         self.lifecycle_poll_interval_seconds = max(float(lifecycle_poll_interval_seconds), 0.05)
+        self.desktop_launcher = desktop_launcher or DesktopTerminalLauncher(
+            auth_token=auth_token,
+        )
         self._server: asyncio.AbstractServer | None = None
         self._socket_path: Path | None = None
 
@@ -54,6 +134,13 @@ class LocalTerminalAgentServer:
         self._server = await asyncio.start_unix_server(self._handle_client, path=str(socket_path))
         socket_path.chmod(0o600)
         self._socket_path = socket_path
+        if self.desktop_launcher.socket_path is None:
+            self.desktop_launcher = DesktopTerminalLauncher(
+                enabled=self.desktop_launcher.enabled,
+                command_template=self.desktop_launcher.command_template,
+                socket_path=socket_path,
+                auth_token=self.auth_token,
+            )
         if self.lifecycle_monitor_enabled:
             self.terminal.start_lifecycle_monitor(
                 interval_seconds=self.lifecycle_poll_interval_seconds
@@ -247,12 +334,14 @@ class LocalTerminalAgentServer:
         if action == "health":
             return self.control.health()
         if action == "start_session":
+            session_id = required_str(payload, "session_id")
             self.terminal.start_session(
-                session_id=required_str(payload, "session_id"),
+                session_id=session_id,
                 command=str(payload.get("command") or "sh"),
                 trace_id=str(payload.get("trace_id") or "local-terminal"),
             )
-            return {"status": "started"}
+            launch_result = self.desktop_launcher.launch(session_id=session_id)
+            return {"status": "started", "desktop": launch_result.to_payload()}
         if action == "acquire_human_lease":
             actor = actor_from_payload(payload)
             lease = self.control.acquire_lease(
@@ -418,6 +507,8 @@ def config_from_env() -> LocalTerminalAgentConfig:
             "AGENTBRIDGE_TERMINAL_LIFECYCLE_POLL_INTERVAL_SECONDS",
             default=1.0,
         ),
+        desktop_auto_open_enabled=env_bool("AGENTBRIDGE_TERMINAL_AUTO_OPEN", default=False),
+        desktop_open_command=os.environ.get("AGENTBRIDGE_TERMINAL_OPEN_COMMAND"),
     )
 
 
@@ -431,6 +522,12 @@ async def async_main() -> None:
         terminal=terminal,
         auth_token=config.auth_token,
         lifecycle_poll_interval_seconds=config.lifecycle_poll_interval_seconds,
+        desktop_launcher=DesktopTerminalLauncher(
+            enabled=config.desktop_auto_open_enabled,
+            command_template=config.desktop_open_command,
+            socket_path=config.socket_path,
+            auth_token=config.auth_token,
+        ),
     )
     await server.serve_forever(config.socket_path)
 
