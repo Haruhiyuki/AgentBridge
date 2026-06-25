@@ -475,6 +475,87 @@ def test_bot_gateway_delivery_results_api_tracks_ack_edit_delete(tmp_path):
     }
 
 
+def test_bot_gateway_edit_and_delete_delivery_through_transport(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    transport = InMemoryBotTransport()
+    gateway = BotGatewayService(control, transport=transport)
+    delivered = gateway.deliver_session_events(
+        session_id=session_id,
+        chat_context_id=context.id,
+        after_seq=1,
+    )
+    idempotency_key = delivered[0].idempotency_key
+
+    edited = gateway.edit_delivery(
+        idempotency_key=idempotency_key,
+        text="edited via transport",
+        payload={"operator": "test"},
+    )
+    deleted = gateway.delete_delivery(
+        idempotency_key=idempotency_key,
+        payload={"reason": "cleanup"},
+    )
+    repeated_delete = gateway.delete_delivery(idempotency_key=idempotency_key)
+
+    assert edited.platform_state == "edited"
+    assert edited.edit_revision == 1
+    assert edited.text == "edited via transport"
+    assert transport.edited[0]["text"] == "edited via transport"
+    assert deleted.platform_state == "deleted"
+    assert repeated_delete.id == deleted.id
+    assert len(transport.deleted) == 1
+    assert deleted.platform_payload == {
+        "platform_message_id": delivered[0].platform_message_id,
+        "text": "edited via transport",
+        "operator": "test",
+        "reason": "cleanup",
+    }
+
+
+def test_bot_gateway_edit_delete_delivery_api_calls_transport(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    transport = InMemoryBotTransport()
+    gateway = BotGatewayService(control, transport=transport)
+    app = create_app(control)
+    app.state.bot_gateway = gateway
+    client = TestClient(app)
+
+    delivered = client.post(
+        "/api/v1/bot-gateway/deliver-session-events",
+        json={
+            "session_id": session_id,
+            "chat_context_id": context.id,
+            "after_seq": 1,
+        },
+    )
+    idempotency_key = delivered.json()[0]["idempotency_key"]
+    edited = client.post(
+        "/api/v1/bot-gateway/deliveries/edit",
+        json={
+            "idempotency_key": idempotency_key,
+            "text": "edited api message",
+            "payload": {"source": "api"},
+        },
+    )
+    deleted = client.post(
+        "/api/v1/bot-gateway/deliveries/delete",
+        json={
+            "idempotency_key": idempotency_key,
+            "payload": {"source": "api-delete"},
+        },
+    )
+
+    assert edited.status_code == 200
+    assert edited.json()["platform_state"] == "edited"
+    assert edited.json()["text"] == "edited api message"
+    assert deleted.status_code == 200
+    assert deleted.json()["platform_state"] == "deleted"
+    assert transport.edited[0]["idempotency_key"].endswith(":edit:1")
+    assert transport.deleted[0]["idempotency_key"].endswith(":delete")
+
+
 def test_bot_gateway_delivery_results_api_reports_missing_record():
     client = TestClient(create_app())
 

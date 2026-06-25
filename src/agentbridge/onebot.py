@@ -101,6 +101,64 @@ class OneBotV11HTTPTransport:
         )
         return onebot_message_id(response)
 
+    def edit_text(
+        self,
+        *,
+        platform: BotPlatform,
+        chat_context_id: str,
+        chat_context: ChatContext,
+        platform_message_id: str,
+        text: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        if platform != BotPlatform.ONEBOT_V11:
+            raise AgentBridgeError(
+                ErrorCode.PLATFORM_CAPABILITY_MISSING,
+                f"OneBot transport 不支持平台：{platform.value}",
+                next_step="请使用 onebot.v11 平台或选择其他 Bot transport。",
+            )
+        raise AgentBridgeError(
+            ErrorCode.PLATFORM_CAPABILITY_MISSING,
+            "OneBot V11 不支持标准原生消息编辑。",
+            next_step="请使用平台特定扩展 transport，或发送新消息并删除旧消息。",
+            details={
+                "chat_context_id": chat_context_id,
+                "chat_space_id": chat_context.chat_space_id,
+                "platform_message_id": platform_message_id,
+                "idempotency_key": idempotency_key,
+                "text": text,
+            },
+        )
+
+    def delete_message(
+        self,
+        *,
+        platform: BotPlatform,
+        chat_context_id: str,
+        chat_context: ChatContext,
+        platform_message_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        if platform != BotPlatform.ONEBOT_V11:
+            raise AgentBridgeError(
+                ErrorCode.PLATFORM_CAPABILITY_MISSING,
+                f"OneBot transport 不支持平台：{platform.value}",
+                next_step="请使用 onebot.v11 平台或选择其他 Bot transport。",
+            )
+        message_id = onebot_raw_message_id(platform_message_id)
+        response = (self.poster or UrllibHTTPPoster()).post_json(
+            self._url("delete_msg"),
+            {"message_id": message_id},
+            self._headers(idempotency_key),
+        )
+        ensure_onebot_success(response, action_label="删除")
+        return {
+            "platform_message_id": platform_message_id,
+            "chat_context_id": chat_context_id,
+            "chat_space_id": chat_context.chat_space_id,
+            "response": response,
+        }
+
     def _url(self, action: str) -> str:
         return f"{self.endpoint.rstrip('/')}/{action}"
 
@@ -118,20 +176,32 @@ def onebot_text_payload(chat_context: ChatContext, text: str) -> tuple[str, dict
 
 
 def onebot_message_id(response: dict[str, Any]) -> str:
-    retcode = response.get("retcode")
-    if retcode not in {0, "0", None}:
-        raise AgentBridgeError(
-            ErrorCode.RESOURCE_CONFLICT,
-            "OneBot 返回发送失败。",
-            next_step="请检查 OneBot 返回码和 Bot 连接状态。",
-            status_code=502,
-            details={"response": response},
-        )
+    ensure_onebot_success(response, action_label="发送")
     data = response.get("data") if isinstance(response.get("data"), dict) else {}
     message_id = data.get("message_id") if data else response.get("message_id")
     if message_id is None:
         return "onebot:unknown"
     return f"onebot:{message_id}"
+
+
+def ensure_onebot_success(response: dict[str, Any], *, action_label: str) -> None:
+    retcode = response.get("retcode")
+    if retcode not in {0, "0", None}:
+        raise AgentBridgeError(
+            ErrorCode.RESOURCE_CONFLICT,
+            f"OneBot 返回{action_label}失败。",
+            next_step="请检查 OneBot 返回码和 Bot 连接状态。",
+            status_code=502,
+            details={"response": response},
+        )
+
+
+def onebot_raw_message_id(platform_message_id: str) -> int | str:
+    value = platform_message_id.removeprefix("onebot:")
+    try:
+        return int(value)
+    except ValueError:
+        return value
 
 
 def retry_after_seconds_from_headers(headers: Any) -> float | None:

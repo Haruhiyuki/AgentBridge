@@ -159,6 +159,20 @@ curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/delivery-results \
 
 Supported result actions are `acknowledge`, `edit`, and `delete`. These update the delivery record's `platform_state`, timestamps, optional platform payload, edit revision, and latest text without mutating the immutable semantic event.
 
+AgentBridge can also initiate platform-native delivery mutations when the selected transport supports them:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/deliveries/edit \
+  -H 'content-type: application/json' \
+  -d '{"idempotency_key":"<message-key>","text":"updated text"}'
+
+curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/deliveries/delete \
+  -H 'content-type: application/json' \
+  -d '{"idempotency_key":"<message-key>"}'
+```
+
+The in-memory transport supports edit/delete for contract tests. OneBot V11 supports native `delete_msg`; standard OneBot V11 message editing is not available and returns a capability error unless a platform-specific transport adds that extension.
+
 The background retry worker is disabled by default. Enable it for long-running deployments:
 
 ```bash

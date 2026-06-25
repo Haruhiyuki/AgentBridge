@@ -33,10 +33,33 @@ class BotTransport(Protocol):
         idempotency_key: str,
     ) -> str: ...
 
+    def edit_text(
+        self,
+        *,
+        platform: BotPlatform,
+        chat_context_id: str,
+        chat_context: ChatContext,
+        platform_message_id: str,
+        text: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]: ...
+
+    def delete_message(
+        self,
+        *,
+        platform: BotPlatform,
+        chat_context_id: str,
+        chat_context: ChatContext,
+        platform_message_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]: ...
+
 
 class InMemoryBotTransport:
     def __init__(self) -> None:
         self.sent: list[dict[str, str]] = []
+        self.edited: list[dict[str, str]] = []
+        self.deleted: list[dict[str, str]] = []
 
     def send_text(
         self,
@@ -59,6 +82,52 @@ class InMemoryBotTransport:
             }
         )
         return message_id
+
+    def edit_text(
+        self,
+        *,
+        platform: BotPlatform,
+        chat_context_id: str,
+        chat_context: ChatContext,
+        platform_message_id: str,
+        text: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        for message in self.sent:
+            if message["platform_message_id"] == platform_message_id:
+                message["text"] = text
+                break
+        self.edited.append(
+            {
+                "platform": platform.value,
+                "chat_context_id": chat_context_id,
+                "chat_space_id": chat_context.chat_space_id,
+                "platform_message_id": platform_message_id,
+                "text": text,
+                "idempotency_key": idempotency_key,
+            }
+        )
+        return {"platform_message_id": platform_message_id, "text": text}
+
+    def delete_message(
+        self,
+        *,
+        platform: BotPlatform,
+        chat_context_id: str,
+        chat_context: ChatContext,
+        platform_message_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        self.deleted.append(
+            {
+                "platform": platform.value,
+                "chat_context_id": chat_context_id,
+                "chat_space_id": chat_context.chat_space_id,
+                "platform_message_id": platform_message_id,
+                "idempotency_key": idempotency_key,
+            }
+        )
+        return {"platform_message_id": platform_message_id}
 
 
 @dataclass(frozen=True)
@@ -236,6 +305,83 @@ class BotGatewayService:
     ) -> list[BotDeliveryRecord]:
         return self.control.repository.list_bot_delivery_records(chat_context_id, status=status)
 
+    def edit_delivery(
+        self,
+        *,
+        idempotency_key: str,
+        text: str,
+        payload: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
+    ) -> BotDeliveryRecord:
+        record = self._get_delivery_record(idempotency_key)
+        if record.platform_state == BotDeliveryPlatformState.DELETED:
+            raise AgentBridgeError(
+                ErrorCode.RESOURCE_CONFLICT,
+                "Bot delivery 已删除，不能编辑。",
+                next_step="请重新投递一条新消息。",
+                status_code=409,
+                details={"idempotency_key": idempotency_key},
+            )
+        if not record.platform_message_id:
+            raise AgentBridgeError(
+                ErrorCode.PLATFORM_CAPABILITY_MISSING,
+                "Bot delivery 缺少平台消息 ID，不能编辑。",
+                next_step="请等待平台发送成功并返回 platform_message_id 后再编辑。",
+                status_code=409,
+                details={"idempotency_key": idempotency_key},
+            )
+        edit_text = self._transport_method("edit_text", action_label="编辑")
+        chat_context = self.control.repository.get_chat_context(record.chat_context_id)
+        transport_payload = edit_text(
+            platform=record.platform,
+            chat_context_id=record.chat_context_id,
+            chat_context=chat_context,
+            platform_message_id=record.platform_message_id,
+            text=text,
+            idempotency_key=f"{record.idempotency_key}:edit:{record.edit_revision + 1}",
+        )
+        return self.record_delivery_result(
+            idempotency_key=idempotency_key,
+            action=BotDeliveryResultAction.EDIT,
+            text=text,
+            payload=merge_platform_payload(transport_payload, payload),
+            occurred_at=occurred_at,
+        )
+
+    def delete_delivery(
+        self,
+        *,
+        idempotency_key: str,
+        payload: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
+    ) -> BotDeliveryRecord:
+        record = self._get_delivery_record(idempotency_key)
+        if record.platform_state == BotDeliveryPlatformState.DELETED:
+            return record
+        if not record.platform_message_id:
+            raise AgentBridgeError(
+                ErrorCode.PLATFORM_CAPABILITY_MISSING,
+                "Bot delivery 缺少平台消息 ID，不能删除。",
+                next_step="请等待平台发送成功并返回 platform_message_id 后再删除。",
+                status_code=409,
+                details={"idempotency_key": idempotency_key},
+            )
+        delete_message = self._transport_method("delete_message", action_label="删除")
+        chat_context = self.control.repository.get_chat_context(record.chat_context_id)
+        transport_payload = delete_message(
+            platform=record.platform,
+            chat_context_id=record.chat_context_id,
+            chat_context=chat_context,
+            platform_message_id=record.platform_message_id,
+            idempotency_key=f"{record.idempotency_key}:delete",
+        )
+        return self.record_delivery_result(
+            idempotency_key=idempotency_key,
+            action=BotDeliveryResultAction.DELETE,
+            payload=merge_platform_payload(transport_payload, payload),
+            occurred_at=occurred_at,
+        )
+
     def record_delivery_result(
         self,
         *,
@@ -305,6 +451,30 @@ class BotGatewayService:
         updated = record.model_copy(update=update)
         self.control.repository.store_bot_delivery_record(updated)
         return updated
+
+    def _get_delivery_record(self, idempotency_key: str) -> BotDeliveryRecord:
+        record = self.control.repository.get_bot_delivery_record(idempotency_key)
+        if record is None:
+            raise AgentBridgeError(
+                ErrorCode.NOT_FOUND,
+                "找不到 Bot delivery 记录。",
+                next_step="请使用 Bot render frame 中的 idempotency_key。",
+                status_code=404,
+                details={"idempotency_key": idempotency_key},
+            )
+        return record
+
+    def _transport_method(self, method_name: str, *, action_label: str):
+        method = getattr(self.transport, method_name, None)
+        if callable(method):
+            return method
+        raise AgentBridgeError(
+            ErrorCode.PLATFORM_CAPABILITY_MISSING,
+            f"当前 Bot transport 不支持消息{action_label}。",
+            next_step="请切换到支持该平台能力的 transport，或仅记录平台回执状态。",
+            status_code=400,
+            details={"transport": type(self.transport).__name__, "method": method_name},
+        )
 
     def retry_failed_deliveries(
         self,
@@ -673,3 +843,15 @@ def retry_after_seconds_from_error(exc: AgentBridgeError) -> float | None:
         return max(float(value), 0.0)
     except (TypeError, ValueError):
         return None
+
+
+def merge_platform_payload(
+    transport_payload: dict[str, Any] | None,
+    caller_payload: dict[str, Any] | None,
+) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    if transport_payload:
+        merged.update(transport_payload)
+    if caller_payload:
+        merged.update(caller_payload)
+    return merged

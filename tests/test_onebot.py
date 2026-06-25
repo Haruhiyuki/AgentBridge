@@ -122,6 +122,63 @@ def test_onebot_transport_posts_payload_with_auth_and_idempotency():
     ]
 
 
+def test_onebot_transport_deletes_message_with_auth_and_idempotency():
+    control = ControlPlane()
+    context = control.get_or_create_chat_context(
+        bot_instance_id="bot",
+        platform="onebot.v11",
+        chat_space_id="10001",
+    )
+    poster = FakePoster(response={"retcode": 0, "data": {}})
+    transport = OneBotV11HTTPTransport(
+        endpoint="http://127.0.0.1:5700/",
+        access_token="token",
+        poster=poster,
+    )
+
+    payload = transport.delete_message(
+        platform=BotPlatform.ONEBOT_V11,
+        chat_context_id=context.id,
+        chat_context=context,
+        platform_message_id="onebot:42",
+        idempotency_key="idem-delete",
+    )
+
+    assert payload["platform_message_id"] == "onebot:42"
+    assert poster.calls == [
+        {
+            "url": "http://127.0.0.1:5700/delete_msg",
+            "payload": {"message_id": 42},
+            "headers": {
+                "authorization": "Bearer token",
+                "x-agentbridge-idempotency-key": "idem-delete",
+            },
+        }
+    ]
+
+
+def test_onebot_transport_reports_edit_as_unsupported():
+    control = ControlPlane()
+    context = control.get_or_create_chat_context(
+        bot_instance_id="bot",
+        platform="onebot.v11",
+        chat_space_id="10001",
+    )
+    transport = OneBotV11HTTPTransport(endpoint="http://127.0.0.1:5700")
+
+    with pytest.raises(AgentBridgeError) as exc_info:
+        transport.edit_text(
+            platform=BotPlatform.ONEBOT_V11,
+            chat_context_id=context.id,
+            chat_context=context,
+            platform_message_id="onebot:42",
+            text="edited",
+            idempotency_key="idem-edit",
+        )
+
+    assert exc_info.value.code == ErrorCode.PLATFORM_CAPABILITY_MISSING
+
+
 def test_onebot_transport_rejects_failed_retcode():
     control = ControlPlane()
     context = control.get_or_create_chat_context(

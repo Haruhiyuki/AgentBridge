@@ -284,6 +284,23 @@ class BotDeliveryResultRequest(BaseModel):
     occurred_at: datetime | None = None
 
 
+class EditBotDeliveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str
+    text: str
+    payload: dict[str, object] = Field(default_factory=dict)
+    occurred_at: datetime | None = None
+
+
+class DeleteBotDeliveryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str
+    payload: dict[str, object] = Field(default_factory=dict)
+    occurred_at: datetime | None = None
+
+
 class RetryWorkerRunOnceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1041,6 +1058,31 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             platform_message_id=payload.platform_message_id,
             text=payload.text,
             error=payload.error,
+            payload=payload.payload,
+            occurred_at=payload.occurred_at,
+        )
+        return record.model_dump(mode="json")
+
+    @app.post("/api/v1/bot-gateway/deliveries/edit")
+    def edit_bot_delivery(
+        payload: EditBotDeliveryRequest,
+        bot_gateway_service: BotGatewayService = Depends(get_bot_gateway),
+    ):
+        record = bot_gateway_service.edit_delivery(
+            idempotency_key=payload.idempotency_key,
+            text=payload.text,
+            payload=payload.payload,
+            occurred_at=payload.occurred_at,
+        )
+        return record.model_dump(mode="json")
+
+    @app.post("/api/v1/bot-gateway/deliveries/delete")
+    def delete_bot_delivery(
+        payload: DeleteBotDeliveryRequest,
+        bot_gateway_service: BotGatewayService = Depends(get_bot_gateway),
+    ):
+        record = bot_gateway_service.delete_delivery(
+            idempotency_key=payload.idempotency_key,
             payload=payload.payload,
             occurred_at=payload.occurred_at,
         )
