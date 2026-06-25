@@ -32,7 +32,7 @@ This repository currently contains the first executable backend slice:
 - Built-in Admin Web pages for system health, project/session operations, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
-Production PTY supervision, mTLS/device certificate rotation, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
+Production PTY supervision, full mTLS/device certificate rotation workflows, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
 
 ## Development
 
@@ -182,7 +182,8 @@ to pass either `?token=...` or `Authorization: Bearer ...`. Token files are rere
 each WebSocket connection so operators can rotate shared WebSocket tokens without
 restarting AgentBridge. A browser session unlocked through Admin Web can also use its
 HttpOnly admin cookie for same-origin WebSocket streams. If neither variable is set and
-no device keys are configured, WebSocket routes stay open for local MVP development.
+no device keys or client certificate fingerprints are configured, WebSocket routes stay
+open for local MVP development.
 
 Set `AGENTBRIDGE_API_TOKEN` or `AGENTBRIDGE_API_TOKEN_FILE` to require REST API clients
 to pass either `Authorization: Bearer <token>` or `X-AgentBridge-API-Token: <token>` for
@@ -193,8 +194,8 @@ after browser unlock. If only `AGENTBRIDGE_API_TOKEN` or `AGENTBRIDGE_API_TOKEN_
 configured, it also gates and unlocks the built-in admin pages. Token files are reread
 for each HTTP request, and a configured but unreadable/empty token file does not disable
 the gate; if it is the only token source, token auth fails closed. If no token
-variable/file is set and no device keys are configured, REST routes stay open for local
-MVP development.
+variable/file is set and no device keys or client certificate fingerprints are
+configured, REST routes stay open for local MVP development.
 
 For per-device keys without adding database state, set `AGENTBRIDGE_DEVICE_KEYS` to a
 JSON object mapping device IDs to secrets. REST clients present
@@ -212,6 +213,17 @@ authentication updates `last_used_at`, and list/revoke responses never include r
 hashes, or salts. Once any managed device identity exists, REST and WebSocket routes stay
 gated even if all managed devices are later revoked; use an admin/API token to create a
 new active device key and regain device-key access.
+
+For deployments behind a TLS-terminating reverse proxy that verifies client
+certificates, set `AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS` or
+`AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS_FILE` to an allowlist of SHA-256 certificate
+fingerprints. The proxy must strip any incoming
+`X-AgentBridge-Client-Cert-Fingerprint` header from untrusted clients, verify the mTLS
+client certificate, and then set that header for AgentBridge. Fingerprints may be
+colon-separated hex and are reread from the file for each HTTP request or WebSocket
+connection. `AGENTBRIDGE_CLIENT_CERT_FINGERPRINT_HEADER` can override the trusted header
+name. Configuring this allowlist gates REST APIs, WebSocket routes, and `/admin` pages;
+an unreadable or empty fingerprint file fails closed.
 
 Audit records can be queried through `GET /api/v1/audit` with optional `actor_id`,
 `action`, `project_id`, `session_id`, `interaction_id`, `trace_id`, `q`, and
@@ -479,8 +491,10 @@ or pass `Authorization: Bearer <token>` / `X-AgentBridge-Admin-Token: <token>` f
 scripted admin page access. `AGENTBRIDGE_ADMIN_COOKIE_MAX_AGE_SECONDS` controls cookie
 lifetime, and `AGENTBRIDGE_ADMIN_COOKIE_SECURE` can force Secure cookie behavior when
 AgentBridge is deployed behind TLS. The unlocked Admin Web cookie is also accepted by
-the optional REST API token gate and same-origin WebSocket event streams. These MVP gates do not replace the planned
-mTLS certificate and managed-device rotation model.
+the optional REST API token gate and same-origin WebSocket event streams. Client
+certificate fingerprint headers from a trusted TLS proxy can also serve `/admin` pages
+without setting an Admin Web cookie. These gates do not replace the planned full
+certificate issuance and rotation workflow.
 
 ## Console Client
 

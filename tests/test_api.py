@@ -198,6 +198,80 @@ def test_device_key_gate_authorizes_rest_api_when_configured(monkeypatch):
     assert wrong_key_response.status_code == 403
 
 
+def test_client_certificate_fingerprint_gate_authorizes_rest_and_admin(monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS", "SHA256:AA:BB:CC")
+    client = TestClient(create_app())
+
+    health_response = client.get("/api/v1/health")
+    denied_response = client.get("/api/v1/projects")
+    denied_admin_response = client.get("/admin")
+    header_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+    admin_response = client.get(
+        "/admin",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert health_response.status_code == 200
+    assert denied_response.status_code == 403
+    assert denied_response.json()["error_code"] == "PERMISSION_DENIED"
+    assert denied_admin_response.status_code == 401
+    assert header_response.status_code == 200
+    assert header_response.json() == []
+    assert admin_response.status_code == 200
+    assert "AgentBridge Admin" in admin_response.text
+
+
+def test_client_certificate_fingerprint_file_hot_reloads_and_fails_closed(
+    monkeypatch,
+    tmp_path,
+):
+    fingerprints_file = tmp_path / "client-cert-fingerprints"
+    fingerprints_file.write_text("AA:BB:CC\n", encoding="utf-8")
+    monkeypatch.delenv("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS", raising=False)
+    monkeypatch.setenv("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS_FILE", str(fingerprints_file))
+    client = TestClient(create_app())
+
+    first_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+    fingerprints_file.write_text("DD:EE:FF\n", encoding="utf-8")
+    stale_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+    rotated_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-client-cert-fingerprint": "dd:ee:ff"},
+    )
+
+    assert first_response.status_code == 200
+    assert stale_response.status_code == 403
+    assert rotated_response.status_code == 200
+
+    monkeypatch.setenv(
+        "AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS_FILE",
+        str(tmp_path / "missing-fingerprints"),
+    )
+    missing_file_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-client-cert-fingerprint": "dd:ee:ff"},
+    )
+    assert missing_file_response.status_code == 403
+
+    empty_file = tmp_path / "empty-fingerprints"
+    empty_file.write_text("\n", encoding="utf-8")
+    monkeypatch.setenv("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS_FILE", str(empty_file))
+    empty_file_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-client-cert-fingerprint": "dd:ee:ff"},
+    )
+    assert empty_file_response.status_code == 403
+
+
 def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
     client = TestClient(create_app())
     actor = {"id": "security-admin", "roles": ["admin"]}
@@ -1459,6 +1533,57 @@ def test_session_events_websocket_accepts_device_key(monkeypatch, tmp_path):
     with client.websocket_connect(
         f"/api/v1/sessions/{session.id}/events/ws"
         "?device_id=laptop&device_key=device-secret&idle_timeout_seconds=0"
+    ) as websocket:
+        message = websocket.receive_json()
+        idle = websocket.receive_json()
+
+    assert message["type"] == "semantic_event"
+    assert message["event"]["type"] == "session.created"
+    assert idle == {"type": "idle_timeout", "last_seq": message["event"]["seq"]}
+
+
+def test_session_events_websocket_accepts_client_certificate_fingerprint(
+    monkeypatch,
+    tmp_path,
+):
+    control = ControlPlane()
+    actor = Actor(id="usr_1", roles={"maintainer"})
+    project = control.create_project(
+        actor=actor,
+        name="Client Certificate Backend",
+        trace_id="client-cert-project",
+    )
+    workspace = control.add_workspace(
+        actor=actor,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="client-cert-workspace",
+    )
+    session = control.create_session(
+        actor=actor,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Client Certificate Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="client-cert-session",
+    )
+    monkeypatch.setenv("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS", "AA:BB:CC")
+    client = TestClient(create_app(control))
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session.id}/events/ws?idle_timeout_seconds=0"
+    ) as websocket:
+        denied = websocket.receive_json()
+
+    assert denied["type"] == "error"
+    assert denied["error"]["error_code"] == "PERMISSION_DENIED"
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session.id}/events/ws?idle_timeout_seconds=0",
+        headers={"x-agentbridge-client-cert-fingerprint": "sha256:aa:bb:cc"},
     ) as websocket:
         message = websocket.receive_json()
         idle = websocket.receive_json()

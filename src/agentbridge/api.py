@@ -2060,7 +2060,11 @@ ADMIN_AUTH_QUERY_PARAM = "admin_token"
 
 def admin_html_response(request: Request, html: str):
     expected_tokens, token_configured = admin_expected_token_config()
-    if not token_configured:
+    certificate_configured = client_certificate_fingerprints_configured()
+    if not token_configured and not certificate_configured:
+        return HTMLResponse(html)
+
+    if client_certificate_authorized(request.headers):
         return HTMLResponse(html)
 
     presented_token = admin_presented_token(request)
@@ -2148,12 +2152,17 @@ def http_api_request_authorized(
         not token_configured
         and not device_keys_configured()
         and not managed_device_identities_configured(control)
+        and not client_certificate_fingerprints_configured()
     ):
         return True
     presented_tokens = http_api_presented_tokens(request)
-    return http_device_key_authorized(request, device_keys, control=control) or any(
-        matching_token(presented_token, expected_tokens)
-        for presented_token in presented_tokens
+    return (
+        client_certificate_authorized(request.headers)
+        or http_device_key_authorized(request, device_keys, control=control)
+        or any(
+            matching_token(presented_token, expected_tokens)
+            for presented_token in presented_tokens
+        )
     )
 
 
@@ -2227,6 +2236,7 @@ def http_api_auth_error_response() -> JSONResponse:
         next_step=(
             "请设置 Authorization: Bearer <token>、X-AgentBridge-API-Token，"
             "X-AgentBridge-Device-ID/X-AgentBridge-Device-Key，"
+            "可信代理传入的客户端证书指纹，"
             "或使用已解锁的 Admin Web cookie。"
         ),
         status_code=403,
@@ -2266,10 +2276,13 @@ async def accept_authenticated_websocket(
         not token_configured
         and not device_keys_configured()
         and not managed_device_identities_configured(control)
+        and not client_certificate_fingerprints_configured()
     ):
         return True
     presented_token = websocket_presented_token(websocket, token)
     if matching_token(presented_token, expected_tokens):
+        return True
+    if client_certificate_authorized(websocket.headers):
         return True
     if websocket_device_key_authorized(
         websocket,
@@ -2285,7 +2298,8 @@ async def accept_authenticated_websocket(
         "WebSocket token 无效。",
         next_step=(
             "请使用当前 AGENTBRIDGE_WS_TOKEN/AGENTBRIDGE_WS_TOKEN_FILE，"
-            "或通过 device_id/device_key 重新连接，或先解锁 Admin Web。"
+            "通过 device_id/device_key 重新连接，使用可信代理传入的客户端证书指纹，"
+            "或先解锁 Admin Web。"
         ),
         status_code=403,
     )
@@ -2375,6 +2389,83 @@ def websocket_admin_cookie_authorized(websocket: WebSocket) -> bool:
             admin_expected_tokens(),
         )
     )
+
+
+def client_certificate_fingerprints_configured() -> bool:
+    return bool(
+        os.environ.get("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS", "").strip()
+        or os.environ.get("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS_FILE", "").strip()
+    )
+
+
+def configured_client_certificate_fingerprints() -> set[str]:
+    raw_values: list[str] = []
+    raw_env_value = os.environ.get("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS", "")
+    raw_values.extend(split_client_certificate_fingerprints(raw_env_value))
+    raw_file_path = os.environ.get("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS_FILE", "").strip()
+    if raw_file_path:
+        raw_values.extend(
+            split_client_certificate_fingerprints(
+                client_certificate_fingerprints_from_file(raw_file_path)
+            )
+        )
+    return {
+        fingerprint
+        for value in raw_values
+        if (fingerprint := normalize_client_certificate_fingerprint(value))
+    }
+
+
+def split_client_certificate_fingerprints(raw_value: str | None) -> list[str]:
+    if not raw_value:
+        return []
+    values: list[str] = []
+    for line in raw_value.splitlines():
+        values.extend(part.strip() for part in line.split(","))
+    return [value for value in values if value]
+
+
+def client_certificate_fingerprints_from_file(raw_path: str) -> str:
+    try:
+        return Path(raw_path).expanduser().read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def client_certificate_fingerprint_header_name() -> str:
+    return (
+        os.environ.get(
+            "AGENTBRIDGE_CLIENT_CERT_FINGERPRINT_HEADER",
+            "x-agentbridge-client-cert-fingerprint",
+        ).strip()
+        or "x-agentbridge-client-cert-fingerprint"
+    )
+
+
+def client_certificate_authorized(headers) -> bool:
+    fingerprints = configured_client_certificate_fingerprints()
+    if not fingerprints:
+        return False
+    presented_fingerprint = headers.get(client_certificate_fingerprint_header_name())
+    if not presented_fingerprint:
+        return False
+    return (
+        normalize_client_certificate_fingerprint(presented_fingerprint)
+        in fingerprints
+    )
+
+
+def normalize_client_certificate_fingerprint(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        return ""
+    prefix = "sha256:"
+    if normalized.lower().startswith(prefix):
+        normalized = normalized[len(prefix) :]
+    hex_chars = set("0123456789abcdefABCDEF:")
+    if all(char in hex_chars for char in normalized):
+        return normalized.replace(":", "").lower()
+    return normalized.lower()
 
 
 def device_keys_configured() -> bool:
