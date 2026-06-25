@@ -16,7 +16,7 @@ from typing import Any
 from uuid import uuid4
 
 from agentbridge.domain import AgentBridgeError, ErrorCode, LeaseOwnerType
-from agentbridge.terminal_agent import TerminalInputKind
+from agentbridge.terminal_agent import TerminalInputKind, TerminalOutputChunk
 from agentbridge.terminal_daemon import LocalTerminalAgentClient
 
 
@@ -194,6 +194,18 @@ class LocalConsoleClient:
         response = await self._request_ok("snapshot", {"session_id": self.session_id})
         return str(response["snapshot"])
 
+    async def read_output(self, after_cursor: int = 0) -> TerminalOutputChunk:
+        response = await self._request_ok(
+            "read_output",
+            {"session_id": self.session_id, "after_cursor": after_cursor},
+        )
+        return TerminalOutputChunk(
+            cursor=int(response.get("cursor") or 0),
+            data=str(response.get("data") or ""),
+            snapshot=str(response.get("snapshot") or ""),
+            reset=bool(response.get("reset")),
+        )
+
     async def release(self) -> int | None:
         if self.lease is None:
             return None
@@ -361,11 +373,23 @@ async def follow_terminal_output(
 ) -> None:
     output_file = output_file or sys.stdout
     previous = ""
+    cursor = 0
     iterations = 0
     poll_interval_seconds = max(poll_interval_seconds, 0.01)
     while stop_event is None or not stop_event.is_set():
-        current = await client.snapshot()
-        update = terminal_snapshot_update(previous, current)
+        if hasattr(client, "read_output"):
+            chunk = await client.read_output(cursor)
+            current = chunk.snapshot
+            cursor = chunk.cursor
+            update = (
+                f"{TERMINAL_REPAINT_PREFIX}{chunk.snapshot}"
+                if chunk.reset
+                else chunk.data
+            )
+        else:
+            current = await client.snapshot()
+            update = terminal_snapshot_update(previous, current)
+            cursor = len(current)
         if update:
             output_file.write(update)
             output_file.flush()

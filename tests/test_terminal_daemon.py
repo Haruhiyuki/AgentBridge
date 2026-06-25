@@ -97,6 +97,18 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
             snapshot = await client.request("snapshot", {"session_id": session.id})
             assert snapshot["ok"] is True
             assert snapshot["data"]["snapshot"] == "hello daemon\n"
+
+            output = await client.request(
+                "read_output",
+                {"session_id": session.id, "after_cursor": 6},
+            )
+            assert output["ok"] is True
+            assert output["data"] == {
+                "cursor": 13,
+                "data": "daemon\n",
+                "snapshot": "hello daemon\n",
+                "reset": False,
+            }
         finally:
             await server.stop()
             assert not socket_path.exists()

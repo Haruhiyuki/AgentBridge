@@ -38,13 +38,14 @@ Implemented in this slice:
 - Recovery tests proving persisted control-plane state survives repository re-instantiation.
 - Terminal Agent input gateway with fake and tmux backends.
 - Local Terminal Agent daemon using JSONL over a Unix socket with token authentication.
-- Local daemon actions for `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, and `snapshot`.
+- Local daemon actions for `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, `snapshot`, and cursor-based `read_output`.
 - Local Terminal Agent client waits briefly for Unix socket recovery, allowing console requests to survive short daemon restart windows.
 - Lifecycle tests cover local daemon socket restart/reconnect behavior and tmux backend reuse of existing sessions after Agent restart.
 - Local Console Client command `agentbridge-console`.
 - Console Client acquires a human writer lease on first input, caches the epoch, forwards text/paste/signal/resize through the daemon, and can release the lease on exit.
 - Console Client raw TTY passthrough mode with safe terminal-state restoration, initial resize forwarding, `SIGWINCH` resize forwarding, Ctrl-C/Ctrl-D signal mapping, and Ctrl-] detach.
-- Console Client raw mode can follow terminal output through snapshot polling, appending simple growth and repainting when snapshots diverge.
+- Terminal backends expose cursor-based output chunks through `read_output(after_cursor)`, with fake and tmux implementations backed by current snapshot state.
+- Console Client raw mode follows terminal output through `read_output`, appending cursor chunks and repainting when the backend reports a reset.
 - Terminal input request idempotency now prevents duplicate backend writes for repeated request IDs.
 - Terminal start/input/snapshot REST endpoints for MVP integration tests.
 - Terminal command WebSocket through `/api/v1/sessions/{id}/terminal/ws`, supporting `health`, `start_session`, `acquire_lease`, `release_lease`, `submit_input`, and `snapshot`.
@@ -134,7 +135,7 @@ Not implemented yet:
 - Terminal input must pass through the AgentBridge gateway. Direct `tmux attach` remains outside the safety model because it bypasses writer leases.
 - The local Terminal Agent socket is token-gated and chmodded to `0600`; production hardening still needs OS user checks, token rotation, and Windows named-pipe parity.
 - Local console/daemon clients open a fresh socket per request and retry connection for short restart windows. Long offline periods still need explicit user-facing reconnect state during raw TTY passthrough.
-- Console raw mode is still an input/control passthrough over the Terminal Agent socket, not a full terminal emulator. Its current output observation is snapshot polling; native brokered PTY streaming remains a separate milestone.
+- Console raw mode is still an input/control passthrough over the Terminal Agent socket, not a full terminal emulator. Its current output observation uses cursor polling over backend snapshots; native brokered PTY push streaming remains a separate milestone.
 - The tmux backend treats an existing `agentbridge_<session-id>` session as resumable state after Agent restart, matching the design's MVP recovery path.
 - Rendering is split into platform-neutral documents and platform renderers. The first renderer intentionally targets text fallback so unsupported Bot platforms still receive coherent output.
 - Bot delivery idempotency is implemented before real platform integration so duplicate event replay cannot cause duplicate sends once a real transport is attached.
@@ -175,7 +176,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 
 ## Next Development Backlog
 
-1. Replace snapshot-polled console output with a native brokered PTY output stream and desktop terminal auto-launch.
+1. Replace cursor-polled console output with a native brokered PTY push stream and desktop terminal auto-launch.
 2. Add an admin policy editor UI for access policy rules with simulation before save.
 3. Replace the MVP WebSocket token gate with mTLS/device-key auth.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.

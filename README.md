@@ -82,7 +82,7 @@ export AGENTBRIDGE_TERMINAL_SOCKET="$HOME/.agentbridge/terminal-agent.sock"
 uv run agentbridge-terminal-agent
 ```
 
-If `AGENTBRIDGE_LOCAL_TOKEN` is omitted, the daemon prints a generated token at startup. The socket file is created with mode `0600`. The JSONL socket protocol currently supports `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, and `snapshot`.
+If `AGENTBRIDGE_LOCAL_TOKEN` is omitted, the daemon prints a generated token at startup. The socket file is created with mode `0600`. The JSONL socket protocol currently supports `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, `snapshot`, and cursor-based `read_output`.
 
 Local clients open a fresh connection per request and wait briefly for the Unix socket to reappear, so short daemon restarts do not immediately fail console operations. With the tmux backend, restarting the Agent process reuses an existing `agentbridge_<session-id>` tmux session instead of creating a duplicate.
 
@@ -337,7 +337,7 @@ By default the console runs in line mode. Add `--raw` to put the local TTY into 
 uv run agentbridge-console <session-id> --start --command sh --raw --release
 ```
 
-Before forwarding input, the console requests a `human` writer lease and sends input with the returned epoch. Raw mode restores terminal state on exit, forwards initial and `SIGWINCH` resize events, maps Ctrl-C/Ctrl-D to terminal signals, follows snapshot changes so the user can see current output, and uses Ctrl-] to detach from the console. Use `--no-follow-output` to disable output polling, and use `--send`, `--paste`, or `--snapshot` for scripted checks.
+Before forwarding input, the console requests a `human` writer lease and sends input with the returned epoch. Raw mode restores terminal state on exit, forwards initial and `SIGWINCH` resize events, maps Ctrl-C/Ctrl-D to terminal signals, follows cursor-based output changes so the user can see current output, and uses Ctrl-] to detach from the console. Use `--no-follow-output` to disable output polling, and use `--send`, `--paste`, or `--snapshot` for scripted checks.
 
 ## API Smoke Test
 

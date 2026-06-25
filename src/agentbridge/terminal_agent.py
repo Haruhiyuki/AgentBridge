@@ -26,6 +26,14 @@ class TerminalInputKind(StrEnum):
     RESIZE = "resize"
 
 
+@dataclass(frozen=True)
+class TerminalOutputChunk:
+    cursor: int
+    data: str
+    snapshot: str
+    reset: bool = False
+
+
 class TerminalBackend(Protocol):
     def start(self, *, session_id: str, cwd: str, command: str) -> None: ...
 
@@ -36,6 +44,8 @@ class TerminalBackend(Protocol):
     def resize(self, *, session_id: str, cols: int, rows: int) -> None: ...
 
     def snapshot(self, *, session_id: str) -> str: ...
+
+    def read_output(self, *, session_id: str, after_cursor: int = 0) -> TerminalOutputChunk: ...
 
 
 @dataclass
@@ -64,6 +74,22 @@ class FakeTerminalBackend:
     def snapshot(self, *, session_id: str) -> str:
         self._require_started(session_id)
         return "".join(self.buffers.get(session_id, []))
+
+    def read_output(self, *, session_id: str, after_cursor: int = 0) -> TerminalOutputChunk:
+        snapshot = self.snapshot(session_id=session_id)
+        cursor = len(snapshot)
+        if after_cursor < 0 or after_cursor > cursor:
+            return TerminalOutputChunk(
+                cursor=cursor,
+                data=snapshot,
+                snapshot=snapshot,
+                reset=True,
+            )
+        return TerminalOutputChunk(
+            cursor=cursor,
+            data=snapshot[after_cursor:],
+            snapshot=snapshot,
+        )
 
     def _require_started(self, session_id: str) -> None:
         if session_id not in self.started:
@@ -125,6 +151,22 @@ class TmuxTerminalBackend:
     def snapshot(self, *, session_id: str) -> str:
         result = self._run(["capture-pane", "-p", "-t", self._tmux_name(session_id)])
         return result.stdout
+
+    def read_output(self, *, session_id: str, after_cursor: int = 0) -> TerminalOutputChunk:
+        snapshot = self.snapshot(session_id=session_id)
+        cursor = len(snapshot)
+        if after_cursor < 0 or after_cursor > cursor:
+            return TerminalOutputChunk(
+                cursor=cursor,
+                data=snapshot,
+                snapshot=snapshot,
+                reset=True,
+            )
+        return TerminalOutputChunk(
+            cursor=cursor,
+            data=snapshot[after_cursor:],
+            snapshot=snapshot,
+        )
 
     def _has_session(self, name: str) -> bool:
         result = subprocess.run(
@@ -261,3 +303,10 @@ class TerminalAgentService:
     def snapshot(self, *, session_id: str) -> str:
         self.control.repository.get_session(session_id)
         return self.backend.snapshot(session_id=session_id)
+
+    def read_output(self, *, session_id: str, after_cursor: int = 0) -> TerminalOutputChunk:
+        self.control.repository.get_session(session_id)
+        return self.backend.read_output(
+            session_id=session_id,
+            after_cursor=after_cursor,
+        )

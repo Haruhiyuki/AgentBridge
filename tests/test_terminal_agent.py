@@ -13,6 +13,7 @@ from agentbridge.terminal_agent import (
     FakeTerminalBackend,
     TerminalAgentService,
     TerminalInputKind,
+    TerminalOutputChunk,
     TmuxTerminalBackend,
 )
 
@@ -114,6 +115,25 @@ def test_terminal_agent_enforces_current_writer_lease_epoch(tmp_path):
     )
 
     assert terminal.snapshot(session_id=session.id) == "hello\nhuman\n"
+    first_output = terminal.read_output(session_id=session.id, after_cursor=0)
+    second_output = terminal.read_output(session_id=session.id, after_cursor=6)
+    reset_output = terminal.read_output(session_id=session.id, after_cursor=999)
+    assert first_output == TerminalOutputChunk(
+        cursor=12,
+        data="hello\nhuman\n",
+        snapshot="hello\nhuman\n",
+    )
+    assert second_output == TerminalOutputChunk(
+        cursor=12,
+        data="human\n",
+        snapshot="hello\nhuman\n",
+    )
+    assert reset_output == TerminalOutputChunk(
+        cursor=12,
+        data="hello\nhuman\n",
+        snapshot="hello\nhuman\n",
+        reset=True,
+    )
     assert [event.type for event in control.repository.list_events(session_id=session.id)] == [
         "session.created",
         "terminal.started",
@@ -243,3 +263,6 @@ def test_tmux_backend_reuses_existing_session_after_agent_restart(monkeypatch, t
     new_session_calls = [call for call in calls if call[1] == "new-session"]
     assert len(new_session_calls) == 1
     assert restarted_backend.snapshot(session_id="sess/one") == "still alive\n"
+    assert restarted_backend.read_output(session_id="sess/one", after_cursor=6) == (
+        TerminalOutputChunk(cursor=12, data="alive\n", snapshot="still alive\n")
+    )

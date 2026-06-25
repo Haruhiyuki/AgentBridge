@@ -159,12 +159,23 @@ class LocalTerminalAgentServer:
         if action == "snapshot":
             session_id = required_str(payload, "session_id")
             return {"snapshot": self.terminal.snapshot(session_id=session_id)}
+        if action == "read_output":
+            chunk = self.terminal.read_output(
+                session_id=required_str(payload, "session_id"),
+                after_cursor=int(payload.get("after_cursor") or 0),
+            )
+            return {
+                "cursor": chunk.cursor,
+                "data": chunk.data,
+                "snapshot": chunk.snapshot,
+                "reset": chunk.reset,
+            }
         raise AgentBridgeError(
             ErrorCode.COMMAND_UNKNOWN,
             f"未知本地 Terminal Agent action：{action}",
             next_step=(
                 "请使用 health、start_session、acquire_human_lease、release_lease、"
-                "submit_input 或 snapshot。"
+                "submit_input、snapshot 或 read_output。"
             ),
         )
 

@@ -18,7 +18,11 @@ from agentbridge.console_client import (
 )
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, Visibility
-from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService
+from agentbridge.terminal_agent import (
+    FakeTerminalBackend,
+    TerminalAgentService,
+    TerminalOutputChunk,
+)
 from agentbridge.terminal_daemon import LocalTerminalAgentClient, LocalTerminalAgentServer
 
 
@@ -237,3 +241,52 @@ def test_follow_terminal_output_writes_snapshot_changes():
         " world"
         f"{TERMINAL_REPAINT_PREFIX}new screen"
     )
+
+
+def test_follow_terminal_output_prefers_cursor_chunks():
+    class FakeClient:
+        def __init__(self) -> None:
+            self.cursors: list[int] = []
+            self.chunks = iter(
+                [
+                    TerminalOutputChunk(
+                        cursor=5,
+                        data="hello",
+                        snapshot="hello",
+                    ),
+                    TerminalOutputChunk(
+                        cursor=11,
+                        data=" world",
+                        snapshot="hello world",
+                    ),
+                    TerminalOutputChunk(
+                        cursor=3,
+                        data="new",
+                        snapshot="new",
+                        reset=True,
+                    ),
+                ]
+            )
+
+        async def read_output(self, after_cursor: int) -> TerminalOutputChunk:
+            self.cursors.append(after_cursor)
+            return next(self.chunks)
+
+        async def snapshot(self) -> str:
+            raise AssertionError("cursor output should not call snapshot")
+
+    async def scenario():
+        output = io.StringIO()
+        client = FakeClient()
+        await follow_terminal_output(
+            client,  # type: ignore[arg-type]
+            output_file=output,
+            poll_interval_seconds=0.01,
+            max_iterations=3,
+        )
+        return output.getvalue(), client.cursors
+
+    output, cursors = asyncio.run(scenario())
+
+    assert output == f"hello world{TERMINAL_REPAINT_PREFIX}new"
+    assert cursors == [0, 5, 11]
