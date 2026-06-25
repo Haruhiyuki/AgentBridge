@@ -16,7 +16,7 @@ This repository currently contains the first executable backend slice:
 - Optional SQLAlchemy persistence with an Alembic-managed schema.
 - Terminal input gateway with fake, tmux, and stdlib PTY backends plus writer-lease epoch enforcement.
 - Local Terminal Agent daemon over a token-protected Unix socket.
-- Optional token-gated REST APIs, WebSocket streams, and Terminal command transport.
+- Optional token/device-key gated REST APIs, WebSocket streams, and Terminal command transport.
 - Local Console Client with line-mode, scripted input, raw TTY passthrough, and cursor-based output observation through the lease gateway.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
 - Bot Gateway delivery service with persistent idempotent delivery records, WebSocket render subscriptions, in-memory text transport, and OneBot V11 HTTP transport.
@@ -32,7 +32,7 @@ This repository currently contains the first executable backend slice:
 - Built-in Admin Web pages for project/session operations, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
-Production PTY supervision, mTLS/device-key authentication, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
+Production PTY supervision, mTLS/managed device identity, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
 
 ## Development
 
@@ -167,14 +167,16 @@ JSON object mapping device IDs to secrets. REST clients present
 `device_id` plus `device_key` query parameters.
 
 Audit records can be queried through `GET /api/v1/audit` with optional `actor_id`,
-`action`, `project_id`, `session_id`, `interaction_id`, `trace_id`, and `limit`
-filters. Results are bounded and returned newest first for operational review.
+`action`, `project_id`, `session_id`, `interaction_id`, `trace_id`, `q`, and
+`limit` filters. `q` performs a case-insensitive contains match over audit
+`details`. Results are bounded and returned newest first for operational review.
 
 Semantic events can be searched across streams through `GET /api/v1/events` with
 optional `project_id`, `session_id`, `turn_id`, `interaction_id`, `event_type`,
-`source`, `trace_id`, and `limit` filters. This search endpoint returns bounded
-newest-first results for operational investigation; use the session replay endpoints
-when a client needs stream-order replay from `after_seq`.
+`source`, `trace_id`, `q`, and `limit` filters. `q` performs a case-insensitive
+contains match over event `payload`. This search endpoint returns bounded newest-first
+results for operational investigation; use the session replay endpoints when a client
+needs stream-order replay from `after_seq`.
 
 ## Terminal WebSocket
 
@@ -400,8 +402,9 @@ workspaces, creates sessions, and closes selected sessions through the same REST
 used by external clients. The interaction page lists and filters questions/approvals,
 creates new interactions, answers questions, votes on approvals, and cancels pending
 items. The audit/event page filters audit records, searches semantic events across
-streams, replays session semantic events, and can live-tail a selected session's event
-stream over WebSocket.
+streams, supports `q` text search over audit details and event payloads, replays
+session semantic events, and can live-tail a selected session's event stream over
+WebSocket.
 The policy editor lists rules, edits allow/deny match criteria, runs
 `/api/v1/access-policy/simulate`, and saves through the same audited REST APIs.
 
@@ -419,7 +422,7 @@ scripted admin page access. `AGENTBRIDGE_ADMIN_COOKIE_MAX_AGE_SECONDS` controls 
 lifetime, and `AGENTBRIDGE_ADMIN_COOKIE_SECURE` can force Secure cookie behavior when
 AgentBridge is deployed behind TLS. The unlocked Admin Web cookie is also accepted by
 the optional REST API token gate and same-origin WebSocket event streams. These MVP gates do not replace the planned
-mTLS/device-key authentication model.
+mTLS/managed-device authentication model.
 
 ## Console Client
 

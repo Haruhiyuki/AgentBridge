@@ -285,6 +285,18 @@ def test_sqlalchemy_repository_lists_filtered_audit_events(tmp_path):
         second_session.id,
         first_session.id,
     ]
+    workspace_query = restored.list_audit_events(
+        action="project.workspace_added",
+        payload_query=workspace.id,
+    )
+    assert [event.details["workspace_id"] for event in workspace_query] == [workspace.id]
+    assert (
+        restored.list_audit_events(
+            action="project.workspace_added",
+            payload_query="missing-workspace",
+        )
+        == []
+    )
     assert restored.list_audit_events(action="session.created", actor_id="missing") == []
 
 
@@ -360,6 +372,20 @@ def test_sqlalchemy_repository_lists_filtered_semantic_events(tmp_path):
         event_type="assistant.delta",
     )
     assert [event.id for event in session_filtered] == [first_event.id]
+    payload_filtered = restored.list_semantic_events(
+        project_id=project.id,
+        event_type="assistant.delta",
+        payload_query="second",
+    )
+    assert [event.id for event in payload_filtered] == [second_event.id]
+    assert (
+        restored.list_semantic_events(
+            project_id=project.id,
+            event_type="assistant.delta",
+            payload_query="missing-payload",
+        )
+        == []
+    )
     assert restored.list_semantic_events(trace_id="missing") == []
 
 

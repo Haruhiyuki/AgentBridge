@@ -391,6 +391,10 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
           <input id="audit-session" autocomplete="off" placeholder="optional">
         </label>
         <label class="compact">
+          Query
+          <input id="audit-query" autocomplete="off" placeholder="details text">
+        </label>
+        <label class="compact">
           Limit
           <input id="audit-limit" type="number" value="100" min="1" max="500">
         </label>
@@ -451,6 +455,10 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
         <label class="compact">
           Interaction
           <input id="event-interaction" autocomplete="off" placeholder="optional">
+        </label>
+        <label class="compact">
+          Query
+          <input id="event-query" autocomplete="off" placeholder="payload text">
         </label>
         <label class="compact">
           After Seq
@@ -668,6 +676,7 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
         ["action", "audit-action"],
         ["actor_id", "audit-actor"],
         ["session_id", "audit-session"],
+        ["q", "audit-query"],
         ["limit", "audit-limit"],
       ])}`);
       renderAudit(records);
@@ -696,6 +705,7 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
         ["trace_id", "event-trace"],
         ["turn_id", "event-turn"],
         ["interaction_id", "event-interaction"],
+        ["q", "event-query"],
         ["limit", "event-limit"],
       ])}`);
       renderEvents(events);

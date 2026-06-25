@@ -36,7 +36,7 @@ from agentbridge.domain import (
     Workspace,
     WriterLease,
 )
-from agentbridge.storage import InMemoryRepository
+from agentbridge.storage import InMemoryRepository, payload_contains_query
 
 metadata = MetaData()
 
@@ -393,6 +393,7 @@ class SQLAlchemyRepository(InMemoryRepository):
         session_id: str | None = None,
         interaction_id: str | None = None,
         trace_id: str | None = None,
+        payload_query: str | None = None,
         limit: int = 100,
     ) -> list[AuditEvent]:
         max_results = self._clamp_audit_limit(limit)
@@ -411,6 +412,7 @@ class SQLAlchemyRepository(InMemoryRepository):
                     and (session_id is None or event.session_id == session_id)
                     and (interaction_id is None or event.interaction_id == interaction_id)
                     and (trace_id is None or event.trace_id == trace_id)
+                    and payload_contains_query(event.details, payload_query)
                 ):
                     events.append(event)
                     if len(events) >= max_results:
@@ -427,6 +429,7 @@ class SQLAlchemyRepository(InMemoryRepository):
         event_type: str | None = None,
         source: SemanticEventSource | None = None,
         trace_id: str | None = None,
+        payload_query: str | None = None,
         limit: int = 100,
     ) -> list[SemanticEvent]:
         max_results = self._clamp_event_search_limit(limit)
@@ -451,9 +454,11 @@ class SQLAlchemyRepository(InMemoryRepository):
         events: list[SemanticEvent] = []
         with self._lock, self.engine.connect() as connection:
             for row in connection.execute(stmt):
-                events.append(SemanticEvent.model_validate(row.payload))
-                if len(events) >= max_results:
-                    break
+                event = SemanticEvent.model_validate(row.payload)
+                if payload_contains_query(event.payload, payload_query):
+                    events.append(event)
+                    if len(events) >= max_results:
+                        break
         return events
 
     def _persist_state(self) -> None:

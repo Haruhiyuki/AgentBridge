@@ -923,6 +923,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         event_type: str | None = None,
         source: SemanticEventSource | None = None,
         trace_id: str | None = None,
+        q: str | None = None,
         limit: int = 100,
     ):
         if session_id is not None:
@@ -937,6 +938,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             event_type=event_type,
             source=source,
             trace_id=trace_id,
+            payload_query=q,
             limit=limit,
         )
         return [event.model_dump(mode="json") for event in events]
@@ -1500,6 +1502,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         session_id: str | None = None,
         interaction_id: str | None = None,
         trace_id: str | None = None,
+        q: str | None = None,
         limit: int = 100,
     ):
         events = control.repository.list_audit_events(
@@ -1509,6 +1512,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             session_id=session_id,
             interaction_id=interaction_id,
             trace_id=trace_id,
+            payload_query=q,
             limit=limit,
         )
         return [event.model_dump(mode="json") for event in events]

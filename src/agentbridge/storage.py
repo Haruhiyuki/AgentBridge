@@ -64,6 +64,24 @@ def is_within(child: Path, parent: Path) -> bool:
     return child == parent or parent in child.parents
 
 
+def payload_contains_query(payload: object, query: str | None) -> bool:
+    if query is None:
+        return True
+    normalized_query = query.strip().casefold()
+    if not normalized_query:
+        return True
+    try:
+        serialized = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+    except TypeError:
+        serialized = str(payload)
+    return normalized_query in serialized.casefold()
+
+
 class InMemoryRepository:
     """Thread-safe in-memory repository for MVP contract tests and local prototypes."""
 
@@ -1066,6 +1084,7 @@ class InMemoryRepository:
         session_id: str | None = None,
         interaction_id: str | None = None,
         trace_id: str | None = None,
+        payload_query: str | None = None,
         limit: int = 100,
     ) -> list[AuditEvent]:
         max_results = self._clamp_audit_limit(limit)
@@ -1079,6 +1098,7 @@ class InMemoryRepository:
                     and (session_id is None or event.session_id == session_id)
                     and (interaction_id is None or event.interaction_id == interaction_id)
                     and (trace_id is None or event.trace_id == trace_id)
+                    and payload_contains_query(event.details, payload_query)
                 ):
                     events.append(event)
                     if len(events) >= max_results:
@@ -1152,6 +1172,7 @@ class InMemoryRepository:
         event_type: str | None = None,
         source: SemanticEventSource | None = None,
         trace_id: str | None = None,
+        payload_query: str | None = None,
         limit: int = 100,
     ) -> list[SemanticEvent]:
         max_results = self._clamp_event_search_limit(limit)
@@ -1166,6 +1187,7 @@ class InMemoryRepository:
                     and (event_type is None or event.type == event_type)
                     and (source is None or event.source == source)
                     and (trace_id is None or event.trace_id == trace_id)
+                    and payload_contains_query(event.payload, payload_query)
                 ):
                     events.append(event)
                     if len(events) >= max_results:
