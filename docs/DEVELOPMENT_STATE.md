@@ -100,6 +100,11 @@ Implemented in this slice:
 - Role binding REST APIs through `GET /api/v1/chat-contexts/{id}/roles`, `POST /api/v1/chat-contexts/{id}/roles/grant`, and `POST /api/v1/chat-contexts/{id}/roles/revoke`.
 - Alembic migration `0004_group_role_bindings` persists role bindings.
 - OneBot inbound permissions can now start from default `member` roles and rely on group bindings for `operator` capabilities.
+- Persistent access policy rules with `allow`/`deny` effects over action, resource type/id, actor IDs, roles, and exact-match attributes.
+- PolicyEngine evaluates enabled access policy rules before RBAC fallback; explicit deny rules win over allow rules.
+- Access policy management REST APIs through `GET/POST/PUT /api/v1/access-policy/rules` and `POST /api/v1/access-policy/rules/{id}/delete`.
+- Policy simulation REST API through `POST /api/v1/access-policy/simulate`, returning decision source, reason, required permission, roles, and matched rule ID.
+- Alembic migration `0007_access_policy_rules` persists access policy rules.
 - Focused unit/API tests for the above.
 
 Not implemented yet:
@@ -108,7 +113,8 @@ Not implemented yet:
 - Richer OneBot renderer/action adapter and native NoneBot lifecycle registration helpers.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
-- General ABAC policy editor for action/resource/attribute rules beyond approval quorum overrides.
+- Admin policy editor UI for access policy rules.
+- Full resource/attribute context wiring across every project/session/terminal permission check.
 - Production WebSocket hardening with mTLS/device keys.
 - Platform-specific rich card/button transport adapters and outbound message edit extensions beyond standard OneBot V11.
 - Native action/callback support for platforms that expose buttons or interactions.
@@ -141,6 +147,9 @@ Not implemented yet:
 - Approval quorum overrides are intentionally scoped and snapshotted at interaction creation. Chat-context overrides win over project overrides, and explicit per-interaction `required_votes` remains the strongest override.
 - OneBot inbound support currently executes text commands. The optional NoneBot wrapper can also map callback/action payloads that carry a command string through the same command execution path.
 - Group role bindings are scoped to a chat context and actor ID. This keeps OneBot user permissions local to the group/private context while still allowing command/API callers to carry bootstrap roles.
+- Access policy rules are stored separately from approval quorum overrides. Approval policy answers "how many votes"; access policy answers "who may do which action".
+- Access policy evaluation is deny-first and then allow-before-RBAC. This makes temporary freezes explicit while preserving the existing role matrix as the default baseline.
+- The first access policy slice supports resource and attribute matching in the engine and simulation API. Existing Control Plane calls without resource metadata enforce global action rules; resource-aware enforcement will expand as each business entry point passes stable resource context.
 - WebSocket session streams are read-side transports over immutable semantic events. They use `after_seq` cursors for replay/reconnect and do not mutate Bot delivery records.
 - Bot Gateway WebSocket subscriptions fan out render frames for external platform adapters, but do not store delivery records. Platform adapters report delivery acknowledgements, edits, and deletes explicitly through the delivery-result API keyed by message idempotency key.
 - Bot delivery platform state is stored on delivery records, not semantic events. Edits/deletes update platform lifecycle metadata and latest delivery text without rewriting the immutable event stream.
@@ -163,7 +172,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 ## Next Development Backlog
 
 1. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
-2. Expand policy engine to general ABAC action/resource/attribute rules and policy simulation.
+2. Wire resource/attribute access-policy context into every project/session/terminal permission check and add an admin policy editor UI.
 3. Replace the MVP WebSocket token gate with mTLS/device-key auth.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.
 5. Add platform-specific rich card/button transport adapters and outbound edit extensions.

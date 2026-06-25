@@ -28,6 +28,7 @@ This repository currently contains the first executable backend slice:
 - Risk-aware approval policy with configurable quorum and dangerous approval roles.
 - Project/chat-context approval quorum overrides through REST and `/agent policy`.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
+- Persistent access policy allow/deny rules with action/resource/actor/role/attribute matching and a simulation API.
 - REST API routes aligned with the design document's service interface.
 
 Admin Web, visible local console attachment, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
@@ -295,6 +296,28 @@ curl -X POST http://127.0.0.1:8000/api/v1/chat-contexts/<chat-context-id>/roles/
   -H 'content-type: application/json' \
   -d '{"actor":{"id":"usr_1","roles":["maintainer"]},"target_actor_id":"onebot:20002","roles":["operator"]}'
 ```
+
+## Access Policy Rules
+
+Maintainers can manage explicit access policy rules through REST. Rules match an action such as `session.send`, optional resource type/id, actor IDs, roles, and exact-match attributes. Matching deny rules override allow rules and the existing role permissions; matching allow rules can grant actions before the engine falls back to RBAC.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/access-policy/rules \
+  -H 'content-type: application/json' \
+  -d '{"actor":{"id":"usr_1","roles":["maintainer"]},"effect":"deny","action":"session.send","roles":["operator"],"description":"freeze operator sends"}'
+
+curl http://127.0.0.1:8000/api/v1/access-policy/rules
+```
+
+Use simulation before enabling a risky rule:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/access-policy/simulate \
+  -H 'content-type: application/json' \
+  -d '{"actor":{"id":"usr_1","roles":["maintainer"]},"target_actor":{"id":"usr_operator","roles":["operator"]},"action":"terminal.control","resource_type":"session","attributes":{"risk":"low"}}'
+```
+
+Rules are persisted by Alembic migration `0007_access_policy_rules`. Existing Control Plane permission checks already honor global action rules; resource and attribute context is available to the policy engine and simulation API and will be wired into more business-specific entry points as those workflows mature.
 
 ## Console Client
 

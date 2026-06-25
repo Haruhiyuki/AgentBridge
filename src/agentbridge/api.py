@@ -23,6 +23,7 @@ from agentbridge.bot_gateway import (
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
+    AccessPolicyEffect,
     Actor,
     AgentBridgeError,
     AgentType,
@@ -338,6 +339,45 @@ class ApprovalPolicyOverrideRequest(BaseModel):
     trace_id: str = "api"
 
 
+class AccessPolicyRuleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    rule_id: str | None = None
+    effect: AccessPolicyEffect
+    action: str
+    resource_type: str = "*"
+    resource_id: str | None = None
+    actor_ids: list[str] = Field(default_factory=list)
+    roles: list[str] = Field(default_factory=list)
+    attributes: dict[str, object] = Field(default_factory=dict)
+    description: str | None = None
+    priority: int = 100
+    enabled: bool = True
+    trace_id: str = "api"
+    chat_context_id: str | None = None
+
+
+class AccessPolicyDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    trace_id: str = "api"
+    chat_context_id: str | None = None
+
+
+class AccessPolicySimulationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    target_actor: ActorPayload
+    action: str
+    resource_type: str = "*"
+    resource_id: str | None = None
+    attributes: dict[str, object] = Field(default_factory=dict)
+    chat_context_id: str | None = None
+
+
 def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     control = control_plane or ControlPlane(
         repository=create_repository_from_env(),
@@ -595,6 +635,93 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             chat_context_id=chat_context_id,
         )
         return override.model_dump(mode="json")
+
+    @app.get("/api/v1/access-policy/rules")
+    def list_access_policy_rules(
+        enabled: bool | None = None,
+        control: ControlPlane = Depends(get_control),
+    ):
+        actor = Actor(id="api", roles={"admin"})
+        return [
+            rule.model_dump(mode="json")
+            for rule in control.list_access_policy_rules(actor=actor, enabled=enabled)
+        ]
+
+    @app.post("/api/v1/access-policy/rules")
+    def create_access_policy_rule(
+        payload: AccessPolicyRuleRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        rule = control.set_access_policy_rule(
+            actor=payload.actor.to_actor(),
+            rule_id=payload.rule_id,
+            effect=payload.effect,
+            action=payload.action,
+            resource_type=payload.resource_type,
+            resource_id=payload.resource_id,
+            actor_ids=payload.actor_ids,
+            roles=payload.roles,
+            attributes=payload.attributes,
+            description=payload.description,
+            priority=payload.priority,
+            enabled=payload.enabled,
+            trace_id=payload.trace_id,
+            chat_context_id=payload.chat_context_id,
+        )
+        return rule.model_dump(mode="json")
+
+    @app.put("/api/v1/access-policy/rules/{rule_id}")
+    def update_access_policy_rule(
+        rule_id: str,
+        payload: AccessPolicyRuleRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        rule = control.set_access_policy_rule(
+            actor=payload.actor.to_actor(),
+            rule_id=rule_id,
+            effect=payload.effect,
+            action=payload.action,
+            resource_type=payload.resource_type,
+            resource_id=payload.resource_id,
+            actor_ids=payload.actor_ids,
+            roles=payload.roles,
+            attributes=payload.attributes,
+            description=payload.description,
+            priority=payload.priority,
+            enabled=payload.enabled,
+            trace_id=payload.trace_id,
+            chat_context_id=payload.chat_context_id,
+        )
+        return rule.model_dump(mode="json")
+
+    @app.post("/api/v1/access-policy/rules/{rule_id}/delete")
+    def delete_access_policy_rule(
+        rule_id: str,
+        payload: AccessPolicyDeleteRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        rule = control.delete_access_policy_rule(
+            actor=payload.actor.to_actor(),
+            rule_id=rule_id,
+            trace_id=payload.trace_id,
+            chat_context_id=payload.chat_context_id,
+        )
+        return rule.model_dump(mode="json")
+
+    @app.post("/api/v1/access-policy/simulate")
+    def simulate_access_policy(
+        payload: AccessPolicySimulationRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        return control.simulate_access_policy(
+            actor=payload.actor.to_actor(),
+            target_actor=payload.target_actor.to_actor(),
+            action=payload.action,
+            resource_type=payload.resource_type,
+            resource_id=payload.resource_id,
+            attributes=payload.attributes,
+            chat_context_id=payload.chat_context_id,
+        )
 
     @app.get("/api/v1/sessions")
     def list_sessions(

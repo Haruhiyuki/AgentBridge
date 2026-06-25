@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from agentbridge.domain import (
+    AccessPolicyEffect,
+    AccessPolicyRule,
     Actor,
     AgentBridgeError,
     AgentSession,
@@ -41,6 +43,7 @@ class ControlPlane:
     ) -> None:
         self.repository = repository or InMemoryRepository()
         self.policy = policy or PolicyEngine()
+        self.policy.set_rule_provider(self.repository.list_access_policy_rules)
         self.approval_policy = approval_policy or ApprovalPolicy.default()
 
     def health(self) -> dict[str, object]:
@@ -930,6 +933,154 @@ class ControlPlane:
         self.policy.require(effective_actor, Permission.GROUP_ROLE_MANAGE)
         return self.repository.list_group_role_bindings(chat_context_id)
 
+    def list_access_policy_rules(
+        self,
+        *,
+        actor: Actor,
+        enabled: bool | None = None,
+        chat_context_id: str | None = None,
+    ) -> list[AccessPolicyRule]:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.policy.require(effective_actor, Permission.POLICY_MANAGE)
+        return self.repository.list_access_policy_rules(enabled)
+
+    def set_access_policy_rule(
+        self,
+        *,
+        actor: Actor,
+        effect: AccessPolicyEffect,
+        action: str,
+        trace_id: str,
+        rule_id: str | None = None,
+        resource_type: str = "*",
+        resource_id: str | None = None,
+        actor_ids: list[str] | None = None,
+        roles: list[str] | None = None,
+        attributes: dict[str, object] | None = None,
+        description: str | None = None,
+        priority: int = 100,
+        enabled: bool = True,
+        chat_context_id: str | None = None,
+    ) -> AccessPolicyRule:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.policy.require(effective_actor, Permission.POLICY_MANAGE)
+        normalized_roles = (
+            sorted(self._validated_group_roles(set(roles))) if roles else []
+        )
+        normalized_action = self._validated_policy_pattern(action, "action")
+        normalized_resource_type = self._validated_policy_pattern(
+            resource_type or "*", "resource_type"
+        )
+        rule = self.repository.upsert_access_policy_rule(
+            rule_id=rule_id,
+            effect=effect,
+            action=normalized_action,
+            resource_type=normalized_resource_type,
+            resource_id=resource_id,
+            actor_ids=actor_ids,
+            roles=normalized_roles,
+            attributes=attributes,
+            description=description,
+            priority=priority,
+            enabled=enabled,
+            updated_by=effective_actor.id,
+        )
+        self.audit(
+            action="access_policy.rule_upserted",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            details={
+                "rule_id": rule.id,
+                "effect": rule.effect.value,
+                "action": rule.action,
+                "resource_type": rule.resource_type,
+                "resource_id": rule.resource_id,
+                "enabled": rule.enabled,
+            },
+        )
+        self.emit_event(
+            event_type="access_policy.rule_upserted",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            payload={
+                "rule": rule.model_dump(mode="json"),
+                "updated_by": effective_actor.id,
+            },
+        )
+        return rule
+
+    def delete_access_policy_rule(
+        self,
+        *,
+        actor: Actor,
+        rule_id: str,
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> AccessPolicyRule:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.policy.require(effective_actor, Permission.POLICY_MANAGE)
+        existing = self.repository.get_access_policy_rule(rule_id)
+        deleted = self.repository.delete_access_policy_rule(rule_id) or existing
+        self.audit(
+            action="access_policy.rule_deleted",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            details={
+                "rule_id": deleted.id,
+                "effect": deleted.effect.value,
+                "action": deleted.action,
+                "resource_type": deleted.resource_type,
+                "resource_id": deleted.resource_id,
+            },
+        )
+        self.emit_event(
+            event_type="access_policy.rule_deleted",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            payload={"rule_id": deleted.id, "deleted_by": effective_actor.id},
+        )
+        return deleted
+
+    def simulate_access_policy(
+        self,
+        *,
+        actor: Actor,
+        target_actor: Actor,
+        action: str,
+        resource_type: str = "*",
+        resource_id: str | None = None,
+        attributes: dict[str, object] | None = None,
+        chat_context_id: str | None = None,
+    ) -> dict[str, object]:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.policy.require(effective_actor, Permission.POLICY_MANAGE)
+        effective_target = self.effective_actor(target_actor, chat_context_id)
+        normalized_action = self._validated_policy_pattern(action, "action")
+        normalized_resource_type = self._validated_policy_pattern(
+            resource_type or "*", "resource_type"
+        )
+        supplied_attributes = attributes or {}
+        decision = self.policy.evaluate(
+            effective_target,
+            normalized_action,
+            resource_type=normalized_resource_type,
+            resource_id=resource_id,
+            attributes=supplied_attributes,
+        )
+        return {
+            "decision": decision.to_payload(),
+            "target_actor": effective_target.model_dump(mode="json"),
+            "resource": {
+                "type": normalized_resource_type,
+                "id": resource_id,
+                "attributes": supplied_attributes,
+            },
+        }
+
     def get_approval_policy_state(
         self,
         *,
@@ -1134,6 +1285,16 @@ class ControlPlane:
                     "maintainer 或 admin。"
                 ),
                 details={"allowed_roles": sorted(ROLE_PERMISSIONS)},
+            )
+        return normalized
+
+    def _validated_policy_pattern(self, value: str, field_name: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                f"访问策略 {field_name} 不能为空。",
+                next_step="请提供权限动作或资源类型，或使用 * 表示通配。",
             )
         return normalized
 

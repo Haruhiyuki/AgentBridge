@@ -6,6 +6,7 @@ from agentbridge.api import create_app
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
+    AccessPolicyEffect,
     Actor,
     InteractionType,
     LeaseOwnerType,
@@ -14,6 +15,7 @@ from agentbridge.domain import (
     SemanticEventSource,
 )
 from agentbridge.persistence import SQLAlchemyRepository
+from agentbridge.policy import Permission
 
 
 def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
@@ -265,3 +267,33 @@ def test_approval_policy_overrides_survive_repository_restart(tmp_path):
     assert restored_override.quorum_by_risk == {RiskLevel.CRITICAL: 4}
     assert interaction.required_votes == 4
     assert interaction.policy_snapshot["applied_overrides"][0]["scope_id"] == project.id
+
+
+def test_access_policy_rules_survive_repository_restart(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'access-policy.db'}"
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+    operator = Actor(id="usr_operator", roles={"operator"})
+
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    first_control = ControlPlane(repository=first_repo)
+    rule = first_control.set_access_policy_rule(
+        actor=maintainer,
+        effect=AccessPolicyEffect.DENY,
+        action=Permission.SESSION_SEND.value,
+        roles=["operator"],
+        trace_id="access-policy-set",
+    )
+
+    second_repo = SQLAlchemyRepository(database_url)
+    second_control = ControlPlane(repository=second_repo)
+    restored_rule = second_repo.get_access_policy_rule(rule.id)
+    decision = second_control.simulate_access_policy(
+        actor=maintainer,
+        target_actor=operator,
+        action=Permission.SESSION_SEND.value,
+    )
+
+    assert restored_rule == rule
+    assert decision["decision"]["allowed"] is False
+    assert decision["decision"]["source"] == "access_policy"
+    assert decision["decision"]["matched_rule_id"] == rule.id

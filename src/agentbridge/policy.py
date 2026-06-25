@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, RiskLevel
+from agentbridge.domain import (
+    AccessPolicyEffect,
+    AccessPolicyRule,
+    Actor,
+    AgentBridgeError,
+    ErrorCode,
+    RiskLevel,
+)
 
 
 class Permission(StrEnum):
@@ -87,25 +95,163 @@ class ApprovalPolicy:
         }
 
 
+@dataclass(frozen=True)
+class PolicyDecision:
+    allowed: bool
+    source: str
+    reason: str
+    permission: str
+    roles: list[str]
+    matched_rule_id: str | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "allowed": self.allowed,
+            "source": self.source,
+            "reason": self.reason,
+            "permission": self.permission,
+            "roles": self.roles,
+        }
+        if self.matched_rule_id:
+            payload["matched_rule_id"] = self.matched_rule_id
+        return payload
+
+
 class PolicyEngine:
+    def __init__(
+        self,
+        rule_provider: Callable[[], list[AccessPolicyRule]] | None = None,
+    ) -> None:
+        self._rule_provider = rule_provider
+
+    def set_rule_provider(
+        self, rule_provider: Callable[[], list[AccessPolicyRule]] | None
+    ) -> None:
+        self._rule_provider = rule_provider
+
     def permissions_for(self, actor: Actor) -> set[Permission]:
         permissions: set[Permission] = set()
         for role in actor.roles:
             permissions.update(ROLE_PERMISSIONS.get(role, set()))
         return permissions
 
-    def allows(self, actor: Actor, permission: Permission) -> bool:
-        return permission in self.permissions_for(actor)
+    def allows(
+        self,
+        actor: Actor,
+        permission: Permission | str,
+        *,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        attributes: dict[str, object] | None = None,
+    ) -> bool:
+        return self.evaluate(
+            actor,
+            permission,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            attributes=attributes,
+        ).allowed
 
-    def require(self, actor: Actor, permission: Permission) -> None:
-        if self.allows(actor, permission):
+    def evaluate(
+        self,
+        actor: Actor,
+        permission: Permission | str,
+        *,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        attributes: dict[str, object] | None = None,
+        rules: list[AccessPolicyRule] | None = None,
+    ) -> PolicyDecision:
+        permission_value = self._permission_value(permission)
+        actor_roles = sorted(actor.roles)
+        supplied_attributes = attributes or {}
+        candidate_rules = rules
+        if candidate_rules is None:
+            candidate_rules = self._rule_provider() if self._rule_provider else []
+
+        matched_rules = [
+            rule
+            for rule in candidate_rules
+            if self._rule_matches(
+                rule,
+                actor=actor,
+                permission=permission_value,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                attributes=supplied_attributes,
+            )
+        ]
+        matched_rules.sort(key=lambda rule: (rule.priority, rule.id))
+        for rule in matched_rules:
+            if rule.effect == AccessPolicyEffect.DENY:
+                return PolicyDecision(
+                    allowed=False,
+                    source="access_policy",
+                    reason="matched_deny_rule",
+                    permission=permission_value,
+                    roles=actor_roles,
+                    matched_rule_id=rule.id,
+                )
+        if matched_rules:
+            return PolicyDecision(
+                allowed=True,
+                source="access_policy",
+                reason="matched_allow_rule",
+                permission=permission_value,
+                roles=actor_roles,
+                matched_rule_id=matched_rules[0].id,
+            )
+
+        role_permissions = self.permissions_for(actor)
+        try:
+            known_permission = Permission(permission_value)
+        except ValueError:
+            known_permission = None
+        allowed_by_role = (
+            known_permission is not None and known_permission in role_permissions
+        )
+        return PolicyDecision(
+            allowed=allowed_by_role,
+            source="role",
+            reason="role_permission" if allowed_by_role else "no_matching_rule_or_role",
+            permission=permission_value,
+            roles=actor_roles,
+        )
+
+    def require(
+        self,
+        actor: Actor,
+        permission: Permission | str,
+        *,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        attributes: dict[str, object] | None = None,
+    ) -> None:
+        decision = self.evaluate(
+            actor,
+            permission,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            attributes=attributes,
+        )
+        if decision.allowed:
             return
         raise AgentBridgeError(
             ErrorCode.PERMISSION_DENIED,
-            f"用户 {actor.id} 缺少权限 {permission.value}。",
+            f"用户 {actor.id} 缺少权限 {decision.permission}。",
             next_step="请让项目维护者授予对应角色，或使用具备权限的账号执行。",
             status_code=403,
-            details={"required_permission": permission.value, "roles": sorted(actor.roles)},
+            details={
+                "required_permission": decision.permission,
+                "roles": decision.roles,
+                "policy_source": decision.source,
+                "policy_reason": decision.reason,
+                **(
+                    {"matched_rule_id": decision.matched_rule_id}
+                    if decision.matched_rule_id
+                    else {}
+                ),
+            },
         )
 
     def require_approval_vote(self, actor: Actor, risk_level: RiskLevel) -> None:
@@ -113,3 +259,32 @@ class PolicyEngine:
             self.require(actor, Permission.APPROVAL_DANGEROUS)
             return
         self.require(actor, Permission.APPROVAL_VOTE)
+
+    def _rule_matches(
+        self,
+        rule: AccessPolicyRule,
+        *,
+        actor: Actor,
+        permission: str,
+        resource_type: str | None,
+        resource_id: str | None,
+        attributes: dict[str, object],
+    ) -> bool:
+        if not rule.enabled:
+            return False
+        if rule.action not in {"*", permission}:
+            return False
+        effective_resource_type = resource_type or "*"
+        if rule.resource_type not in {"*", effective_resource_type}:
+            return False
+        if rule.resource_id not in {None, "*", resource_id}:
+            return False
+        if rule.actor_ids and actor.id not in rule.actor_ids:
+            return False
+        if rule.roles and not set(rule.roles).intersection(actor.roles):
+            return False
+        return all(attributes.get(key) == value for key, value in rule.attributes.items())
+
+    @staticmethod
+    def _permission_value(permission: Permission | str) -> str:
+        return permission.value if isinstance(permission, Permission) else str(permission)

@@ -19,6 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.engine import Engine
 
 from agentbridge.domain import (
+    AccessPolicyRule,
     AgentSession,
     ApprovalPolicyOverride,
     AuditEvent,
@@ -103,6 +104,20 @@ approval_policy_overrides_table = Table(
     Column("scope_id", String(64), nullable=False, index=True),
     Column("payload", JSON, nullable=False),
     UniqueConstraint("scope_type", "scope_id", name="uq_approval_policy_scope"),
+)
+
+access_policy_rules_table = Table(
+    "access_policy_rules",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("effect", String(16), nullable=False, index=True),
+    Column("action", String(128), nullable=False, index=True),
+    Column("resource_type", String(128), nullable=False, index=True),
+    Column("resource_id", String(255), nullable=True, index=True),
+    Column("enabled", Boolean, nullable=False, index=True),
+    Column("priority", Integer, nullable=False, index=True),
+    Column("updated_at", String(64), nullable=False),
+    Column("payload", JSON, nullable=False),
 )
 
 sessions_table = Table(
@@ -219,6 +234,8 @@ class SQLAlchemyRepository(InMemoryRepository):
         "grant_group_roles",
         "revoke_group_roles",
         "upsert_approval_policy_override",
+        "upsert_access_policy_rule",
+        "delete_access_policy_rule",
         "bind_project",
         "update_active_project",
         "update_active_session",
@@ -289,6 +306,9 @@ class SQLAlchemyRepository(InMemoryRepository):
                     ApprovalPolicyOverride,
                 ).values()
             }
+            self.access_policy_rules = self._load_mapping(
+                connection, access_policy_rules_table, AccessPolicyRule
+            )
             self.chat_contexts = self._load_mapping(
                 connection, chat_contexts_table, ChatContext
             )
@@ -370,6 +390,7 @@ class SQLAlchemyRepository(InMemoryRepository):
                 interactions_table,
                 turns_table,
                 sessions_table,
+                access_policy_rules_table,
                 approval_policy_overrides_table,
                 group_role_bindings_table,
                 project_bindings_table,
@@ -458,6 +479,24 @@ class SQLAlchemyRepository(InMemoryRepository):
                         "payload": override.model_dump(mode="json"),
                     }
                     for override in self.approval_policy_overrides.values()
+                ],
+            )
+            self._insert_many(
+                connection,
+                access_policy_rules_table,
+                [
+                    {
+                        "id": rule.id,
+                        "effect": rule.effect.value,
+                        "action": rule.action,
+                        "resource_type": rule.resource_type,
+                        "resource_id": rule.resource_id,
+                        "enabled": rule.enabled,
+                        "priority": rule.priority,
+                        "updated_at": rule.updated_at.isoformat(),
+                        "payload": rule.model_dump(mode="json"),
+                    }
+                    for rule in self.access_policy_rules.values()
                 ],
             )
             self._insert_many(

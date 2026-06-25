@@ -9,6 +9,8 @@ from threading import RLock
 from uuid import uuid4
 
 from agentbridge.domain import (
+    AccessPolicyEffect,
+    AccessPolicyRule,
     Actor,
     AgentBridgeError,
     AgentSession,
@@ -74,6 +76,7 @@ class InMemoryRepository:
         self.approval_policy_overrides: dict[
             tuple[PolicyScope, str], ApprovalPolicyOverride
         ] = {}
+        self.access_policy_rules: dict[str, AccessPolicyRule] = {}
         self.chat_contexts: dict[str, ChatContext] = {}
         self.sessions: dict[str, AgentSession] = {}
         self.turns: dict[str, Turn] = {}
@@ -413,6 +416,69 @@ class InMemoryRepository:
                 overrides,
                 key=lambda override: (override.scope_type.value, override.scope_id),
             )
+
+    def upsert_access_policy_rule(
+        self,
+        *,
+        rule_id: str | None = None,
+        effect: AccessPolicyEffect,
+        action: str,
+        resource_type: str = "*",
+        resource_id: str | None = None,
+        actor_ids: list[str] | None = None,
+        roles: list[str] | None = None,
+        attributes: dict[str, object] | None = None,
+        description: str | None = None,
+        priority: int = 100,
+        enabled: bool = True,
+        updated_by: str,
+    ) -> AccessPolicyRule:
+        with self._lock:
+            existing = self.access_policy_rules.get(rule_id) if rule_id else None
+            now = utc_now()
+            rule = AccessPolicyRule(
+                id=rule_id or new_id("arul"),
+                effect=effect,
+                action=action,
+                resource_type=resource_type or "*",
+                resource_id=resource_id,
+                actor_ids=actor_ids or [],
+                roles=roles or [],
+                attributes=attributes or {},
+                description=description,
+                priority=priority,
+                enabled=enabled,
+                created_by=existing.created_by if existing else updated_by,
+                created_at=existing.created_at if existing else now,
+                updated_at=now,
+            )
+            self.access_policy_rules[rule.id] = rule
+            return rule
+
+    def get_access_policy_rule(self, rule_id: str) -> AccessPolicyRule:
+        with self._lock:
+            rule = self.access_policy_rules.get(rule_id)
+            if not rule:
+                raise AgentBridgeError(
+                    ErrorCode.NOT_FOUND,
+                    f"访问策略规则不存在：{rule_id}",
+                    next_step="请先查看访问策略规则列表。",
+                    status_code=404,
+                )
+            return rule
+
+    def delete_access_policy_rule(self, rule_id: str) -> AccessPolicyRule | None:
+        with self._lock:
+            return self.access_policy_rules.pop(rule_id, None)
+
+    def list_access_policy_rules(
+        self, enabled: bool | None = None
+    ) -> list[AccessPolicyRule]:
+        with self._lock:
+            rules = list(self.access_policy_rules.values())
+            if enabled is not None:
+                rules = [rule for rule in rules if rule.enabled == enabled]
+            return sorted(rules, key=lambda rule: (rule.priority, rule.created_at, rule.id))
 
     def _require_policy_scope(self, scope_type: PolicyScope, scope_id: str) -> None:
         if scope_type == PolicyScope.PROJECT:

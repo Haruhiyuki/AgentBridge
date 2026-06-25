@@ -178,6 +178,11 @@ class PolicyScope(StrEnum):
     CHAT_CONTEXT = "chat_context"
 
 
+class AccessPolicyEffect(StrEnum):
+    ALLOW = "allow"
+    DENY = "deny"
+
+
 class SemanticEventSource(StrEnum):
     CONTROL_PLANE = "control_plane"
     TERMINAL_AGENT = "terminal_agent"
@@ -290,6 +295,38 @@ class ApprovalPolicyOverride(BaseModel):
             if quorum < 1:
                 raise ValueError("quorum must be >= 1")
         return value
+
+
+class AccessPolicyRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    effect: AccessPolicyEffect
+    action: str
+    resource_type: str = "*"
+    resource_id: str | None = None
+    actor_ids: list[str] = Field(default_factory=list)
+    roles: list[str] = Field(default_factory=list)
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    description: str | None = None
+    priority: int = 100
+    enabled: bool = True
+    created_by: str
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+    @field_validator("action", "resource_type")
+    @classmethod
+    def validate_non_empty_pattern(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("policy pattern must not be empty")
+        return normalized
+
+    @field_validator("actor_ids", "roles")
+    @classmethod
+    def validate_non_empty_items(cls, value: list[str]) -> list[str]:
+        return [item.strip() for item in value if item.strip()]
 
 
 class AgentSession(BaseModel):
