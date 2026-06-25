@@ -57,6 +57,8 @@ Implemented in this slice:
 - Bot transport selection through `AGENTBRIDGE_BOT_TRANSPORT=onebot.v11` and `AGENTBRIDGE_ONEBOT_HTTP_URL`.
 - OneBot V11 inbound event adapter for group/private text messages and reply segments.
 - OneBot inbound API through `POST /api/v1/onebot/events`, converting `/agent` and `/ab` messages into the existing command execution flow.
+- Optional NoneBot wrapper module that normalizes NoneBot/OneBot-style message events into the existing command execution flow without adding a hard NoneBot dependency.
+- NoneBot callback/action payloads containing command strings can execute through the same audited `/agent` command path.
 - Bot delivery failure records with attempt count, last error, next retry time, and exponential backoff.
 - Retry API through `POST /api/v1/bot-gateway/retry-failed-deliveries`.
 - Alembic migration `0003_bot_delivery_retry_metadata` adds retry metadata columns.
@@ -92,13 +94,12 @@ Implemented in this slice:
 Not implemented yet:
 
 - Raw TTY console mode, brokered PTY host, desktop terminal auto-launch, and terminal resize observation.
-- NoneBot plugin wrapper and richer OneBot renderer/action adapter.
+- Richer OneBot renderer/action adapter and native NoneBot lifecycle registration helpers.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
 - ABAC policy editor and project/group-level approval rule management.
 - Authenticated Terminal Agent WebSocket command transport and production Bot Gateway push fan-out beyond the current session event streams.
 - Rich platform-specific renderer delivery state, message editing, and button/card support.
-- NoneBot plugin wrapper around the OneBot transport and inbound command/action event handling.
 - Native action/callback support for platforms that expose buttons or interactions.
 - Broader platform-specific delivery state, including message edits, deletes, acknowledgement tracking, and per-adapter action callbacks.
 - Normalized relational query layer for large audit/event searches; the current SQLAlchemy repository persists Pydantic payload snapshots with indexed routing columns.
@@ -118,7 +119,7 @@ Not implemented yet:
 - Rendering is split into platform-neutral documents and platform renderers. The first renderer intentionally targets text fallback so unsupported Bot platforms still receive coherent output.
 - Bot delivery idempotency is implemented before real platform integration so duplicate event replay cannot cause duplicate sends once a real transport is attached.
 - Bot delivery records are persisted separately from semantic events so replay, delivery retries, and platform message IDs can evolve without mutating event history.
-- OneBot outbound delivery is implemented as a transport contract first. Full NoneBot integration still needs inbound event parsing, lifecycle registration, and adapter-specific rate-limit handling.
+- OneBot outbound delivery is implemented as a transport contract first. The NoneBot wrapper is optional and dependency-free; full NoneBot integration still needs lifecycle registration, richer message components, and adapter-specific delivery capabilities.
 - Delivery retry state is stored on delivery records, not events, so the immutable semantic event stream remains replayable while platform delivery can fail and recover independently.
 - The retry worker reuses the Bot Gateway retry path instead of writing records directly. This keeps manual retry, background retry, and future scheduler behavior consistent.
 - Platform rate-limit policies intentionally schedule unsent records as `retrying` instead of sleeping inside request handlers. This keeps API calls bounded and leaves actual waiting to the retry worker.
@@ -126,7 +127,7 @@ Not implemented yet:
 - Interaction commands now route through the same command parser and audit chain as project/session commands. Approval voting is permission-gated by `approval.vote`; answering questions is gated by `session.send`.
 - Interaction expiry is a terminal state and never auto-approves. Reads and interaction actions opportunistically advance due interactions to `expired` so pending lists do not show stale approval requests.
 - Approval policy snapshots are copied onto each approval interaction so later policy changes do not rewrite historical approval requirements.
-- OneBot inbound support currently executes text commands only. Callback/button semantics remain platform-specific and should enter through the same command execution path once supported by an adapter.
+- OneBot inbound support currently executes text commands. The optional NoneBot wrapper can also map callback/action payloads that carry a command string through the same command execution path.
 - Group role bindings are scoped to a chat context and actor ID. This keeps OneBot user permissions local to the group/private context while still allowing command/API callers to carry bootstrap roles.
 - WebSocket session streams are read-side transports over immutable semantic events. They use `after_seq` cursors for replay/reconnect and do not mutate Bot delivery records.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
@@ -145,8 +146,8 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 ## Next Development Backlog
 
 1. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
-2. Add NoneBot plugin wrapper around the OneBot inbound/outbound adapters.
-3. Expand policy engine to ABAC policy rules and project/group-level approval policy management.
-4. Add authenticated WebSocket client contracts for Terminal Agent command transport and Bot Gateway subscriber fan-out.
-5. Add optional real-tmux integration smoke tests gated on tmux availability.
-6. Add richer platform delivery state for edits/deletes/acknowledgements.
+2. Expand policy engine to ABAC policy rules and project/group-level approval policy management.
+3. Add authenticated WebSocket client contracts for Terminal Agent command transport and Bot Gateway subscriber fan-out.
+4. Add optional real-tmux integration smoke tests gated on tmux availability.
+5. Add richer platform delivery state for edits/deletes/acknowledgements.
+6. Add native NoneBot matcher setup helpers once a NoneBot dependency boundary is selected.

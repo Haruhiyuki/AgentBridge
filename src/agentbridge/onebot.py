@@ -221,6 +221,7 @@ class OneBotInboundAdapter:
             bot_instance_id=self.bot_instance_id,
             chat_space_id=chat_space_id,
             user_id=command_user_id,
+            thread_id=self._string_field(event, "thread_id"),
             idempotency_key=f"onebot:{message_id}",
             trace_id=f"onebot:{message_id}",
             reply_message_id=self._reply_message_id(event),
@@ -254,6 +255,9 @@ class OneBotInboundAdapter:
         return ""
 
     def _reply_message_id(self, event: dict[str, Any]) -> str | None:
+        direct_reply = self._string_field(event, "reply_message_id")
+        if direct_reply is not None:
+            return direct_reply
         message = event.get("message")
         if not isinstance(message, list):
             return None
@@ -279,3 +283,31 @@ class OneBotInboundAdapter:
     def _string_field(event: dict[str, Any], key: str) -> str | None:
         value = event.get(key)
         return str(value) if value is not None else None
+
+
+def execute_onebot_inbound_command(
+    inbound: OneBotInboundCommand,
+    *,
+    command_service: Any,
+    control: Any,
+) -> dict[str, Any]:
+    context = control.get_or_create_chat_context(
+        bot_instance_id=inbound.bot_instance_id,
+        platform=inbound.platform.value,
+        chat_space_id=inbound.chat_space_id,
+        thread_id=inbound.thread_id,
+        user_id=inbound.user_id,
+    )
+    invocation = command_service.parse(
+        raw_text=inbound.raw_text,
+        actor=inbound.actor,
+        chat_context_id=context.id,
+        idempotency_key=inbound.idempotency_key,
+        trace_id=inbound.trace_id,
+    )
+    result = command_service.execute(invocation)
+    return {
+        "handled": True,
+        "chat_context_id": context.id,
+        "result": result.model_dump(mode="json"),
+    }

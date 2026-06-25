@@ -35,7 +35,11 @@ from agentbridge.domain import (
     WorkspaceType,
     utc_now,
 )
-from agentbridge.onebot import OneBotInboundAdapter, OneBotV11HTTPTransport
+from agentbridge.onebot import (
+    OneBotInboundAdapter,
+    OneBotV11HTTPTransport,
+    execute_onebot_inbound_command,
+)
 from agentbridge.persistence import SQLAlchemyRepository
 from agentbridge.policy import ApprovalPolicy, Permission
 from agentbridge.renderer import OneBotV11TextRenderer, document_from_event
@@ -947,26 +951,11 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         inbound = adapter.command_from_event(dict(payload.event))
         if inbound is None:
             return {"handled": False}
-        context = control.get_or_create_chat_context(
-            bot_instance_id=inbound.bot_instance_id,
-            platform=inbound.platform.value,
-            chat_space_id=inbound.chat_space_id,
-            thread_id=inbound.thread_id,
-            user_id=inbound.user_id,
+        return execute_onebot_inbound_command(
+            inbound,
+            command_service=command_service,
+            control=control,
         )
-        invocation = command_service.parse(
-            raw_text=inbound.raw_text,
-            actor=inbound.actor,
-            chat_context_id=context.id,
-            idempotency_key=inbound.idempotency_key,
-            trace_id=inbound.trace_id,
-        )
-        result = command_service.execute(invocation)
-        return {
-            "handled": True,
-            "chat_context_id": context.id,
-            "result": result.model_dump(mode="json"),
-        }
 
     @app.get("/api/v1/audit")
     def list_audit(control: ControlPlane = Depends(get_control)):

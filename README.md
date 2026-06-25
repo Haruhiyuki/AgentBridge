@@ -19,6 +19,7 @@ This repository currently contains the first executable backend slice:
 - Local Console Client that acquires human lease on first input and forwards terminal input.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
 - Bot Gateway delivery service with persistent idempotent delivery records, in-memory text transport, and OneBot V11 HTTP transport.
+- Optional NoneBot wrapper that normalizes message and action callback events into the existing `/agent` command path.
 - Background Bot delivery retry worker with configurable interval and batch-size guardrails.
 - Platform-scoped Bot delivery rate-limit policies that schedule unsent messages for retry.
 - Interaction and approval flow APIs with `/agent answer`, `/agent approve`, `/agent deny`, and `/agent approvals`.
@@ -27,7 +28,7 @@ This repository currently contains the first executable backend slice:
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - REST API routes aligned with the design document's service interface.
 
-NoneBot integration, Admin Web, visible local console attachment, and real Claude/Codex adapters are planned next milestones.
+Admin Web, visible local console attachment, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
 
 ## Development
 
@@ -148,7 +149,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/retry-worker/run-once \
   -d '{"limit":10}'
 ```
 
-The current in-memory transport is intended for contract tests; real NoneBot inbound handling is the next integration layer.
+The current in-memory transport is intended for contract tests.
 
 To send through a OneBot V11 HTTP endpoint:
 
@@ -169,6 +170,19 @@ curl -X POST http://127.0.0.1:8000/api/v1/onebot/events \
 ```
 
 Only `/agent` and `/ab` text commands are executed. Non-command messages are ignored.
+
+For NoneBot deployments, use the optional wrapper from application setup code and register the returned async handler with your NoneBot matcher:
+
+```python
+from agentbridge.control_plane import ControlPlane
+from agentbridge.nonebot_plugin import NoneBotAgentBridgePlugin
+
+control = ControlPlane()
+agentbridge = NoneBotAgentBridgePlugin(control=control, bot_instance_id="nonebot-main")
+handler = agentbridge.as_async_handler()
+```
+
+The wrapper has no hard NoneBot dependency. It accepts NoneBot/OneBot-style event objects, executes `/agent` and `/ab` text commands, and maps callback/action payloads containing a command string through the same audited command path.
 
 ## Interactions And Approvals
 
