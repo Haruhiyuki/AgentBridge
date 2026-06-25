@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -616,6 +617,10 @@ def test_tmux_backend_reuses_existing_session_after_agent_restart(monkeypatch, t
 def test_terminal_backend_env_selects_pty(monkeypatch):
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_BACKEND", "pty")
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_OUTPUT_LIMIT_CHARS", "2048")
+    monkeypatch.setenv(
+        "AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH",
+        "/tmp/agentbridge-test-pty-host-state.json",
+    )
     try:
         backend = create_terminal_backend_from_env()
     except AgentBridgeError as exc:
@@ -625,6 +630,8 @@ def test_terminal_backend_env_selects_pty(monkeypatch):
 
     assert isinstance(backend, PtyTerminalBackend)
     assert backend.max_output_chars == 2048
+    assert backend.host_state_store is not None
+    assert str(backend.host_state_store.path) == "/tmp/agentbridge-test-pty-host-state.json"
 
 
 def test_pty_backend_streams_process_output(tmp_path):
@@ -687,6 +694,41 @@ def test_pty_backend_status_reports_process_exit(tmp_path):
         assert status.pid is not None
     finally:
         backend.terminate(session_id)
+
+
+def test_pty_backend_persists_host_state(tmp_path):
+    shell = shutil.which("sh")
+    if shell is None:
+        pytest.skip("sh executable is required for PTY host state test")
+
+    host_state_path = tmp_path / "pty-host-state.json"
+    backend = PtyTerminalBackend(host_state_path=host_state_path)
+    session_id = "pty-host-state"
+    backend.start(
+        session_id=session_id,
+        cwd=str(tmp_path),
+        command=f"{shell} -c 'sleep 10'",
+    )
+    try:
+        status = backend.status(session_id=session_id)
+        assert status.running is True
+        assert backend.host_state_store is not None
+        record = backend.host_state_store.get(session_id)
+        assert record is not None
+        assert record.cwd == str(tmp_path)
+        assert record.command == f"{shell} -c 'sleep 10'"
+        assert record.host_pid == os.getpid()
+        assert record.child_pid == status.pid
+        assert record.status == "running"
+        assert host_state_path.exists()
+    finally:
+        backend.terminate(session_id)
+
+    assert backend.host_state_store is not None
+    record = backend.host_state_store.get(session_id)
+    assert record is not None
+    assert record.status == "terminated"
+    assert record.exit_code is not None
 
 
 def test_pty_backend_resets_when_cursor_falls_behind_retained_output(tmp_path):

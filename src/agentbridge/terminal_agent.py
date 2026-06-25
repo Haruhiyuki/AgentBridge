@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import pty
 import re
@@ -11,6 +12,7 @@ import signal as process_signal
 import struct
 import subprocess
 import termios
+import time
 from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -118,6 +120,114 @@ class TerminalBackend(Protocol):
 
 
 DEFAULT_PTY_OUTPUT_LIMIT_CHARS = 1_000_000
+
+
+@dataclass(frozen=True)
+class PtyHostStateRecord:
+    session_id: str
+    cwd: str
+    command: str
+    host_pid: int
+    child_pid: int
+    status: str
+    started_at: float
+    updated_at: float
+    exit_code: int | None = None
+    output_cursor: int = 0
+    output_base_cursor: int = 0
+    output_retained_chars: int = 0
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "cwd": self.cwd,
+            "command": self.command,
+            "host_pid": self.host_pid,
+            "child_pid": self.child_pid,
+            "status": self.status,
+            "started_at": self.started_at,
+            "updated_at": self.updated_at,
+            "exit_code": self.exit_code,
+            "output_cursor": self.output_cursor,
+            "output_base_cursor": self.output_base_cursor,
+            "output_retained_chars": self.output_retained_chars,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> PtyHostStateRecord:
+        return cls(
+            session_id=str(payload["session_id"]),
+            cwd=str(payload["cwd"]),
+            command=str(payload["command"]),
+            host_pid=int(payload["host_pid"]),
+            child_pid=int(payload["child_pid"]),
+            status=str(payload["status"]),
+            started_at=float(payload["started_at"]),
+            updated_at=float(payload["updated_at"]),
+            exit_code=(
+                int(payload["exit_code"]) if payload.get("exit_code") is not None else None
+            ),
+            output_cursor=int(payload.get("output_cursor") or 0),
+            output_base_cursor=int(payload.get("output_base_cursor") or 0),
+            output_retained_chars=int(payload.get("output_retained_chars") or 0),
+        )
+
+
+class PtyHostStateStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path.expanduser()
+        self._lock = RLock()
+
+    def load(self) -> dict[str, PtyHostStateRecord]:
+        with self._lock:
+            return self._load_unlocked()
+
+    def get(self, session_id: str) -> PtyHostStateRecord | None:
+        return self.load().get(session_id)
+
+    def upsert(self, record: PtyHostStateRecord) -> None:
+        with self._lock:
+            records = self._load_unlocked()
+            records[record.session_id] = record
+            self._write_unlocked(records)
+
+    def _load_unlocked(self) -> dict[str, PtyHostStateRecord]:
+        if not self.path.exists():
+            return {}
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        sessions = raw.get("sessions") or {}
+        if not isinstance(sessions, dict):
+            return {}
+        records: dict[str, PtyHostStateRecord] = {}
+        for session_id, payload in sessions.items():
+            if isinstance(session_id, str) and isinstance(payload, dict):
+                with suppress(KeyError, TypeError, ValueError):
+                    records[session_id] = PtyHostStateRecord.from_payload(payload)
+        return records
+
+    def _write_unlocked(self, records: dict[str, PtyHostStateRecord]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with suppress(OSError):
+            self.path.parent.chmod(0o700)
+        payload = {
+            "version": 1,
+            "updated_at": time.time(),
+            "sessions": {
+                session_id: record.to_payload()
+                for session_id, record in sorted(records.items())
+            },
+        }
+        tmp_path = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
+        tmp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(tmp_path, self.path)
 
 
 @dataclass
@@ -291,6 +401,8 @@ class TmuxTerminalBackend:
 class PtySession:
     process: subprocess.Popen[bytes]
     master_fd: int
+    cwd: str
+    command: str
     output: str = ""
     output_base_cursor: int = 0
     closed: bool = False
@@ -299,7 +411,12 @@ class PtySession:
 
 
 class PtyTerminalBackend:
-    def __init__(self, *, max_output_chars: int = DEFAULT_PTY_OUTPUT_LIMIT_CHARS) -> None:
+    def __init__(
+        self,
+        *,
+        max_output_chars: int = DEFAULT_PTY_OUTPUT_LIMIT_CHARS,
+        host_state_path: Path | None = None,
+    ) -> None:
         if not hasattr(pty, "openpty"):
             raise AgentBridgeError(
                 ErrorCode.PLATFORM_CAPABILITY_MISSING,
@@ -314,6 +431,9 @@ class PtyTerminalBackend:
                 next_step="请配置正整数的 PTY 输出保留字符数。",
             )
         self.max_output_chars = max_output_chars
+        self.host_state_store = (
+            PtyHostStateStore(host_state_path) if host_state_path is not None else None
+        )
         self.sessions: dict[str, PtySession] = {}
         self._lock = RLock()
 
@@ -356,7 +476,12 @@ class PtyTerminalBackend:
             finally:
                 with suppress(OSError):
                     os.close(slave_fd)
-            session = PtySession(process=process, master_fd=master_fd)
+            session = PtySession(
+                process=process,
+                master_fd=master_fd,
+                cwd=cwd,
+                command=command,
+            )
             reader = Thread(
                 target=self._read_loop,
                 args=(session,),
@@ -365,6 +490,7 @@ class PtyTerminalBackend:
             )
             session.reader = reader
             self.sessions[session_id] = session
+            self._persist_pty_host_state(session_id, session, status="running")
             reader.start()
 
     def write(self, *, session_id: str, data: str, kind: TerminalInputKind) -> None:
@@ -435,7 +561,7 @@ class PtyTerminalBackend:
             output_retained_chars = len(session.output)
             output_base_cursor = session.output_base_cursor
             output_cursor = output_base_cursor + output_retained_chars
-        return TerminalStatus(
+        status = TerminalStatus(
             started=True,
             running=exit_code is None,
             exit_code=exit_code,
@@ -444,13 +570,20 @@ class PtyTerminalBackend:
             output_base_cursor=output_base_cursor,
             output_retained_chars=output_retained_chars,
         )
+        self._persist_pty_host_state(
+            session_id,
+            session,
+            status="running" if exit_code is None else "exited",
+        )
+        return status
 
     def terminate(self, session_id: str) -> None:
         with self._lock:
             session = self.sessions.pop(session_id, None)
         if session is None:
             return
-        if session.process.poll() is None:
+        was_running = session.process.poll() is None
+        if was_running:
             try:
                 os.killpg(session.process.pid, process_signal.SIGTERM)
             except OSError:
@@ -465,6 +598,11 @@ class PtyTerminalBackend:
                 session.process.wait(timeout=2)
         with session.lock:
             session.closed = True
+        self._persist_pty_host_state(
+            session_id,
+            session,
+            status="terminated" if was_running else "exited",
+        )
         with suppress(OSError):
             os.close(session.master_fd)
         if session.reader:
@@ -521,6 +659,43 @@ class PtyTerminalBackend:
             if overflow > 0:
                 session.output = session.output[overflow:]
                 session.output_base_cursor += overflow
+
+    def _persist_pty_host_state(
+        self,
+        session_id: str,
+        session: PtySession,
+        *,
+        status: str,
+    ) -> None:
+        if self.host_state_store is None:
+            return
+        exit_code = session.process.poll()
+        now = time.time()
+        previous = self.host_state_store.get(session_id)
+        with session.lock:
+            output_retained_chars = len(session.output)
+            output_base_cursor = session.output_base_cursor
+            output_cursor = output_base_cursor + output_retained_chars
+        started_at = (
+            previous.started_at
+            if previous is not None and previous.child_pid == session.process.pid
+            else now
+        )
+        record = PtyHostStateRecord(
+            session_id=session_id,
+            cwd=session.cwd,
+            command=session.command,
+            host_pid=os.getpid(),
+            child_pid=session.process.pid,
+            status=status,
+            started_at=started_at,
+            updated_at=now,
+            exit_code=exit_code,
+            output_cursor=output_cursor,
+            output_base_cursor=output_base_cursor,
+            output_retained_chars=output_retained_chars,
+        )
+        self.host_state_store.upsert(record)
 
 
 class TerminalAgentService:

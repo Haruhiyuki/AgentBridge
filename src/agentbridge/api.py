@@ -5,6 +5,7 @@ import hmac
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 from time import monotonic
 
 import uvicorn
@@ -1893,7 +1894,11 @@ def create_terminal_backend_from_env():
     if backend == "tmux":
         return TmuxTerminalBackend()
     if backend in {"pty", "local_pty"}:
-        return PtyTerminalBackend(max_output_chars=terminal_pty_output_limit_from_env())
+        host_state_path = os.environ.get("AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH")
+        return PtyTerminalBackend(
+            max_output_chars=terminal_pty_output_limit_from_env(),
+            host_state_path=Path(host_state_path).expanduser() if host_state_path else None,
+        )
     raise RuntimeError("AGENTBRIDGE_TERMINAL_BACKEND must be one of: fake, tmux, pty")
 
 

@@ -39,6 +39,7 @@ Implemented in this slice:
 - Terminal Agent input gateway with fake, tmux, and stdlib PTY backends.
 - PTY backend launches local commands with `pty.openpty` and `subprocess.Popen`, owns process-group cleanup, reads the PTY master fd on a background thread, and exposes cursor-based output chunks.
 - PTY output retention is bounded by `AGENTBRIDGE_TERMINAL_PTY_OUTPUT_LIMIT_CHARS` (default `1000000`); stale cursors receive reset chunks with the retained tail instead of allowing unbounded memory growth.
+- PTY backend can persist a local JSON host-state registry through `AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH`, recording session ID, cwd, command, host pid, child pid, process status, exit code, and output cursor metadata for future host supervision.
 - Local Terminal Agent daemon using JSONL over a Unix socket with token authentication.
 - Local daemon actions for `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, `snapshot`, `status`, cursor-based `read_output`, and multi-frame `stream_output`.
 - Local Terminal Agent client waits briefly for Unix socket recovery, allowing console requests to survive short daemon restart windows.
@@ -125,7 +126,7 @@ Implemented in this slice:
 
 Not implemented yet:
 
-- Independent PTY host process supervision and durable PTY host state that can preserve or reattach actual PTY process/FD state across Agent process restarts.
+- Independent PTY host process supervision and durable PTY host state that can preserve or reattach actual PTY process/FD state across Agent process restarts; current host-state registry records metadata but does not yet keep the PTY master fd alive outside the Agent process.
 - Richer OneBot renderer/action adapter and native NoneBot lifecycle registration helpers.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
@@ -149,6 +150,7 @@ Not implemented yet:
 - Console raw mode is still an input/control passthrough over the Terminal Agent socket, not a full terminal emulator. Its daemon output stream consumes backend cursor chunks; with `AGENTBRIDGE_TERMINAL_BACKEND=pty` those chunks come from a stdlib PTY reader loop, while fake/tmux remain snapshot-derived.
 - The stdlib PTY backend is opt-in for local experiments. Fake remains the default test backend, and tmux remains the resumable MVP backend after Agent process restarts.
 - The PTY backend uses a bounded retained-output window rather than recording all terminal output. Cursor values are absolute within the session lifetime; when a reader falls behind the retained window, `read_output`/`stream_output` returns `reset=True` with the retained tail so consoles can repaint deterministically.
+- The PTY host-state registry is intentionally metadata-only for now. It gives a future external supervisor a durable view of child process identity, command, cwd, status, and output cursor, but it does not by itself preserve or reattach a lost PTY master fd.
 - Terminal exit observation can be driven by the in-process lifecycle monitor, so clients do not have to call `status` to produce `terminal.exited`. The monitor recovers tracked terminal generations from semantic events and emits `terminal.lost` when a recovered generation has no observable backend session. `restart_session` can explicitly recover a lost/exited backend from the latest persisted command, and the opt-in auto-restart policy can do that for lost recovered terminals with a bounded attempt count. Production lifecycle supervision still needs an independent PTY host or persistent scheduler that keeps the actual CLI/PTY process alive across Agent process restarts.
 - Automatic lost-terminal restart is disabled by default because restarting a native CLI can have side effects. Operators must opt in with `AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=true`, and `AGENTBRIDGE_TERMINAL_AUTO_RESTART_MAX_ATTEMPTS` bounds restart attempts per service process.
 - Desktop terminal auto-open is opt-in. Custom command templates remain supported, and built-in presets cover macOS Terminal plus common Linux terminal emulators. The daemon keeps sensitive local token/socket state out of launched argv; macOS Terminal uses a mode-0700 short-lived launcher script because AppleScript cannot directly propagate the daemon's environment into the new shell.
@@ -192,7 +194,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 
 ## Next Development Backlog
 
-1. Add production PTY lifecycle hardening, including independent host process supervision and durable PTY host state that can preserve or reattach live terminal processes.
+1. Add production PTY lifecycle hardening, including an independent PTY host process that keeps the master fd alive and can be reattached by the Agent after restart.
 2. Add an admin policy editor UI for access policy rules with simulation before save.
 3. Replace the MVP WebSocket token gate with mTLS/device-key auth.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.

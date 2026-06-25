@@ -69,6 +69,7 @@ The API uses a fake terminal backend by default for local contract tests. Use th
 ```bash
 export AGENTBRIDGE_TERMINAL_BACKEND=pty
 export AGENTBRIDGE_TERMINAL_PTY_OUTPUT_LIMIT_CHARS=1000000
+export AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH="$HOME/.agentbridge/pty-host-state.json"
 ```
 
 Use tmux when you want the MVP restart path to reuse an existing `agentbridge_<session-id>` session:
@@ -77,7 +78,7 @@ Use tmux when you want the MVP restart path to reuse an existing `agentbridge_<s
 export AGENTBRIDGE_TERMINAL_BACKEND=tmux
 ```
 
-Terminal input is accepted only when the request carries the current writer lease `epoch`, owner type, and owner ID. Stale Bot/Web inputs are rejected after human or higher-priority control preempts the lease. The PTY backend keeps a bounded cursor-addressable output window from the PTY master fd; stale readers receive a reset frame with the retained tail. Fake and tmux remain test/MVP backends.
+Terminal input is accepted only when the request carries the current writer lease `epoch`, owner type, and owner ID. Stale Bot/Web inputs are rejected after human or higher-priority control preempts the lease. The PTY backend keeps a bounded cursor-addressable output window from the PTY master fd; stale readers receive a reset frame with the retained tail. When `AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH` is set, PTY start/status/termination updates an atomic JSON host-state registry containing session ID, cwd, command, host pid, child pid, status, exit code, and output cursor metadata for future host supervision. Fake and tmux remain test/MVP backends.
 
 ## Local Terminal Agent
 
