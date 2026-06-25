@@ -21,6 +21,7 @@ from agentbridge.domain import (
     BotDeliveryResultAction,
     BotPlatform,
     ErrorCode,
+    InteractionType,
 )
 from agentbridge.persistence import SQLAlchemyRepository
 
@@ -593,7 +594,40 @@ def test_bot_gateway_websocket_fans_out_rendered_events(tmp_path):
         f"onebot.v11:{context.id}:{frame['event_id']}:0"
     )
     assert "任务已排队" in frame["messages"][0]["text"]
+    assert frame["actions"] == []
     assert idle == {"type": "idle_timeout", "last_seq": frame["seq"]}
+
+
+def test_bot_gateway_websocket_includes_button_action_descriptors(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+    interaction = control.create_interaction(
+        actor=maintainer,
+        session_id=session_id,
+        interaction_type=InteractionType.APPROVAL,
+        prompt="Allow deployment?",
+        required_votes=1,
+        trace_id="bot-ws-actions",
+    )
+    client = TestClient(create_app(control))
+
+    with client.websocket_connect(
+        "/api/v1/bot-gateway/session-events/ws"
+        f"?session_id={session_id}&chat_context_id={context.id}"
+        "&after_seq=2&idle_timeout_seconds=0"
+    ) as websocket:
+        frame = websocket.receive_json()
+
+    assert frame["type"] == "bot.render.create"
+    assert frame["event"]["type"] == "approval.requested"
+    assert [action["label"] for action in frame["actions"]] == ["批准一次", "拒绝"]
+    assert frame["actions"][0]["style"] == "primary"
+    assert frame["actions"][0]["payload"]["command"] == (
+        f"/agent approve {interaction.id} once"
+    )
+    assert frame["actions"][0]["callback_data"] == f"/agent approve {interaction.id} once"
+    assert f"/agent approve {interaction.id} once" in frame["messages"][0]["text"]
 
 
 def test_bot_gateway_websocket_requires_token_when_configured(monkeypatch, tmp_path):

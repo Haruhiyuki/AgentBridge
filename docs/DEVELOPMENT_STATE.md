@@ -54,6 +54,7 @@ Implemented in this slice:
 - In-memory Bot transport and idempotent delivery records keyed by platform, chat context, event, and message index.
 - Delivery APIs through `POST /api/v1/bot-gateway/deliver-session-events` and `GET /api/v1/bot-gateway/deliveries`.
 - Bot Gateway subscriber WebSocket through `/api/v1/bot-gateway/session-events/ws`, pushing `bot.render.create` frames with chat routing metadata and per-message idempotency keys.
+- Bot render frames include platform-neutral action descriptors for button-capable adapters, with callback payloads that route back into audited `/agent` commands.
 - Bot delivery result API through `POST /api/v1/bot-gateway/delivery-results`, tracking platform `acknowledge`, `edit`, and `delete` results by delivery idempotency key.
 - Bot Gateway outbound mutation APIs through `POST /api/v1/bot-gateway/deliveries/edit` and `/delete`, calling the selected transport before updating platform delivery state.
 - Bot delivery records are now domain/repository state and persist through Alembic migration `0002_bot_delivery_records`.
@@ -109,7 +110,7 @@ Not implemented yet:
 - Admin Web UI.
 - General ABAC policy editor for action/resource/attribute rules beyond approval quorum overrides.
 - Production WebSocket hardening with mTLS/device keys.
-- Rich button/card delivery support and platform-specific outbound message edit extensions beyond standard OneBot V11.
+- Platform-specific rich card/button transport adapters and outbound message edit extensions beyond standard OneBot V11.
 - Native action/callback support for platforms that expose buttons or interactions.
 - Broader per-adapter action callback state beyond command-carrying callbacks.
 - Normalized relational query layer for large audit/event searches; the current SQLAlchemy repository persists Pydantic payload snapshots with indexed routing columns.
@@ -144,6 +145,7 @@ Not implemented yet:
 - Bot Gateway WebSocket subscriptions fan out render frames for external platform adapters, but do not store delivery records. Platform adapters report delivery acknowledgements, edits, and deletes explicitly through the delivery-result API keyed by message idempotency key.
 - Bot delivery platform state is stored on delivery records, not semantic events. Edits/deletes update platform lifecycle metadata and latest delivery text without rewriting the immutable event stream.
 - Bot Gateway edit/delete APIs call transport-native operations first, then record platform state. OneBot V11 supports deletion through `delete_msg`; message editing is a platform-specific extension and intentionally reports capability missing for the standard OneBot V11 transport.
+- Render actions are emitted twice: as plain-text fallback commands and as structured button descriptors in Bot Gateway WebSocket frames. Platform adapters own conversion into native buttons/cards and should send callbacks carrying the descriptor payload command.
 - `AGENTBRIDGE_WS_TOKEN` is the current MVP WebSocket gate for local/browser clients. It is intentionally simpler than the design's production mTLS/device-key model, which remains future hardening work.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
 
@@ -164,5 +166,5 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 2. Expand policy engine to general ABAC action/resource/attribute rules and policy simulation.
 3. Replace the MVP WebSocket token gate with mTLS/device-key auth.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.
-5. Add richer button/card delivery support and platform-specific outbound edit extensions.
+5. Add platform-specific rich card/button transport adapters and outbound edit extensions.
 6. Add native NoneBot matcher setup helpers once a NoneBot dependency boundary is selected.

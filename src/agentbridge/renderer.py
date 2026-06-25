@@ -54,6 +54,18 @@ class RenderAction(BaseModel):
     style: RenderActionStyle = RenderActionStyle.DEFAULT
 
 
+class RenderActionDescriptor(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    type: str = "button"
+    label: str
+    style: RenderActionStyle = RenderActionStyle.DEFAULT
+    command: str
+    callback_data: str
+    payload: dict[str, Any]
+
+
 class RenderDocument(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -323,6 +335,27 @@ class PlainTextRenderer:
 
 class OneBotV11TextRenderer(PlainTextRenderer):
     """OneBot V11-safe text fallback. Rich CQ buttons are intentionally not emitted yet."""
+
+
+def render_action_descriptors(actions: list[RenderAction]) -> list[dict[str, Any]]:
+    return [render_action_descriptor(action).model_dump(mode="json") for action in actions]
+
+
+def render_action_descriptor(action: RenderAction) -> RenderActionDescriptor:
+    return RenderActionDescriptor(
+        id=action.id,
+        label=action.label,
+        style=action.style,
+        command=action.command,
+        callback_data=action.command,
+        payload={
+            "action_id": action.id,
+            "command": action.command,
+            "callback_data": action.command,
+            "label": action.label,
+            "style": action.style.value,
+        },
+    )
 
 
 def split_message(text: str, max_chars: int) -> list[str]:

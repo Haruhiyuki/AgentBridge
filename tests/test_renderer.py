@@ -10,6 +10,7 @@ from agentbridge.renderer import (
     RenderDocument,
     code_block,
     document_from_event,
+    render_action_descriptors,
 )
 
 
@@ -65,6 +66,34 @@ def test_approval_request_event_renders_approver_actions():
     assert "需要审批" in messages[0]
     assert "风险等级：high" in messages[0]
     assert "/agent approve int_1 once" in messages[0]
+
+
+def test_render_action_descriptors_are_callback_ready():
+    action = RenderAction(
+        id="approve-int_1",
+        label="批准一次",
+        command="/agent approve int_1 once",
+    )
+
+    descriptors = render_action_descriptors([action])
+
+    assert descriptors == [
+        {
+            "id": "approve-int_1",
+            "type": "button",
+            "label": "批准一次",
+            "style": "default",
+            "command": "/agent approve int_1 once",
+            "callback_data": "/agent approve int_1 once",
+            "payload": {
+                "action_id": "approve-int_1",
+                "command": "/agent approve int_1 once",
+                "callback_data": "/agent approve int_1 once",
+                "label": "批准一次",
+                "style": "default",
+            },
+        }
+    ]
 
 
 def test_interaction_expired_event_renders_operator_warning():

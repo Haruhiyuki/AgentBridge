@@ -147,7 +147,7 @@ External Bot Gateway subscribers can also receive Bot-facing render frames witho
 wscat -c 'ws://127.0.0.1:8000/api/v1/bot-gateway/session-events/ws?session_id=<session-id>&chat_context_id=<chat-context-id>&after_seq=42'
 ```
 
-Each pushed frame uses `type: "bot.render.create"` and includes the semantic event, render document, target chat context, platform, and per-message idempotency keys. Set `AGENTBRIDGE_WS_TOKEN` to protect this subscription endpoint in the same way as the other WebSocket routes.
+Each pushed frame uses `type: "bot.render.create"` and includes the semantic event, render document, target chat context, platform, per-message idempotency keys, and platform-neutral `actions` for button-capable adapters. Each action descriptor carries a label, style, command, `callback_data`, and payload that existing NoneBot callback handling can map back into the audited `/agent` command path. Set `AGENTBRIDGE_WS_TOKEN` to protect this subscription endpoint in the same way as the other WebSocket routes.
 
 Platform adapters can report delivery lifecycle results back to AgentBridge:
 

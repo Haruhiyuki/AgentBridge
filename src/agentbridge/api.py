@@ -46,7 +46,12 @@ from agentbridge.onebot import (
 )
 from agentbridge.persistence import SQLAlchemyRepository
 from agentbridge.policy import ApprovalPolicy, Permission
-from agentbridge.renderer import OneBotV11TextRenderer, RenderDocument, document_from_event
+from agentbridge.renderer import (
+    OneBotV11TextRenderer,
+    RenderDocument,
+    document_from_event,
+    render_action_descriptors,
+)
 from agentbridge.storage import InMemoryRepository
 from agentbridge.terminal_agent import (
     FakeTerminalBackend,
@@ -1313,6 +1318,7 @@ def bot_gateway_render_frame(
         "chat": chat_context.model_dump(mode="json"),
         "event": event.model_dump(mode="json"),
         "document": document.model_dump(mode="json"),
+        "actions": render_action_descriptors(document.actions),
         "messages": [
             {
                 "index": index,
