@@ -207,10 +207,11 @@ For persisted device identities, create or rotate a key through
 optional caller-supplied `device_key`. `allowed_scopes` can narrow the key or managed
 certificate fingerprint to one or more scopes: `http_api`, `audit_read`,
 `bot_gateway_read`, `bot_gateway_manage`, `onebot_event_ingest`, `command_parse`,
-`command_execute`, `device_manage`, `policy_read`, `policy_manage`, `group_role_manage`,
-`chat_context_manage`, `project_read`, `project_manage`, `session_read`, `session_manage`,
-`session_send`, `session_event_ingest`, `interaction_read`, `interaction_manage`,
-`terminal_read`, `terminal_control`, `session_events_ws`, `rendered_events_ws`, `terminal_ws`, and
+`command_execute`, `device_manage`, `policy_read`, `policy_manage`, `group_role_read`,
+`group_role_manage`, `chat_context_manage`, `project_read`, `project_manage`,
+`session_read`, `session_manage`, `session_send`, `session_event_ingest`,
+`interaction_read`, `interaction_manage`, `terminal_read`, `terminal_control`,
+`session_events_ws`, `rendered_events_ws`, `terminal_ws`, and
 `bot_gateway_ws`;
 omitting it grants all current scopes.
 Managed device credentials need `audit_read` to call audit and event history HTTP read APIs,
@@ -221,7 +222,8 @@ Bot Gateway HTTP mutation APIs,
 `device_manage` to call `/api/v1/device-identities` and its child routes,
 `policy_read` to call policy read and simulation routes, `policy_manage` to create,
 update, or delete access/approval policies,
-`group_role_manage` to call `/api/v1/chat-contexts/{id}/roles*`,
+`group_role_read` to list chat-context role bindings, `group_role_manage` to grant or
+revoke chat-context roles,
 `chat_context_manage` to create chat contexts or update their active project/session
 pointers, `project_read` to list projects, show project details, or list workspaces,
 `project_manage` to create projects, add workspaces, or bind projects to

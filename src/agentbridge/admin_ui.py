@@ -3444,6 +3444,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       "device_manage",
       "policy_read",
       "policy_manage",
+      "group_role_read",
       "group_role_manage",
       "chat_context_manage",
       "project_read",

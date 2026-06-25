@@ -196,6 +196,7 @@ class DeviceIdentityScope(StrEnum):
     DEVICE_MANAGE = "device_manage"
     POLICY_READ = "policy_read"
     POLICY_MANAGE = "policy_manage"
+    GROUP_ROLE_READ = "group_role_read"
     GROUP_ROLE_MANAGE = "group_role_manage"
     CHAT_CONTEXT_MANAGE = "chat_context_manage"
     PROJECT_READ = "project_read"

@@ -2330,6 +2330,13 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
     if path.endswith("/approval-policy"):
         return DeviceIdentityScope.POLICY_MANAGE
     if (
+        method == "GET"
+        and len(path_segments) >= 6
+        and path_segments[:4] == ["", "api", "v1", "chat-contexts"]
+        and path_segments[5] == "roles"
+    ):
+        return DeviceIdentityScope.GROUP_ROLE_READ
+    if (
         len(path_segments) >= 6
         and path_segments[:4] == ["", "api", "v1", "chat-contexts"]
         and path_segments[5] == "roles"

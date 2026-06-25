@@ -1566,6 +1566,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "device_manage" in html
     assert "policy_read" in html
     assert "policy_manage" in html
+    assert "group_role_read" in html
     assert "group_role_manage" in html
     assert "chat_context_manage" in html
     assert "project_read" in html
@@ -2258,7 +2259,66 @@ def test_managed_device_identity_requires_group_role_manage_scope_for_role_apis(
     assert grant_response.status_code == 403
 
 
-def test_managed_device_identity_group_role_manage_scope_allows_role_apis():
+def test_managed_device_identity_group_role_read_scope_allows_role_reads():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    context = client.post(
+        "/api/v1/chat-contexts",
+        json={
+            "bot_instance_id": "bot-test",
+            "platform": "onebot.v11",
+            "chat_space_id": "group-role-read-scope",
+        },
+    ).json()
+    setup_grant_response = client.post(
+        f"/api/v1/chat-contexts/{context['id']}/roles/grant",
+        json={
+            "actor": maintainer,
+            "target_actor_id": "usr_member",
+            "roles": ["operator"],
+            "trace_id": "group-role-read-setup-grant",
+        },
+    )
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "role-read-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "group_role_read"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "group-role-read-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "role-read-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    list_response = client.get(
+        f"/api/v1/chat-contexts/{context['id']}/roles",
+        headers=key_headers,
+    )
+    grant_response = client.post(
+        f"/api/v1/chat-contexts/{context['id']}/roles/grant",
+        json={
+            "actor": maintainer,
+            "target_actor_id": "usr_other",
+            "roles": ["operator"],
+            "trace_id": "group-role-read-denied-grant",
+        },
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert setup_grant_response.status_code == 200
+    assert create_response.status_code == 200
+    assert list_response.status_code == 200
+    assert [binding["actor_id"] for binding in list_response.json()] == ["usr_member"]
+    assert grant_response.status_code == 403
+
+
+def test_managed_device_identity_group_role_manage_scope_allows_role_writes():
     client = TestClient(create_app())
     admin = {"id": "security-admin", "roles": ["admin"]}
     maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
@@ -2313,8 +2373,7 @@ def test_managed_device_identity_group_role_manage_scope_allows_role_apis():
     assert create_response.status_code == 200
     assert grant_response.status_code == 200
     assert grant_response.json()["roles"] == ["operator"]
-    assert list_response.status_code == 200
-    assert [binding["actor_id"] for binding in list_response.json()] == ["usr_member"]
+    assert list_response.status_code == 403
     assert revoke_response.status_code == 200
     assert revoke_response.json() is None
 
