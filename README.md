@@ -206,12 +206,13 @@ For persisted device identities, create or rotate a key through
 `POST /api/v1/device-identities` with `device_id`, optional `display_name`, and an
 optional caller-supplied `device_key`. `allowed_scopes` can narrow the key or managed
 certificate fingerprint to one or more scopes: `http_api`, `bot_gateway_manage`,
-`command_execute`, `device_manage`, `policy_manage`, `group_role_manage`,
-`chat_context_manage`, `project_manage`, `session_manage`, `session_send`,
-`session_event_ingest`, `interaction_manage`, `terminal_control`, `session_events_ws`,
-`rendered_events_ws`, `terminal_ws`, and `bot_gateway_ws`; omitting it grants all
-current scopes. Managed device credentials need `bot_gateway_manage` to call Bot
-Gateway HTTP mutation APIs, `command_execute` to call `/api/v1/commands/execute`,
+`onebot_event_ingest`, `command_execute`, `device_manage`, `policy_manage`,
+`group_role_manage`, `chat_context_manage`, `project_manage`, `session_manage`,
+`session_send`, `session_event_ingest`, `interaction_manage`, `terminal_control`,
+`session_events_ws`, `rendered_events_ws`, `terminal_ws`, and `bot_gateway_ws`;
+omitting it grants all current scopes. Managed device credentials need
+`bot_gateway_manage` to call Bot Gateway HTTP mutation APIs, `onebot_event_ingest` to
+receive OneBot inbound events, `command_execute` to call `/api/v1/commands/execute`,
 `device_manage` to call `/api/v1/device-identities` and its child routes,
 `policy_manage` to call `/api/v1/access-policy*` or `*/approval-policy` routes,
 `group_role_manage` to call `/api/v1/chat-contexts/{id}/roles*`,
@@ -221,8 +222,9 @@ chat spaces, `session_manage` to create or close sessions and acquire or release
 leases, `session_send` to enqueue session turns, `session_event_ingest` to ingest
 Terminal Agent session events, `interaction_manage` to create interactions or answer,
 cancel, and vote on them, and `terminal_control` to call terminal start, restart,
-input, or lifecycle run-once HTTP routes. Command execution and direct turn enqueue
-still evaluate the command or turn actor through RBAC and access policy.
+input, or lifecycle run-once HTTP routes. Command execution, direct turn enqueue, and
+OneBot inbound commands still evaluate the effective actor through RBAC and access
+policy.
 `certificate_fingerprints` can bind one or more
 proxy-verified client certificate fingerprints to the same device identity. If a new
 identity has no certificate fingerprints and `device_key` is omitted, the server returns
@@ -370,6 +372,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/onebot/events \
 ```
 
 Only `/agent` and `/ab` text commands are executed. Non-command messages are ignored.
+Managed device credentials need `onebot_event_ingest` to call this endpoint.
 
 For NoneBot deployments, register a matcher from application setup code:
 

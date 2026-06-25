@@ -202,6 +202,7 @@ class DeviceIdentityScope(StrEnum):
     INTERACTION_MANAGE = "interaction_manage"
     TERMINAL_CONTROL = "terminal_control"
     BOT_GATEWAY_MANAGE = "bot_gateway_manage"
+    ONEBOT_EVENT_INGEST = "onebot_event_ingest"
     SESSION_EVENTS_WS = "session_events_ws"
     RENDERED_EVENTS_WS = "rendered_events_ws"
     TERMINAL_WS = "terminal_ws"

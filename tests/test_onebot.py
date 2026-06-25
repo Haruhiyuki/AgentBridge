@@ -360,6 +360,101 @@ def test_onebot_events_api_ignores_non_commands_and_executes_commands():
     assert handled.json()["result"]["canonical_command"] == "health"
 
 
+def test_managed_device_identity_requires_onebot_event_ingest_scope_for_events():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-onebot-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "onebot-scope-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-onebot-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    cert_headers = {"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"}
+    health_response = client.get("/api/v1/health", headers=key_headers)
+    key_event_response = client.post(
+        "/api/v1/onebot/events",
+        json={
+            "event": {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 10001,
+                "user_id": 20002,
+                "message_id": 30005,
+                "raw_message": "/agent health",
+            }
+        },
+        headers=key_headers,
+    )
+    cert_event_response = client.post(
+        "/api/v1/onebot/events",
+        json={
+            "event": {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 10001,
+                "user_id": 20002,
+                "message_id": 30006,
+                "raw_message": "/agent health",
+            }
+        },
+        headers=cert_headers,
+    )
+
+    assert create_identity_response.status_code == 200
+    assert health_response.status_code == 200
+    assert key_event_response.status_code == 403
+    assert cert_event_response.status_code == 403
+
+
+def test_managed_device_identity_onebot_event_ingest_scope_allows_events():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "onebot-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "onebot_event_ingest"],
+            "trace_id": "onebot-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "onebot-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    event_response = client.post(
+        "/api/v1/onebot/events",
+        json={
+            "event": {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 10001,
+                "user_id": 20002,
+                "message_id": 30007,
+                "raw_message": "/agent health",
+            }
+        },
+        headers=headers,
+    )
+
+    assert create_identity_response.status_code == 200
+    assert event_response.status_code == 200
+    assert event_response.json()["handled"] is True
+    assert event_response.json()["result"]["canonical_command"] == "health"
+
+
 def test_onebot_events_api_uses_group_role_bindings_for_permissions(tmp_path):
     client = TestClient(create_app())
     chat = {

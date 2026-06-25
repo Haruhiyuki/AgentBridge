@@ -1212,6 +1212,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "auth-device-key" in html
     assert "allowed-scopes" in html
     assert "bot_gateway_manage" in html
+    assert "onebot_event_ingest" in html
     assert "command_execute" in html
     assert "device_manage" in html
     assert "policy_manage" in html
