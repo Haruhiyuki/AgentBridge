@@ -204,15 +204,18 @@ JSON object mapping device IDs to secrets. REST clients present
 
 For persisted device identities, create or rotate a key through
 `POST /api/v1/device-identities` with `device_id`, optional `display_name`, and an
-optional caller-supplied `device_key`. `allowed_scopes` can narrow the key to one or
-more transport scopes: `http_api`, `session_events_ws`, `rendered_events_ws`,
-`terminal_ws`, and `bot_gateway_ws`; omitting it grants all current scopes. If
+optional caller-supplied `device_key`. `allowed_scopes` can narrow the key or managed
+certificate fingerprint to one or more transport scopes: `http_api`,
+`session_events_ws`, `rendered_events_ws`, `terminal_ws`, and `bot_gateway_ws`; omitting
+it grants all current scopes. `certificate_fingerprints` can bind one or more
+proxy-verified client certificate fingerprints to the same device identity. If
 `device_key` is omitted, the server returns a generated key once in the creation
-response. Stored keys are salted PBKDF2 hashes, successful managed-device
-authentication updates `last_used_at`, and list/revoke responses never include raw keys,
-hashes, or salts. Once any managed device identity exists, REST and WebSocket routes stay
-gated even if all managed devices are later revoked; use an admin/API token to create a
-new active device key and regain device-key access.
+response. Stored keys are salted PBKDF2 hashes, successful managed-device key or
+certificate authentication updates `last_used_at`, and list/revoke responses never
+include raw keys, hashes, or salts. Once any managed device identity exists, REST and
+WebSocket routes stay gated even if all managed devices are later revoked; use an
+admin/API token or global client-certificate fingerprint to create a new active device
+key and regain device-key access.
 
 For deployments behind a TLS-terminating reverse proxy that verifies client
 certificates, set `AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS` or
@@ -223,7 +226,9 @@ client certificate, and then set that header for AgentBridge. Fingerprints may b
 colon-separated hex and are reread from the file for each HTTP request or WebSocket
 connection. `AGENTBRIDGE_CLIENT_CERT_FINGERPRINT_HEADER` can override the trusted header
 name. Configuring this allowlist gates REST APIs, WebSocket routes, and `/admin` pages;
-an unreadable or empty fingerprint file fails closed.
+an unreadable or empty fingerprint file fails closed. For finer transport scoping and
+revocation, store fingerprints on managed device identities instead of the global
+allowlist.
 
 Audit records can be queried through `GET /api/v1/audit` with optional `actor_id`,
 `action`, `project_id`, `session_id`, `interaction_id`, `trace_id`, `q`, and
@@ -472,8 +477,8 @@ trigger a bounded run-once scan.
 The policy editor lists rules, edits allow/deny match criteria, runs
 `/api/v1/access-policy/simulate`, and saves through the same audited REST APIs.
 The device identities page lists active/revoked managed devices, creates or rotates
-device keys, edits transport scopes, shows last-used timestamps, shows the generated key
-once, and revokes selected devices.
+device keys, edits transport scopes and certificate fingerprints, shows last-used
+timestamps, shows the generated key once, and revokes selected devices.
 
 Set `AGENTBRIDGE_ADMIN_TOKEN` or `AGENTBRIDGE_ADMIN_TOKEN_FILE` to require a browser
 token before serving `/admin` pages. When `AGENTBRIDGE_API_TOKEN` or

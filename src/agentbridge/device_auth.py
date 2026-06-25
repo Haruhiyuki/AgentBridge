@@ -43,3 +43,16 @@ def verify_device_key(
         iterations=iterations,
     )
     return hmac.compare_digest(presented_hash, expected_hash)
+
+
+def normalize_certificate_fingerprint(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        return ""
+    prefix = "sha256:"
+    if normalized.lower().startswith(prefix):
+        normalized = normalized[len(prefix) :]
+    hex_chars = set("0123456789abcdefABCDEF:")
+    if all(char in hex_chars for char in normalized):
+        return normalized.replace(":", "").lower()
+    return normalized.lower()

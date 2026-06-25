@@ -3368,6 +3368,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
               <th>Name</th>
               <th>Status</th>
               <th>Scopes</th>
+              <th>Certs</th>
               <th>Created</th>
               <th>Last Used</th>
             </tr>
@@ -3410,6 +3411,10 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
         <label class="full">
           Allowed Scopes
           <input id="allowed-scopes">
+        </label>
+        <label class="full">
+          Certificate Fingerprints
+          <input id="certificate-fingerprints" placeholder="sha256 fingerprint allowlist">
         </label>
         <label class="full">
           New Device Key
@@ -3495,6 +3500,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
           device.display_name || "",
           device.status,
           (device.allowed_scopes || []).join(","),
+          (device.certificate_fingerprints || []).length,
           device.created_at || "",
           device.last_used_at || "",
         ]) {
@@ -3515,6 +3521,9 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       $("device-id").value = device.device_id;
       $("display-name").value = device.display_name || "";
       $("allowed-scopes").value = (device.allowed_scopes || []).join(",");
+      $("certificate-fingerprints").value = (
+        device.certificate_fingerprints || []
+      ).join(",");
       $("device-key").value = "";
       $("selected").textContent = JSON.stringify(device, null, 2);
       document.querySelectorAll("#devices tr").forEach((row) => {
@@ -3527,6 +3536,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       $("device-id").value = "";
       $("display-name").value = "";
       $("allowed-scopes").value = defaultScopes;
+      $("certificate-fingerprints").value = "";
       $("device-key").value = "";
       $("selected").textContent = "{}";
       $("generated-key").textContent = "{}";
@@ -3549,6 +3559,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
         display_name: $("display-name").value.trim() || null,
         device_key: $("device-key").value.trim() || null,
         allowed_scopes: csv($("allowed-scopes").value),
+        certificate_fingerprints: csv($("certificate-fingerprints").value),
         trace_id: "admin-ui-device-upsert",
       };
       const saved = await requestJson("/api/v1/device-identities", {

@@ -36,7 +36,7 @@ from agentbridge.bot_gateway import (
 )
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
-from agentbridge.device_auth import verify_device_key
+from agentbridge.device_auth import normalize_certificate_fingerprint, verify_device_key
 from agentbridge.domain import (
     AccessPolicyEffect,
     Actor,
@@ -371,6 +371,7 @@ class DeviceIdentityRequest(BaseModel):
     display_name: str | None = None
     device_key: str | None = None
     allowed_scopes: set[DeviceIdentityScope] | None = None
+    certificate_fingerprints: set[str] | None = None
     trace_id: str = "device-identity-api"
 
 
@@ -869,6 +870,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             display_name=payload.display_name,
             device_key=payload.device_key,
             allowed_scopes=payload.allowed_scopes,
+            certificate_fingerprints=payload.certificate_fingerprints,
             trace_id=payload.trace_id,
         )
         response = device_identity_public_payload(identity)
@@ -1611,6 +1613,7 @@ def device_identity_public_payload(identity: DeviceIdentity) -> dict[str, object
         "display_name": identity.display_name,
         "status": identity.status.value,
         "allowed_scopes": sorted(scope.value for scope in identity.allowed_scopes),
+        "certificate_fingerprints": sorted(identity.certificate_fingerprints),
         "created_by": identity.created_by,
         "created_at": identity.created_at.isoformat(),
         "revoked_at": identity.revoked_at.isoformat() if identity.revoked_at else None,
@@ -2157,7 +2160,11 @@ def http_api_request_authorized(
         return True
     presented_tokens = http_api_presented_tokens(request)
     return (
-        client_certificate_authorized(request.headers)
+        client_certificate_authorized(
+            request.headers,
+            control=control,
+            required_scope=DeviceIdentityScope.HTTP_API,
+        )
         or http_device_key_authorized(request, device_keys, control=control)
         or any(
             matching_token(presented_token, expected_tokens)
@@ -2282,7 +2289,11 @@ async def accept_authenticated_websocket(
     presented_token = websocket_presented_token(websocket, token)
     if matching_token(presented_token, expected_tokens):
         return True
-    if client_certificate_authorized(websocket.headers):
+    if client_certificate_authorized(
+        websocket.headers,
+        control=control,
+        required_scope=required_scope,
+    ):
         return True
     if websocket_device_key_authorized(
         websocket,
@@ -2412,7 +2423,7 @@ def configured_client_certificate_fingerprints() -> set[str]:
     return {
         fingerprint
         for value in raw_values
-        if (fingerprint := normalize_client_certificate_fingerprint(value))
+        if (fingerprint := normalize_certificate_fingerprint(value))
     }
 
 
@@ -2442,30 +2453,30 @@ def client_certificate_fingerprint_header_name() -> str:
     )
 
 
-def client_certificate_authorized(headers) -> bool:
-    fingerprints = configured_client_certificate_fingerprints()
-    if not fingerprints:
+def client_certificate_authorized(
+    headers,
+    *,
+    control: ControlPlane | None = None,
+    required_scope: DeviceIdentityScope | None = None,
+) -> bool:
+    global_fingerprints = configured_client_certificate_fingerprints()
+    if not global_fingerprints and (control is None or required_scope is None):
         return False
     presented_fingerprint = headers.get(client_certificate_fingerprint_header_name())
     if not presented_fingerprint:
         return False
-    return (
-        normalize_client_certificate_fingerprint(presented_fingerprint)
-        in fingerprints
+    normalized_fingerprint = normalize_certificate_fingerprint(presented_fingerprint)
+    if not normalized_fingerprint:
+        return False
+    if normalized_fingerprint in global_fingerprints:
+        return True
+    if control is None or required_scope is None:
+        return False
+    return matching_managed_device_certificate_fingerprint(
+        normalized_fingerprint,
+        control,
+        required_scope=required_scope,
     )
-
-
-def normalize_client_certificate_fingerprint(value: str) -> str:
-    normalized = value.strip()
-    if not normalized:
-        return ""
-    prefix = "sha256:"
-    if normalized.lower().startswith(prefix):
-        normalized = normalized[len(prefix) :]
-    hex_chars = set("0123456789abcdefABCDEF:")
-    if all(char in hex_chars for char in normalized):
-        return normalized.replace(":", "").lower()
-    return normalized.lower()
 
 
 def device_keys_configured() -> bool:
@@ -2541,6 +2552,28 @@ def matching_managed_device_key(
         return False
     control.repository.mark_device_identity_used(identity.device_id)
     return True
+
+
+def matching_managed_device_certificate_fingerprint(
+    presented_fingerprint: str,
+    control: ControlPlane,
+    *,
+    required_scope: DeviceIdentityScope,
+) -> bool:
+    for identity in control.repository.list_device_identities():
+        if identity.status != DeviceIdentityStatus.ACTIVE:
+            continue
+        if required_scope not in identity.allowed_scopes:
+            continue
+        fingerprints = {
+            fingerprint
+            for value in identity.certificate_fingerprints
+            if (fingerprint := normalize_certificate_fingerprint(value))
+        }
+        if presented_fingerprint in fingerprints:
+            control.repository.mark_device_identity_used(identity.device_id)
+            return True
+    return False
 
 
 def clamp_stream_limit(limit: int) -> int:

@@ -284,6 +284,7 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
             "display_name": "Maintainer laptop",
             "device_key": "managed-secret",
             "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
             "trace_id": "managed-device-create",
         },
     )
@@ -294,6 +295,10 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
             "x-agentbridge-device-id": "laptop",
             "x-agentbridge-device-key": "managed-secret",
         },
+    )
+    certificate_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
     )
     list_response = client.get(
         "/api/v1/device-identities",
@@ -317,6 +322,10 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
             "x-agentbridge-device-key": "managed-secret",
         },
     )
+    revoked_certificate_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
     still_gated_response = client.get("/api/v1/projects")
 
     assert create_response.status_code == 200
@@ -325,21 +334,26 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
     assert created["display_name"] == "Maintainer laptop"
     assert created["status"] == "active"
     assert created["allowed_scopes"] == ["http_api"]
+    assert created["certificate_fingerprints"] == ["aabbcc"]
     assert created["device_key"] == "managed-secret"
     assert "key_hash" not in created
     assert "key_salt" not in created
     assert denied_response.status_code == 403
     assert authorized_response.status_code == 200
     assert authorized_response.json() == []
+    assert certificate_response.status_code == 200
+    assert certificate_response.json() == []
     assert list_response.status_code == 200
     listed = list_response.json()[0]
     assert listed["device_id"] == "laptop"
     assert listed["allowed_scopes"] == ["http_api"]
+    assert listed["certificate_fingerprints"] == ["aabbcc"]
     assert listed["last_used_at"] is not None
     assert "device_key" not in listed
     assert revoke_response.status_code == 200
     assert revoke_response.json()["status"] == "revoked"
     assert revoked_key_response.status_code == 403
+    assert revoked_certificate_response.status_code == 403
     assert still_gated_response.status_code == 403
 
 
@@ -393,6 +407,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "async function revokeDevice()" in html
     assert "auth-device-key" in html
     assert "allowed-scopes" in html
+    assert "certificate-fingerprints" in html
     assert "generated-key" in html
 
 
@@ -1600,6 +1615,7 @@ def test_session_events_websocket_accepts_managed_device_key(tmp_path):
         actor=admin,
         device_id="laptop",
         device_key="managed-secret",
+        certificate_fingerprints={"AA:BB:CC"},
         trace_id="managed-device-ws-create",
     )
     actor = Actor(id="usr_1", roles={"maintainer"})
@@ -1641,10 +1657,22 @@ def test_session_events_websocket_accepts_managed_device_key(tmp_path):
     ) as websocket:
         message = websocket.receive_json()
         idle = websocket.receive_json()
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session.id}/events/ws?idle_timeout_seconds=0",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    ) as websocket:
+        certificate_message = websocket.receive_json()
+        certificate_idle = websocket.receive_json()
 
     assert message["type"] == "semantic_event"
     assert message["event"]["type"] == "session.created"
     assert idle == {"type": "idle_timeout", "last_seq": message["event"]["seq"]}
+    assert certificate_message["type"] == "semantic_event"
+    assert certificate_message["event"]["type"] == "session.created"
+    assert certificate_idle == {
+        "type": "idle_timeout",
+        "last_seq": certificate_message["event"]["seq"],
+    }
 
 
 def test_managed_device_identity_scope_limits_websocket(tmp_path):
@@ -1655,6 +1683,7 @@ def test_managed_device_identity_scope_limits_websocket(tmp_path):
         device_id="laptop",
         device_key="managed-secret",
         allowed_scopes={DeviceIdentityScope.HTTP_API},
+        certificate_fingerprints={"AA:BB:CC"},
         trace_id="managed-device-scope-create",
     )
     actor = Actor(id="usr_1", roles={"maintainer"})
@@ -1689,15 +1718,27 @@ def test_managed_device_identity_scope_limits_websocket(tmp_path):
             "x-agentbridge-device-key": "managed-secret",
         },
     )
+    http_certificate_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
     with client.websocket_connect(
         f"/api/v1/sessions/{session.id}/events/ws"
         "?device_id=laptop&device_key=managed-secret&idle_timeout_seconds=0"
     ) as websocket:
-        denied = websocket.receive_json()
+        key_denied = websocket.receive_json()
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session.id}/events/ws?idle_timeout_seconds=0",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    ) as websocket:
+        certificate_denied = websocket.receive_json()
 
     assert http_response.status_code == 200
-    assert denied["type"] == "error"
-    assert denied["error"]["error_code"] == "PERMISSION_DENIED"
+    assert http_certificate_response.status_code == 200
+    assert key_denied["type"] == "error"
+    assert key_denied["error"]["error_code"] == "PERMISSION_DENIED"
+    assert certificate_denied["type"] == "error"
+    assert certificate_denied["error"]["error_code"] == "PERMISSION_DENIED"
     identity = control.repository.get_device_identity("laptop")
     assert identity.last_used_at is not None
 

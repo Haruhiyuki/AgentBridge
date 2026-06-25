@@ -511,6 +511,7 @@ class InMemoryRepository:
         key_salt: str,
         key_iterations: int,
         allowed_scopes: set[DeviceIdentityScope] | None = None,
+        certificate_fingerprints: set[str] | None = None,
         updated_by: str,
     ) -> DeviceIdentity:
         normalized_device_id = device_id.strip()
@@ -532,6 +533,15 @@ class InMemoryRepository:
                     else set(DeviceIdentityScope)
                 )
             )
+            identity_certificate_fingerprints = (
+                set(certificate_fingerprints)
+                if certificate_fingerprints is not None
+                else (
+                    set(existing.certificate_fingerprints)
+                    if existing
+                    else set()
+                )
+            )
             identity = DeviceIdentity(
                 id=existing.id if existing else new_id("dev"),
                 device_id=normalized_device_id,
@@ -541,6 +551,7 @@ class InMemoryRepository:
                 key_iterations=key_iterations,
                 status=DeviceIdentityStatus.ACTIVE,
                 allowed_scopes=identity_scopes,
+                certificate_fingerprints=identity_certificate_fingerprints,
                 created_by=existing.created_by if existing else updated_by,
                 created_at=existing.created_at if existing else now,
                 revoked_at=None,
