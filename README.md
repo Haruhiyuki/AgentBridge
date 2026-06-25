@@ -16,6 +16,7 @@ This repository currently contains the first executable backend slice:
 - Optional SQLAlchemy persistence with an Alembic-managed schema.
 - Terminal input gateway with fake/tmux backends and writer-lease epoch enforcement.
 - Local Terminal Agent daemon over a token-protected Unix socket.
+- Optional token-gated WebSocket streams and Terminal command transport.
 - Local Console Client that acquires human lease on first input and forwards terminal input.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
 - Bot Gateway delivery service with persistent idempotent delivery records, in-memory text transport, and OneBot V11 HTTP transport.
@@ -109,6 +110,24 @@ wscat -c 'ws://127.0.0.1:8000/api/v1/sessions/<session-id>/rendered-events/ws?af
 ```
 
 Both streams emit replayed events first, then poll for new events. `after_seq`, `limit`, `poll_interval_seconds`, and `idle_timeout_seconds` are accepted as query parameters.
+
+Set `AGENTBRIDGE_WS_TOKEN` to require WebSocket clients to pass either `?token=...` or `Authorization: Bearer ...`. If the variable is unset, WebSocket routes stay open for local MVP development.
+
+## Terminal WebSocket
+
+Browser/native clients can send terminal control frames through:
+
+```bash
+wscat -c 'ws://127.0.0.1:8000/api/v1/sessions/<session-id>/terminal/ws?token=<token>'
+```
+
+Request frames are JSON objects with `id`, `type`, and `payload`. The server replies with `terminal.result` or `terminal.error`:
+
+```json
+{"id":"start","type":"start_session","payload":{"actor":{"id":"usr_1","roles":["maintainer"]},"command":"sh"}}
+```
+
+Supported actions are `health`, `start_session`, `acquire_lease`, `release_lease`, `submit_input`, and `snapshot`. `submit_input` uses the same writer lease `epoch`, owner type, owner ID, and request-idempotency checks as the REST terminal input endpoint.
 
 ## Bot Gateway Delivery
 

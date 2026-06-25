@@ -846,3 +846,151 @@ def test_session_events_websocket_reports_missing_session():
 
     assert message["type"] == "error"
     assert message["error"]["error_code"] == "NOT_FOUND"
+
+
+def test_session_events_websocket_requires_token_when_configured(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "secret")
+    client = TestClient(create_app())
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-events-ws-token",
+        prefix="event-ws-token",
+        name="Event WS Token",
+    )
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/events/ws?idle_timeout_seconds=0"
+    ) as websocket:
+        denied = websocket.receive_json()
+
+    assert denied["type"] == "error"
+    assert denied["error"]["error_code"] == "PERMISSION_DENIED"
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/events/ws?token=secret&idle_timeout_seconds=0"
+    ) as websocket:
+        message = websocket.receive_json()
+        idle = websocket.receive_json()
+
+    assert message["type"] == "semantic_event"
+    assert message["event"]["type"] == "session.created"
+    assert idle == {"type": "idle_timeout", "last_seq": message["event"]["seq"]}
+
+
+def test_terminal_websocket_accepts_commands_with_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "secret")
+    client = TestClient(create_app())
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-terminal-ws-token",
+        prefix="terminal-ws-token",
+        name="Terminal WS Token",
+    )
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/terminal/ws?token=secret"
+    ) as websocket:
+        websocket.send_json(
+            {
+                "id": "start",
+                "type": "start_session",
+                "payload": {
+                    "actor": actor,
+                    "command": "fake-cli",
+                    "trace_id": "terminal-ws-start",
+                },
+            }
+        )
+        started = websocket.receive_json()
+        assert started["type"] == "terminal.result"
+        assert started["id"] == "start"
+        assert started["ok"] is True
+        assert started["data"] == {"status": "started"}
+
+        websocket.send_json(
+            {
+                "id": "lease",
+                "type": "acquire_lease",
+                "payload": {
+                    "actor": actor,
+                    "owner_type": "web_admin",
+                    "owner_id": "usr_1",
+                    "trace_id": "terminal-ws-lease",
+                },
+            }
+        )
+        leased = websocket.receive_json()
+        epoch = leased["data"]["lease"]["epoch"]
+        assert leased["type"] == "terminal.result"
+        assert leased["ok"] is True
+
+        websocket.send_json(
+            {
+                "id": "input",
+                "type": "submit_input",
+                "payload": {
+                    "actor": actor,
+                    "epoch": epoch,
+                    "owner_type": "web_admin",
+                    "owner_id": "usr_1",
+                    "type": "text",
+                    "data": "hello ws\n",
+                    "request_id": "terminal-ws-input",
+                    "trace_id": "terminal-ws-input",
+                },
+            }
+        )
+        submitted = websocket.receive_json()
+        assert submitted["type"] == "terminal.result"
+        assert submitted["data"] == {"request_id": "terminal-ws-input"}
+
+        websocket.send_json(
+            {
+                "id": "snapshot",
+                "type": "snapshot",
+                "payload": {"actor": actor},
+            }
+        )
+        snapshot = websocket.receive_json()
+
+    assert snapshot["type"] == "terminal.result"
+    assert snapshot["data"] == {"snapshot": "hello ws\n"}
+
+
+def test_terminal_websocket_returns_error_frames_for_bad_lease(tmp_path):
+    client = TestClient(create_app())
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-terminal-ws-error",
+        prefix="terminal-ws-error",
+        name="Terminal WS Error",
+    )
+
+    with client.websocket_connect(f"/api/v1/sessions/{session_id}/terminal/ws") as websocket:
+        websocket.send_json(
+            {
+                "id": "stale-input",
+                "type": "submit_input",
+                "payload": {
+                    "actor": actor,
+                    "epoch": 1,
+                    "owner_type": "web_admin",
+                    "owner_id": "usr_1",
+                    "type": "text",
+                    "data": "stale\n",
+                    "request_id": "terminal-ws-stale",
+                    "trace_id": "terminal-ws-stale",
+                },
+            }
+        )
+        error = websocket.receive_json()
+
+    assert error["type"] == "terminal.error"
+    assert error["id"] == "stale-input"
+    assert error["ok"] is False
+    assert error["error"]["error_code"] == "LEASE_CONFLICT"

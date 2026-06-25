@@ -32,6 +32,7 @@ Implemented in this slice:
 - Idempotent Terminal Agent event ingestion through `POST /api/v1/sessions/{id}/events`.
 - Session semantic event WebSocket stream through `/api/v1/sessions/{id}/events/ws`, with `after_seq` replay and live tailing.
 - Bot-facing rendered event WebSocket stream through `/api/v1/sessions/{id}/rendered-events/ws`, returning render documents plus OneBot/plain-text messages.
+- Optional `AGENTBRIDGE_WS_TOKEN` authentication for session event, rendered event, and terminal command WebSocket routes.
 - SQLAlchemy-backed repository enabled with `AGENTBRIDGE_DATABASE_URL`.
 - Alembic initial migration for projects, workspaces, chat contexts, bindings, sessions, turns, interactions, writer leases, command idempotency records, audit events, and semantic events.
 - Recovery tests proving persisted control-plane state survives repository re-instantiation.
@@ -44,6 +45,7 @@ Implemented in this slice:
 - Console Client acquires a human writer lease on first input, caches the epoch, forwards text/paste/signal/resize through the daemon, and can release the lease on exit.
 - Terminal input request idempotency now prevents duplicate backend writes for repeated request IDs.
 - Terminal start/input/snapshot REST endpoints for MVP integration tests.
+- Terminal command WebSocket through `/api/v1/sessions/{id}/terminal/ws`, supporting `health`, `start_session`, `acquire_lease`, `release_lease`, `submit_input`, and `snapshot`.
 - Terminal input enforcement against current writer lease owner and epoch, with rejected/accepted semantic events.
 - RenderDocument intermediate representation for bot-facing messages.
 - OneBot/plain-text fallback renderer with code block preservation, action listing, and deterministic message splitting.
@@ -102,7 +104,7 @@ Not implemented yet:
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
 - General ABAC policy editor for action/resource/attribute rules beyond approval quorum overrides.
-- Authenticated Terminal Agent WebSocket command transport and production Bot Gateway push fan-out beyond the current session event streams.
+- Production WebSocket hardening with mTLS/device keys and Bot Gateway subscriber fan-out beyond the current session event streams.
 - Rich platform-specific renderer delivery state, message editing, and button/card support.
 - Native action/callback support for platforms that expose buttons or interactions.
 - Broader platform-specific delivery state, including message edits, deletes, acknowledgement tracking, and per-adapter action callbacks.
@@ -135,6 +137,7 @@ Not implemented yet:
 - OneBot inbound support currently executes text commands. The optional NoneBot wrapper can also map callback/action payloads that carry a command string through the same command execution path.
 - Group role bindings are scoped to a chat context and actor ID. This keeps OneBot user permissions local to the group/private context while still allowing command/API callers to carry bootstrap roles.
 - WebSocket session streams are read-side transports over immutable semantic events. They use `after_seq` cursors for replay/reconnect and do not mutate Bot delivery records.
+- `AGENTBRIDGE_WS_TOKEN` is the current MVP WebSocket gate for local/browser clients. It is intentionally simpler than the design's production mTLS/device-key model, which remains future hardening work.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
 
 ## Verification
@@ -152,7 +155,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 
 1. Upgrade the Console Client to raw TTY passthrough with safe terminal-state restoration and resize forwarding.
 2. Expand policy engine to general ABAC action/resource/attribute rules and policy simulation.
-3. Add authenticated WebSocket client contracts for Terminal Agent command transport and Bot Gateway subscriber fan-out.
+3. Replace the MVP WebSocket token gate with mTLS/device-key auth and add production Bot Gateway subscriber fan-out.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.
 5. Add richer platform delivery state for edits/deletes/acknowledgements.
 6. Add native NoneBot matcher setup helpers once a NoneBot dependency boundary is selected.

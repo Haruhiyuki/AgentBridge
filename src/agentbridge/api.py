@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -26,6 +27,7 @@ from agentbridge.domain import (
     AgentBridgeError,
     AgentType,
     BotDeliveryStatus,
+    ErrorCode,
     InteractionStatus,
     InteractionType,
     LeaseOwnerType,
@@ -696,6 +698,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         limit: int = 100,
         poll_interval_seconds: float = 0.25,
         idle_timeout_seconds: float | None = None,
+        token: str | None = None,
     ):
         await stream_session_events(
             websocket=websocket,
@@ -706,6 +709,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             poll_interval_seconds=poll_interval_seconds,
             idle_timeout_seconds=idle_timeout_seconds,
             rendered=False,
+            token=token,
         )
 
     @app.websocket("/api/v1/sessions/{session_id}/rendered-events/ws")
@@ -717,6 +721,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         limit: int = 100,
         poll_interval_seconds: float = 0.25,
         idle_timeout_seconds: float | None = None,
+        token: str | None = None,
     ):
         await stream_session_events(
             websocket=websocket,
@@ -727,6 +732,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             poll_interval_seconds=poll_interval_seconds,
             idle_timeout_seconds=idle_timeout_seconds,
             rendered=True,
+            token=token,
         )
 
     @app.post("/api/v1/sessions/{session_id}/events")
@@ -893,6 +899,22 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         control.policy.require(actor, Permission.SESSION_VIEW)
         return {"snapshot": terminal_service.snapshot(session_id=session_id)}
 
+    @app.websocket("/api/v1/sessions/{session_id}/terminal/ws")
+    async def terminal_command_websocket(
+        websocket: WebSocket,
+        session_id: str,
+        control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
+        token: str | None = None,
+    ):
+        await stream_terminal_commands(
+            websocket=websocket,
+            control=control,
+            terminal_service=terminal_service,
+            session_id=session_id,
+            token=token,
+        )
+
     @app.post("/api/v1/commands/parse")
     def parse_command(
         payload: CommandRequest,
@@ -1048,8 +1070,10 @@ async def stream_session_events(
     poll_interval_seconds: float,
     idle_timeout_seconds: float | None,
     rendered: bool,
+    token: str | None,
 ) -> None:
-    await websocket.accept()
+    if not await accept_authenticated_websocket(websocket, token=token):
+        return
     try:
         control.repository.get_session(session_id)
     except AgentBridgeError as exc:
@@ -1104,6 +1128,225 @@ async def stream_session_events(
             await asyncio.sleep(poll_interval)
     except WebSocketDisconnect:
         return
+
+
+async def stream_terminal_commands(
+    *,
+    websocket: WebSocket,
+    control: ControlPlane,
+    terminal_service: TerminalAgentService,
+    session_id: str,
+    token: str | None,
+) -> None:
+    if not await accept_authenticated_websocket(websocket, token=token):
+        return
+    try:
+        control.repository.get_session(session_id)
+    except AgentBridgeError as exc:
+        await websocket.send_json({"type": "error", "error": exc.to_payload()})
+        await websocket.close(code=1008)
+        return
+
+    try:
+        while True:
+            try:
+                frame = await websocket.receive_json()
+            except ValueError as exc:
+                await websocket.send_json(
+                    terminal_error_frame(None, invalid_terminal_frame(str(exc)))
+                )
+                continue
+            if not isinstance(frame, dict):
+                await websocket.send_json(
+                    terminal_error_frame(
+                        None,
+                        invalid_terminal_frame("WebSocket frame must be a JSON object."),
+                    )
+                )
+                continue
+            request_id = frame.get("id")
+            action = str(frame.get("type") or frame.get("action") or "")
+            try:
+                data = handle_terminal_ws_action(
+                    control=control,
+                    terminal_service=terminal_service,
+                    session_id=session_id,
+                    action=action,
+                    payload=terminal_ws_payload(frame),
+                )
+                await websocket.send_json(
+                    {
+                        "type": "terminal.result",
+                        "id": request_id,
+                        "action": action,
+                        "ok": True,
+                        "data": data,
+                    }
+                )
+            except AgentBridgeError as exc:
+                await websocket.send_json(terminal_error_frame(request_id, exc))
+            except (KeyError, TypeError, ValueError) as exc:
+                await websocket.send_json(
+                    terminal_error_frame(request_id, invalid_terminal_frame(str(exc)))
+                )
+    except WebSocketDisconnect:
+        return
+
+
+def handle_terminal_ws_action(
+    *,
+    control: ControlPlane,
+    terminal_service: TerminalAgentService,
+    session_id: str,
+    action: str,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    if action == "health":
+        return control.health()
+    if action == "start_session":
+        actor = actor_from_terminal_ws_payload(payload)
+        control.policy.require(actor, Permission.TERMINAL_CONTROL)
+        terminal_service.start_session(
+            session_id=session_id,
+            command=str(payload.get("command") or "sh"),
+            trace_id=str(payload.get("trace_id") or "terminal-ws"),
+        )
+        return {"status": "started"}
+    if action == "acquire_lease":
+        actor = actor_from_terminal_ws_payload(payload)
+        lease = control.acquire_lease(
+            actor=actor,
+            session_id=session_id,
+            owner_type=LeaseOwnerType(
+                str(payload.get("owner_type") or LeaseOwnerType.BOT.value)
+            ),
+            owner_id=required_ws_str(payload, "owner_id"),
+            ttl_seconds=int(payload.get("ttl_seconds") or 300),
+            trace_id=str(payload.get("trace_id") or "terminal-ws"),
+        )
+        return {"lease": lease.model_dump(mode="json")}
+    if action == "release_lease":
+        actor = actor_from_terminal_ws_payload(payload)
+        next_epoch = control.release_lease(
+            actor=actor,
+            session_id=session_id,
+            epoch=int(payload["epoch"]),
+            trace_id=str(payload.get("trace_id") or "terminal-ws"),
+        )
+        return {"next_epoch": next_epoch}
+    if action == "submit_input":
+        actor = actor_from_terminal_ws_payload(payload)
+        control.policy.require(actor, Permission.TERMINAL_CONTROL)
+        request_id = payload.get("request_id")
+        submitted_id = terminal_service.submit_input(
+            session_id=session_id,
+            epoch=int(payload["epoch"]),
+            owner_type=LeaseOwnerType(str(payload["owner_type"])),
+            owner_id=required_ws_str(payload, "owner_id"),
+            kind=TerminalInputKind(
+                str(payload.get("input_type") or payload.get("type") or "text")
+            ),
+            data=str(payload.get("data") or ""),
+            trace_id=str(payload.get("trace_id") or "terminal-ws"),
+            request_id=request_id if isinstance(request_id, str) else None,
+            cols=int(payload["cols"]) if payload.get("cols") is not None else None,
+            rows=int(payload["rows"]) if payload.get("rows") is not None else None,
+        )
+        return {"request_id": submitted_id}
+    if action == "snapshot":
+        actor = actor_from_terminal_ws_payload(payload)
+        control.policy.require(actor, Permission.SESSION_VIEW)
+        return {"snapshot": terminal_service.snapshot(session_id=session_id)}
+    raise AgentBridgeError(
+        ErrorCode.COMMAND_UNKNOWN,
+        f"未知 Terminal WebSocket action：{action}",
+        next_step=(
+            "请使用 health、start_session、acquire_lease、release_lease、"
+            "submit_input 或 snapshot。"
+        ),
+    )
+
+
+def terminal_ws_payload(frame: dict[object, object]) -> dict[str, object]:
+    payload = frame.get("payload")
+    if payload is None:
+        payload = {
+            key: value for key, value in frame.items() if key not in {"id", "type", "action"}
+        }
+    if not isinstance(payload, dict):
+        raise TypeError("payload must be an object")
+    return {str(key): value for key, value in payload.items()}
+
+
+def actor_from_terminal_ws_payload(payload: dict[str, object]) -> Actor:
+    actor_payload = payload.get("actor") or {}
+    if not isinstance(actor_payload, dict):
+        raise TypeError("actor must be an object")
+    return ActorPayload.model_validate(actor_payload).to_actor()
+
+
+def required_ws_str(payload: dict[str, object], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            f"缺少必需字段：{key}",
+            next_step=f"请在 payload 中提供 {key}。",
+        )
+    return value
+
+
+def terminal_error_frame(request_id: object, exc: AgentBridgeError) -> dict[str, object]:
+    return {
+        "type": "terminal.error",
+        "id": request_id,
+        "ok": False,
+        "error": exc.to_payload(),
+    }
+
+
+def invalid_terminal_frame(reason: str) -> AgentBridgeError:
+    return AgentBridgeError(
+        ErrorCode.COMMAND_ARGUMENT_INVALID,
+        "Terminal WebSocket 请求格式无效。",
+        next_step="请发送包含 type/action 和 payload 的 JSON 对象。",
+        details={"reason": reason},
+    )
+
+
+async def accept_authenticated_websocket(
+    websocket: WebSocket,
+    *,
+    token: str | None,
+) -> bool:
+    await websocket.accept()
+    expected_token = os.environ.get("AGENTBRIDGE_WS_TOKEN", "").strip()
+    if not expected_token:
+        return True
+    presented_token = websocket_presented_token(websocket, token)
+    if presented_token and hmac.compare_digest(presented_token, expected_token):
+        return True
+    error = AgentBridgeError(
+        ErrorCode.PERMISSION_DENIED,
+        "WebSocket token 无效。",
+        next_step="请使用当前 AGENTBRIDGE_WS_TOKEN 重新连接。",
+        status_code=403,
+    )
+    await websocket.send_json({"type": "error", "error": error.to_payload()})
+    await websocket.close(code=1008)
+    return False
+
+
+def websocket_presented_token(websocket: WebSocket, token: str | None) -> str | None:
+    if token:
+        return token
+    authorization = websocket.headers.get("authorization")
+    if not authorization:
+        return None
+    prefix = "Bearer "
+    if authorization.startswith(prefix):
+        return authorization[len(prefix) :].strip()
+    return authorization.strip()
 
 
 def clamp_stream_limit(limit: int) -> int:
