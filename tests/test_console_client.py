@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
-from agentbridge.console_client import LocalConsoleClient, RawTerminalMode, run_raw_mode
+from agentbridge.console_client import (
+    TERMINAL_REPAINT_PREFIX,
+    LocalConsoleClient,
+    RawTerminalMode,
+    follow_terminal_output,
+    run_raw_mode,
+    terminal_snapshot_update,
+)
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, Visibility
 from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService
@@ -175,6 +183,7 @@ def test_raw_console_mode_forwards_bytes_signals_resize_and_restores():
             await run_raw_mode(
                 client,  # type: ignore[arg-type]
                 input_file=PipeInput(read_fd),
+                follow_output=False,
                 size_provider=lambda: os.terminal_size((120, 40)),
                 raw_mode_factory=lambda fd: RecordingRawMode(fd, raw_events),
             )
@@ -193,3 +202,38 @@ def test_raw_console_mode_forwards_bytes_signals_resize_and_restores():
     ]
     assert raw_events[0][0] == "enter"
     assert raw_events[1][0] == "exit"
+
+
+def test_terminal_snapshot_update_appends_or_repaints():
+    assert terminal_snapshot_update("", "hello") == f"{TERMINAL_REPAINT_PREFIX}hello"
+    assert terminal_snapshot_update("hello", "hello world") == " world"
+    assert terminal_snapshot_update("hello world", "hello world") == ""
+    assert (
+        terminal_snapshot_update("old screen", "new screen")
+        == f"{TERMINAL_REPAINT_PREFIX}new screen"
+    )
+
+
+def test_follow_terminal_output_writes_snapshot_changes():
+    class FakeClient:
+        def __init__(self) -> None:
+            self.snapshots = iter(["hello", "hello world", "new screen"])
+
+        async def snapshot(self) -> str:
+            return next(self.snapshots)
+
+    async def scenario():
+        output = io.StringIO()
+        await follow_terminal_output(
+            FakeClient(),  # type: ignore[arg-type]
+            output_file=output,
+            poll_interval_seconds=0.01,
+            max_iterations=3,
+        )
+        return output.getvalue()
+
+    assert asyncio.run(scenario()) == (
+        f"{TERMINAL_REPAINT_PREFIX}hello"
+        " world"
+        f"{TERMINAL_REPAINT_PREFIX}new screen"
+    )

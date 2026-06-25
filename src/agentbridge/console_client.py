@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import os
 import shutil
 import signal
@@ -38,6 +39,7 @@ RAW_SIGNAL_BYTES = {
     0x03: "interrupt",
     0x04: "eof",
 }
+TERMINAL_REPAINT_PREFIX = "\x1b[H\x1b[2J"
 
 
 class RawTerminalMode:
@@ -275,6 +277,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run raw TTY passthrough mode; Ctrl-] exits the console",
     )
+    parser.add_argument(
+        "--no-follow-output",
+        action="store_true",
+        help="Disable snapshot polling output while running --raw",
+    )
+    parser.add_argument(
+        "--output-poll-interval",
+        type=float,
+        default=0.25,
+        help="Seconds between terminal snapshot polls in raw mode",
+    )
     return parser
 
 
@@ -303,7 +316,11 @@ async def async_main(argv: list[str] | None = None) -> int:
             print(await client.snapshot())
             return 0
         if args.raw:
-            await run_raw_mode(client)
+            await run_raw_mode(
+                client,
+                follow_output=not args.no_follow_output,
+                output_poll_interval_seconds=args.output_poll_interval,
+            )
             return 0
         await run_line_mode(client)
         return 0
@@ -324,6 +341,39 @@ async def run_line_mode(client: LocalConsoleClient) -> None:
 
 def decode_raw_input(chunk: bytes) -> str:
     return chunk.decode("utf-8", errors="replace")
+
+
+def terminal_snapshot_update(previous: str, current: str) -> str:
+    if current == previous:
+        return ""
+    if previous and current.startswith(previous):
+        return current[len(previous) :]
+    return f"{TERMINAL_REPAINT_PREFIX}{current}"
+
+
+async def follow_terminal_output(
+    client: LocalConsoleClient,
+    *,
+    output_file: Any | None = None,
+    poll_interval_seconds: float = 0.25,
+    stop_event: asyncio.Event | None = None,
+    max_iterations: int | None = None,
+) -> None:
+    output_file = output_file or sys.stdout
+    previous = ""
+    iterations = 0
+    poll_interval_seconds = max(poll_interval_seconds, 0.01)
+    while stop_event is None or not stop_event.is_set():
+        current = await client.snapshot()
+        update = terminal_snapshot_update(previous, current)
+        if update:
+            output_file.write(update)
+            output_file.flush()
+        previous = current
+        iterations += 1
+        if max_iterations is not None and iterations >= max_iterations:
+            return
+        await asyncio.sleep(poll_interval_seconds)
 
 
 async def forward_raw_input(client: LocalConsoleClient, chunk: bytes) -> None:
@@ -354,10 +404,13 @@ async def run_raw_mode(
     client: LocalConsoleClient,
     *,
     input_file: Any | None = None,
+    output_file: Any | None = None,
     read_size: int = 4096,
     exit_byte: bytes = RAW_EXIT_BYTE,
     size_provider: Callable[[], os.terminal_size] = shutil.get_terminal_size,
     raw_mode_factory: Callable[[int], Any] = RawTerminalMode,
+    follow_output: bool = True,
+    output_poll_interval_seconds: float = 0.25,
 ) -> None:
     input_file = input_file or sys.stdin.buffer
     if hasattr(input_file, "isatty") and not input_file.isatty():
@@ -369,6 +422,8 @@ async def run_raw_mode(
     fd = input_file.fileno()
     loop = asyncio.get_running_loop()
     pending_resize_tasks: set[asyncio.Task[None]] = set()
+    stop_output = asyncio.Event()
+    output_task: asyncio.Task[None] | None = None
 
     def schedule_resize() -> None:
         task = asyncio.create_task(
@@ -380,6 +435,15 @@ async def run_raw_mode(
     remove_resize_handler: Callable[[], object] | None = None
     with raw_mode_factory(fd):
         await forward_terminal_size(client, size_provider=size_provider)
+        if follow_output:
+            output_task = asyncio.create_task(
+                follow_terminal_output(
+                    client,
+                    output_file=output_file,
+                    poll_interval_seconds=output_poll_interval_seconds,
+                    stop_event=stop_output,
+                )
+            )
         try:
             loop.add_signal_handler(signal.SIGWINCH, schedule_resize)
 
@@ -401,6 +465,11 @@ async def run_raw_mode(
                     return
                 await forward_raw_input(client, chunk)
         finally:
+            stop_output.set()
+            if output_task is not None:
+                output_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await output_task
             if remove_resize_handler is not None:
                 remove_resize_handler()
             if pending_resize_tasks:

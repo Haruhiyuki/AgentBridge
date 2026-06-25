@@ -17,7 +17,7 @@ This repository currently contains the first executable backend slice:
 - Terminal input gateway with fake/tmux backends and writer-lease epoch enforcement.
 - Local Terminal Agent daemon over a token-protected Unix socket.
 - Optional token-gated WebSocket streams and Terminal command transport.
-- Local Console Client with line-mode, scripted input, and raw TTY passthrough through the lease gateway.
+- Local Console Client with line-mode, scripted input, raw TTY passthrough, and snapshot-polled output observation through the lease gateway.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
 - Bot Gateway delivery service with persistent idempotent delivery records, WebSocket render subscriptions, in-memory text transport, and OneBot V11 HTTP transport.
 - Optional NoneBot wrapper that normalizes message and action callback events into the existing `/agent` command path.
@@ -31,7 +31,7 @@ This repository currently contains the first executable backend slice:
 - Persistent access policy allow/deny rules with action/resource/actor/role/attribute matching and a simulation API.
 - REST API routes aligned with the design document's service interface.
 
-Admin Web, brokered PTY output observation, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
+Admin Web, native brokered PTY output streaming, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
 
 ## Development
 
@@ -337,7 +337,7 @@ By default the console runs in line mode. Add `--raw` to put the local TTY into 
 uv run agentbridge-console <session-id> --start --command sh --raw --release
 ```
 
-Before forwarding input, the console requests a `human` writer lease and sends input with the returned epoch. Raw mode restores terminal state on exit, forwards initial and `SIGWINCH` resize events, maps Ctrl-C/Ctrl-D to terminal signals, and uses Ctrl-] to detach from the console. Use `--send`, `--paste`, or `--snapshot` for scripted checks.
+Before forwarding input, the console requests a `human` writer lease and sends input with the returned epoch. Raw mode restores terminal state on exit, forwards initial and `SIGWINCH` resize events, maps Ctrl-C/Ctrl-D to terminal signals, follows snapshot changes so the user can see current output, and uses Ctrl-] to detach from the console. Use `--no-follow-output` to disable output polling, and use `--send`, `--paste`, or `--snapshot` for scripted checks.
 
 ## API Smoke Test
 
