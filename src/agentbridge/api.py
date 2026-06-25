@@ -536,7 +536,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def api_token_gate(request: Request, call_next):
-        if not http_api_request_authorized(request, control=app.state.control):
+        if not await http_api_request_authorized(request, control=app.state.control):
             return http_api_auth_error_response()
         return await call_next(request)
 
@@ -2527,7 +2527,7 @@ def admin_cookie_secure(request: Request) -> bool:
     return request.url.scheme == "https"
 
 
-def http_api_request_authorized(
+async def http_api_request_authorized(
     request: Request,
     *,
     control: ControlPlane | None = None,
@@ -2546,7 +2546,7 @@ def http_api_request_authorized(
     ):
         return True
     required_scope = http_api_required_device_scope(request)
-    resource_ids = http_api_resource_ids(request)
+    resource_ids = await http_api_resource_ids(request)
     presented_tokens = http_api_presented_tokens(request)
     return (
         client_certificate_authorized(
@@ -2569,7 +2569,7 @@ def http_api_request_authorized(
     )
 
 
-def http_api_resource_ids(request: Request) -> set[str]:
+async def http_api_resource_ids(request: Request) -> set[str]:
     path_segments = request.url.path.rstrip("/").split("/")
     resource_ids: set[str] = set()
     resource_collections = {
@@ -2596,7 +2596,71 @@ def http_api_resource_ids(request: Request) -> set[str]:
         value = request.query_params.get(param_name)
         if value and value.strip():
             resource_ids.add(value.strip())
+    resource_ids.update(await http_api_body_resource_ids(request))
     return resource_ids
+
+
+async def http_api_body_resource_ids(request: Request) -> set[str]:
+    if request.method.upper() not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return set()
+    if not http_request_has_json_body(request):
+        return set()
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > http_api_resource_body_limit_bytes():
+                return set()
+        except ValueError:
+            return set()
+    try:
+        body = await request.body()
+    except RuntimeError:
+        return set()
+    if not body or len(body) > http_api_resource_body_limit_bytes():
+        return set()
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(payload, dict):
+        return set()
+    resource_ids: set[str] = set()
+    for field_name in (
+        "chat_context_id",
+        "device_id",
+        "interaction_id",
+        "project_id",
+        "resource_id",
+        "session_id",
+    ):
+        collect_http_resource_id_value(payload.get(field_name), resource_ids)
+    return resource_ids
+
+
+def http_request_has_json_body(request: Request) -> bool:
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+    return content_type == "application/json" or content_type.endswith("+json")
+
+
+def http_api_resource_body_limit_bytes() -> int:
+    return max(
+        0,
+        env_int(
+            "AGENTBRIDGE_DEVICE_AUTH_RESOURCE_BODY_LIMIT_BYTES",
+            default=1048576,
+        ),
+    )
+
+
+def collect_http_resource_id_value(value: object, resource_ids: set[str]) -> None:
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized:
+            resource_ids.add(normalized)
+        return
+    if isinstance(value, list | tuple | set):
+        for item in value:
+            collect_http_resource_id_value(item, resource_ids)
 
 
 def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:

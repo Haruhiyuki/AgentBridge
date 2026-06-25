@@ -217,11 +217,14 @@ certificate fingerprint to one or more scopes: `http_api`, `audit_read`,
 omitting it grants all current scopes.
 `allowed_resource_ids` can further restrict a managed device key or managed
 certificate fingerprint to specific project, session, interaction, chat-context, or
-device-identity IDs when those IDs are visible in the REST path/query string or the
-WebSocket route. Omit it or pass an empty list for all resources; pass `"*"` for an
-explicit wildcard. If the allowlist is non-empty and a request has no visible resource
-ID, the managed credential is rejected. This first resource guard intentionally does
-not parse request bodies before authentication.
+device-identity IDs when those IDs are visible in the REST path/query string, supported
+top-level JSON body fields, or the WebSocket route. Omit it or pass an empty list for
+all resources; pass `"*"` for an explicit wildcard. If the allowlist is non-empty and a
+request has no visible resource ID, the managed credential is rejected. The auth layer
+only inspects bounded JSON bodies for stable top-level resource fields; it does not
+perform endpoint-specific command parsing before authentication.
+`AGENTBRIDGE_DEVICE_AUTH_RESOURCE_BODY_LIMIT_BYTES` controls the JSON body inspection
+limit and defaults to `1048576`.
 Managed device credentials need `audit_read` to call audit, audit export, and event history HTTP read APIs,
 `bot_gateway_read` to call Bot Gateway HTTP read APIs, `bot_gateway_manage` to call
 Bot Gateway HTTP mutation APIs,

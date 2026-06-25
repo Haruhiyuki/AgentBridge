@@ -475,6 +475,111 @@ def test_managed_device_identity_resource_ids_limit_rest_api(tmp_path):
     assert used_identity.last_used_at is not None
 
 
+def test_managed_device_identity_resource_ids_limit_body_resources(tmp_path):
+    control = ControlPlane()
+    admin = Actor(id="security-admin", roles={"admin"})
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    allowed_project = control.create_project(
+        actor=maintainer,
+        name="Allowed Body Project",
+        trace_id="device-body-allowed-project",
+    )
+    denied_project = control.create_project(
+        actor=maintainer,
+        name="Denied Body Project",
+        trace_id="device-body-denied-project",
+    )
+    allowed_workspace = control.add_workspace(
+        actor=maintainer,
+        project_id=allowed_project.id,
+        machine_id="local",
+        path=str(tmp_path / "allowed"),
+        allowed_root=str(tmp_path),
+        trace_id="device-body-allowed-workspace",
+    )
+    denied_workspace = control.add_workspace(
+        actor=maintainer,
+        project_id=denied_project.id,
+        machine_id="local",
+        path=str(tmp_path / "denied"),
+        allowed_root=str(tmp_path),
+        trace_id="device-body-denied-workspace",
+    )
+    control.upsert_device_identity(
+        actor=admin,
+        device_id="body-scoped-laptop",
+        device_key="managed-secret",
+        allowed_scopes={
+            DeviceIdentityScope.POLICY_READ,
+            DeviceIdentityScope.SESSION_MANAGE,
+        },
+        allowed_resource_ids={allowed_project.id},
+        certificate_fingerprints={"SHA256:AA:BB:CC"},
+        trace_id="device-body-create",
+    )
+    client = TestClient(create_app(control))
+    key_headers = {
+        "x-agentbridge-device-id": "body-scoped-laptop",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    certificate_headers = {"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"}
+    session_payload = {
+        "actor": {"id": "usr_maintainer", "roles": ["maintainer"]},
+        "name": "Body Scoped Session",
+        "agent_type": "claude",
+        "visibility": "group",
+    }
+
+    allowed_session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            **session_payload,
+            "project_id": allowed_project.id,
+            "workspace_id": allowed_workspace.id,
+            "trace_id": "device-body-allowed-session",
+        },
+        headers=key_headers,
+    )
+    denied_session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            **session_payload,
+            "project_id": denied_project.id,
+            "workspace_id": denied_workspace.id,
+            "trace_id": "device-body-denied-session",
+        },
+        headers=certificate_headers,
+    )
+    allowed_policy_response = client.post(
+        "/api/v1/access-policy/simulate",
+        json={
+            "actor": {"id": "security-admin", "roles": ["admin"]},
+            "target_actor": {"id": "usr_maintainer", "roles": ["maintainer"]},
+            "action": "session.create",
+            "resource_type": "project",
+            "resource_id": allowed_project.id,
+        },
+        headers=key_headers,
+    )
+    denied_policy_response = client.post(
+        "/api/v1/access-policy/simulate",
+        json={
+            "actor": {"id": "security-admin", "roles": ["admin"]},
+            "target_actor": {"id": "usr_maintainer", "roles": ["maintainer"]},
+            "action": "session.create",
+            "resource_type": "project",
+            "resource_id": denied_project.id,
+        },
+        headers=key_headers,
+    )
+
+    assert allowed_session_response.status_code == 200
+    assert allowed_session_response.json()["project_id"] == allowed_project.id
+    assert denied_session_response.status_code == 403
+    assert allowed_policy_response.status_code == 200
+    assert denied_policy_response.status_code == 403
+
+
 def test_managed_device_identity_can_be_certificate_only():
     client = TestClient(create_app())
     actor = {"id": "security-admin", "roles": ["admin"]}
