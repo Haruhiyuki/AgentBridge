@@ -405,6 +405,7 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
         allowed_scopes={
             DeviceIdentityScope.BOT_GATEWAY_MANAGE,
             DeviceIdentityScope.CHAT_CONTEXT_MANAGE,
+            DeviceIdentityScope.COMMAND_PARSE,
             DeviceIdentityScope.COMMAND_EXECUTE,
             DeviceIdentityScope.DEVICE_MANAGE,
             DeviceIdentityScope.GROUP_ROLE_MANAGE,
@@ -451,6 +452,7 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
     assert restored_identity.allowed_scopes == {
         DeviceIdentityScope.BOT_GATEWAY_MANAGE,
         DeviceIdentityScope.CHAT_CONTEXT_MANAGE,
+        DeviceIdentityScope.COMMAND_PARSE,
         DeviceIdentityScope.COMMAND_EXECUTE,
         DeviceIdentityScope.DEVICE_MANAGE,
         DeviceIdentityScope.GROUP_ROLE_MANAGE,

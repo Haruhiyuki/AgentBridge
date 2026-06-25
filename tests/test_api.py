@@ -1213,6 +1213,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "allowed-scopes" in html
     assert "bot_gateway_manage" in html
     assert "onebot_event_ingest" in html
+    assert "command_parse" in html
     assert "command_execute" in html
     assert "device_manage" in html
     assert "policy_manage" in html
@@ -1446,6 +1447,77 @@ def test_command_execute_api_creates_project_session_and_turn(tmp_path):
     assert turn_response.json()["data"]["session_id"] == session_id
 
 
+def test_managed_device_identity_requires_command_parse_scope_for_command_parse():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-command-parse-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "command-parse-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-command-parse-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    commands_response = client.get("/api/v1/commands", headers=key_headers)
+    key_parse_response = client.post(
+        "/api/v1/commands/parse",
+        json={"raw_text": "/agent project list", "actor": actor},
+        headers=key_headers,
+    )
+    cert_parse_response = client.post(
+        "/api/v1/commands/parse",
+        json={"raw_text": "/agent project list", "actor": actor},
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert create_response.status_code == 200
+    assert commands_response.status_code == 200
+    assert key_parse_response.status_code == 403
+    assert cert_parse_response.status_code == 403
+
+
+def test_managed_device_identity_command_parse_scope_allows_command_parse():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "command-parse-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "command_parse"],
+            "trace_id": "command-parse-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "command-parse-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    parse_response = client.post(
+        "/api/v1/commands/parse",
+        json={"raw_text": "/agent project list", "actor": actor},
+        headers=headers,
+    )
+
+    assert create_response.status_code == 200
+    assert parse_response.status_code == 200
+    assert parse_response.json()["canonical_command"] == "project.list"
+    assert parse_response.json()["args"] == {"all": False}
+    assert parse_response.json()["actor"]["id"] == "usr_1"
+    assert parse_response.json()["chat_context_id"].startswith("ctx_")
+
+
 def test_managed_device_identity_requires_command_execute_scope_for_command_execute():
     client = TestClient(create_app())
     admin = {"id": "security-admin", "roles": ["admin"]}
@@ -1466,11 +1538,7 @@ def test_managed_device_identity_requires_command_execute_scope_for_command_exec
         "x-agentbridge-device-id": "readonly-device",
         "x-agentbridge-device-key": "managed-secret",
     }
-    parse_response = client.post(
-        "/api/v1/commands/parse",
-        json={"raw_text": "/agent project list", "actor": actor},
-        headers=key_headers,
-    )
+    commands_response = client.get("/api/v1/commands", headers=key_headers)
     key_execute_response = client.post(
         "/api/v1/commands/execute",
         json={"raw_text": "/agent project list", "actor": actor},
@@ -1483,7 +1551,7 @@ def test_managed_device_identity_requires_command_execute_scope_for_command_exec
     )
 
     assert create_response.status_code == 200
-    assert parse_response.status_code == 200
+    assert commands_response.status_code == 200
     assert key_execute_response.status_code == 403
     assert cert_execute_response.status_code == 403
 

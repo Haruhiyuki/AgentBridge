@@ -3437,6 +3437,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       "http_api",
       "bot_gateway_manage",
       "onebot_event_ingest",
+      "command_parse",
       "command_execute",
       "device_manage",
       "policy_manage",

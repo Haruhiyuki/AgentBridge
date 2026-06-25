@@ -2188,6 +2188,8 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         return DeviceIdentityScope.BOT_GATEWAY_MANAGE
     if method == "POST" and path == "/api/v1/onebot/events":
         return DeviceIdentityScope.ONEBOT_EVENT_INGEST
+    if method == "POST" and path == "/api/v1/commands/parse":
+        return DeviceIdentityScope.COMMAND_PARSE
     if method == "POST" and path == "/api/v1/commands/execute":
         return DeviceIdentityScope.COMMAND_EXECUTE
     if method == "POST" and path == "/api/v1/chat-contexts":
