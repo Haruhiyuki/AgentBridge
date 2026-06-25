@@ -318,3 +318,23 @@ def test_access_policy_admin_ui_serves_editor():
     assert "/api/v1/access-policy/simulate" in html
     assert "async function saveRule()" in html
     assert "await simulatePolicy();" in html
+
+
+def test_admin_home_and_terminal_lifecycle_ui_routes():
+    client = TestClient(create_app())
+
+    home_response = client.get("/admin")
+    lifecycle_response = client.get("/admin/terminal-lifecycle")
+
+    assert home_response.status_code == 200
+    assert home_response.headers["content-type"].startswith("text/html")
+    assert "/admin/access-policy" in home_response.text
+    assert "/admin/terminal-lifecycle" in home_response.text
+
+    assert lifecycle_response.status_code == 200
+    assert lifecycle_response.headers["content-type"].startswith("text/html")
+    html = lifecycle_response.text
+    assert "AgentBridge Terminal Lifecycle" in html
+    assert "/api/v1/terminal/lifecycle-monitor" in html
+    assert "/api/v1/terminal/lifecycle-monitor/run-once" in html
+    assert "async function runOnce()" in html

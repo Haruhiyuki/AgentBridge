@@ -13,7 +13,11 @@ from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from agentbridge.admin_ui import ACCESS_POLICY_ADMIN_HTML
+from agentbridge.admin_ui import (
+    ACCESS_POLICY_ADMIN_HTML,
+    ADMIN_HOME_HTML,
+    TERMINAL_LIFECYCLE_ADMIN_HTML,
+)
 from agentbridge.bot_gateway import (
     BotDeliveryRateLimiter,
     BotDeliveryRetryWorker,
@@ -461,9 +465,17 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     async def agentbridge_error_handler(_, exc: AgentBridgeError):
         return JSONResponse(status_code=exc.status_code, content=exc.to_payload())
 
+    @app.get("/admin", response_class=HTMLResponse)
+    def admin_home_ui():
+        return HTMLResponse(ADMIN_HOME_HTML)
+
     @app.get("/admin/access-policy", response_class=HTMLResponse)
     def access_policy_admin_ui():
         return HTMLResponse(ACCESS_POLICY_ADMIN_HTML)
+
+    @app.get("/admin/terminal-lifecycle", response_class=HTMLResponse)
+    def terminal_lifecycle_admin_ui():
+        return HTMLResponse(TERMINAL_LIFECYCLE_ADMIN_HTML)
 
     def get_control() -> ControlPlane:
         return app.state.control

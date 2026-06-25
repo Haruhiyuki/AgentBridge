@@ -1,3 +1,95 @@
+ADMIN_HOME_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentBridge Admin</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --line: #d6dde6;
+      --text: #17202a;
+      --muted: #5b6878;
+      --accent: #0f766e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+    header {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 24px 16px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    a {
+      display: grid;
+      gap: 8px;
+      min-height: 116px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: inherit;
+      text-decoration: none;
+    }
+    a:focus, a:hover {
+      border-color: var(--accent);
+      outline: none;
+    }
+    strong {
+      font-size: 16px;
+      font-weight: 700;
+    }
+    span {
+      color: var(--muted);
+    }
+    @media (max-width: 760px) {
+      main { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AgentBridge Admin</h1>
+  </header>
+  <main>
+    <a href="/admin/access-policy">
+      <strong>Access Policy</strong>
+      <span>Rules, simulation, save, delete</span>
+    </a>
+    <a href="/admin/terminal-lifecycle">
+      <strong>Terminal Lifecycle</strong>
+      <span>Monitor status, backend supervision, run once</span>
+    </a>
+  </main>
+</body>
+</html>
+"""
+
+
 ACCESS_POLICY_ADMIN_HTML = """<!doctype html>
 <html lang="en">
 <head>
@@ -41,6 +133,17 @@ ACCESS_POLICY_ADMIN_HTML = """<!doctype html>
       font-weight: 650;
       letter-spacing: 0;
     }
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-weight: 650;
+    }
+    nav a:hover { color: var(--accent); }
     main {
       display: grid;
       grid-template-columns: minmax(420px, 1.05fr) minmax(440px, 0.95fr);
@@ -198,6 +301,10 @@ ACCESS_POLICY_ADMIN_HTML = """<!doctype html>
 <body>
   <header>
     <h1>AgentBridge Access Policy</h1>
+    <nav>
+      <a href="/admin">Admin</a>
+      <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
+    </nav>
     <div class="status" id="status">Ready</div>
   </header>
   <main>
@@ -516,6 +623,344 @@ ACCESS_POLICY_ADMIN_HTML = """<!doctype html>
     $("save").addEventListener("click", () => run(saveRule));
     $("delete").addEventListener("click", () => run(deleteRule));
     loadRules().catch((error) => setStatus(error.message));
+  </script>
+</body>
+</html>
+"""
+
+
+TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentBridge Terminal Lifecycle</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --panel-muted: #f0f3f7;
+      --line: #d6dde6;
+      --text: #17202a;
+      --muted: #5b6878;
+      --accent: #0f766e;
+      --danger: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+    header {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-weight: 650;
+    }
+    nav a:hover { color: var(--accent); }
+    main {
+      display: grid;
+      grid-template-columns: minmax(360px, .9fr) minmax(460px, 1.1fr);
+      min-height: calc(100vh - 56px);
+    }
+    section {
+      min-width: 0;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+    }
+    section:last-child { border-right: 0; }
+    .toolbar {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-muted);
+      flex-wrap: wrap;
+    }
+    button, input {
+      min-height: 34px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+    button {
+      cursor: pointer;
+      font-weight: 650;
+    }
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+    label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .compact { max-width: 180px; }
+    .status {
+      flex: 1;
+      min-width: 180px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding: 14px;
+    }
+    .metric {
+      min-height: 78px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .metric strong {
+      display: block;
+      margin-top: 6px;
+      font-size: 22px;
+      font-weight: 700;
+    }
+    pre {
+      margin: 0 14px 14px;
+      padding: 10px;
+      min-height: 160px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfe;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    th, td {
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    th {
+      color: var(--muted);
+      background: #f9fafb;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .table-wrap {
+      max-height: calc(100vh - 112px);
+      overflow: auto;
+    }
+    .danger { color: var(--danger); }
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; }
+      section { border-right: 0; border-bottom: 1px solid var(--line); }
+      .metrics { grid-template-columns: 1fr; }
+      header { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AgentBridge Terminal Lifecycle</h1>
+    <nav>
+      <a href="/admin">Admin</a>
+      <a href="/admin/access-policy">Access Policy</a>
+    </nav>
+  </header>
+  <main>
+    <section>
+      <div class="toolbar">
+        <button id="refresh" type="button">Refresh</button>
+        <button class="primary" id="run-once" type="button">Run Once</button>
+        <div class="status" id="status">Ready</div>
+      </div>
+      <div class="metrics">
+        <div class="metric"><span>Running</span><strong id="running">-</strong></div>
+        <div class="metric"><span>Tracked</span><strong id="tracked">-</strong></div>
+        <div class="metric"><span>Runs</span><strong id="runs">-</strong></div>
+        <div class="metric"><span>Last Observed</span><strong id="observed-count">-</strong></div>
+        <div class="metric"><span>Reported Exits</span><strong id="exits">-</strong></div>
+        <div class="metric"><span>Reported Losses</span><strong id="losses">-</strong></div>
+        <div class="metric"><span>Auto Restart</span><strong id="auto-restart">-</strong></div>
+        <div class="metric"><span>Restart Attempts</span><strong id="attempts">-</strong></div>
+      </div>
+      <pre id="backend">{}</pre>
+      <pre id="error" class="danger"></pre>
+    </section>
+    <section>
+      <div class="toolbar">
+        <label class="compact">
+          Actor ID
+          <input id="actor-id" value="admin-ui">
+        </label>
+        <label class="compact">
+          Actor Roles
+          <input id="actor-roles" value="admin">
+        </label>
+        <label class="compact">
+          Trace ID
+          <input id="trace-id" value="admin-ui-lifecycle-run-once">
+        </label>
+      </div>
+      <div class="table-wrap">
+        <table aria-label="Observed terminal sessions">
+          <thead>
+            <tr>
+              <th>Session</th>
+              <th>Started</th>
+              <th>Running</th>
+              <th>Exit</th>
+              <th>Cursor</th>
+            </tr>
+          </thead>
+          <tbody id="observed"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function csv(value) {
+      return value.split(",").map((item) => item.trim()).filter(Boolean);
+    }
+
+    function actor() {
+      return {
+        id: $("actor-id").value.trim() || "admin-ui",
+        roles: csv($("actor-roles").value || "admin"),
+      };
+    }
+
+    function setStatus(text) {
+      $("status").textContent = text;
+    }
+
+    function setText(id, value) {
+      $(id).textContent = String(value ?? "-");
+    }
+
+    async function requestJson(url, options = {}) {
+      const response = await fetch(url, {
+        headers: {"content-type": "application/json"},
+        ...options,
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || data.detail || response.statusText);
+      }
+      return data;
+    }
+
+    function renderStatus(status) {
+      setText("running", status.running);
+      setText("tracked", status.tracked_sessions);
+      setText("runs", status.run_count);
+      setText("observed-count", status.last_observed_count);
+      setText("exits", status.reported_exit_count);
+      setText("losses", status.reported_lost_count);
+      setText("auto-restart", status.auto_restart_on_lost);
+      setText("attempts", status.auto_restart_attempt_count);
+      $("backend").textContent = JSON.stringify(status.backend_supervision || {}, null, 2);
+      $("error").textContent = status.last_error || "";
+    }
+
+    function renderObserved(observed) {
+      const tbody = $("observed");
+      const rows = Object.entries(observed || {}).map(([sessionId, item]) => {
+        const tr = document.createElement("tr");
+        for (const value of [
+          sessionId,
+          item.started,
+          item.running,
+          item.exit_code ?? "",
+          item.output_cursor,
+        ]) {
+          const td = document.createElement("td");
+          td.textContent = String(value);
+          tr.appendChild(td);
+        }
+        return tr;
+      });
+      tbody.replaceChildren(...rows);
+    }
+
+    async function refresh() {
+      setStatus("Loading");
+      const status = await requestJson("/api/v1/terminal/lifecycle-monitor");
+      renderStatus(status);
+      setStatus("Ready");
+    }
+
+    async function runOnce() {
+      setStatus("Running");
+      const payload = {
+        actor: actor(),
+        trace_id: $("trace-id").value.trim() || "admin-ui-lifecycle-run-once",
+      };
+      const result = await requestJson("/api/v1/terminal/lifecycle-monitor/run-once", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      renderStatus(result.monitor);
+      renderObserved(result.observed);
+      setStatus("Run complete");
+    }
+
+    async function run(action) {
+      try {
+        await action();
+      } catch (error) {
+        setStatus(error.message);
+      }
+    }
+
+    $("refresh").addEventListener("click", () => run(refresh));
+    $("run-once").addEventListener("click", () => run(runOnce));
+    refresh().catch((error) => setStatus(error.message));
   </script>
 </body>
 </html>
