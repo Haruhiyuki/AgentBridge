@@ -2188,6 +2188,15 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         return DeviceIdentityScope.BOT_GATEWAY_MANAGE
     if method == "POST" and path == "/api/v1/commands/execute":
         return DeviceIdentityScope.COMMAND_EXECUTE
+    if method == "POST" and path == "/api/v1/chat-contexts":
+        return DeviceIdentityScope.CHAT_CONTEXT_MANAGE
+    if (
+        method == "PUT"
+        and len(path_segments) >= 6
+        and path_segments[:4] == ["", "api", "v1", "chat-contexts"]
+        and path_segments[5] in {"active-project", "active-session"}
+    ):
+        return DeviceIdentityScope.CHAT_CONTEXT_MANAGE
     if method == "POST" and path == "/api/v1/projects":
         return DeviceIdentityScope.PROJECT_MANAGE
     if (

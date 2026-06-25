@@ -513,6 +513,14 @@ def test_managed_device_identity_project_manage_scope_allows_project_write_apis(
     client = TestClient(create_app())
     admin = {"id": "security-admin", "roles": ["admin"]}
     maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    context_response = client.post(
+        "/api/v1/chat-contexts",
+        json={
+            "bot_instance_id": "bot-test",
+            "platform": "onebot.v11",
+            "chat_space_id": "project-manager-scope",
+        },
+    )
 
     create_identity_response = client.post(
         "/api/v1/device-identities",
@@ -549,15 +557,6 @@ def test_managed_device_identity_project_manage_scope_allows_project_write_apis(
         },
         headers=headers,
     )
-    context_response = client.post(
-        "/api/v1/chat-contexts",
-        json={
-            "bot_instance_id": "bot-test",
-            "platform": "onebot.v11",
-            "chat_space_id": "project-manager-scope",
-        },
-        headers=headers,
-    )
     bind_response = client.post(
         f"/api/v1/chat-spaces/{context_response.json()['id']}/project-bindings",
         json={
@@ -577,6 +576,187 @@ def test_managed_device_identity_project_manage_scope_allows_project_write_apis(
     assert context_response.status_code == 200
     assert bind_response.status_code == 200
     assert bind_response.json() == {"status": "ok"}
+
+
+def test_managed_device_identity_requires_chat_context_manage_scope_for_context_writes(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    context = client.post(
+        "/api/v1/chat-contexts",
+        json={
+            "bot_instance_id": "bot-test",
+            "platform": "onebot.v11",
+            "chat_space_id": "chat-context-scope",
+        },
+    ).json()
+    project = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": maintainer,
+            "name": "Readonly Chat Context Project",
+            "trace_id": "chat-context-scope-project",
+        },
+    ).json()
+    workspace = client.post(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        json={
+            "actor": maintainer,
+            "machine_id": "local",
+            "path": str(tmp_path),
+            "allowed_root": str(tmp_path),
+            "trace_id": "chat-context-scope-workspace",
+        },
+    ).json()
+    session = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": maintainer,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Existing Chat Context Session",
+            "trace_id": "chat-context-scope-session",
+        },
+    ).json()
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-chat-context-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "chat-context-scope-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-chat-context-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    cert_headers = {"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"}
+    list_response = client.get("/api/v1/projects", headers=key_headers)
+    create_context_response = client.post(
+        "/api/v1/chat-contexts",
+        json={
+            "bot_instance_id": "bot-test",
+            "platform": "onebot.v11",
+            "chat_space_id": "chat-context-scope-denied",
+        },
+        headers=key_headers,
+    )
+    active_project_response = client.put(
+        f"/api/v1/chat-contexts/{context['id']}/active-project",
+        json={
+            "actor": maintainer,
+            "project": project["id"],
+            "trace_id": "chat-context-scope-denied-project",
+        },
+        headers=cert_headers,
+    )
+    active_session_response = client.put(
+        f"/api/v1/chat-contexts/{context['id']}/active-session",
+        json={
+            "actor": maintainer,
+            "session": session["id"],
+            "trace_id": "chat-context-scope-denied-session",
+        },
+        headers=key_headers,
+    )
+
+    assert create_identity_response.status_code == 200
+    assert list_response.status_code == 200
+    assert create_context_response.status_code == 403
+    assert active_project_response.status_code == 403
+    assert active_session_response.status_code == 403
+
+
+def test_managed_device_identity_chat_context_manage_scope_allows_context_writes(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    project = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": maintainer,
+            "name": "Managed Chat Context Project",
+            "trace_id": "chat-context-manager-project",
+        },
+    ).json()
+    workspace = client.post(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        json={
+            "actor": maintainer,
+            "machine_id": "local",
+            "path": str(tmp_path),
+            "allowed_root": str(tmp_path),
+            "trace_id": "chat-context-manager-workspace",
+        },
+    ).json()
+    session = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": maintainer,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Managed Chat Context Session",
+            "trace_id": "chat-context-manager-session",
+        },
+    ).json()
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "chat-context-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "chat_context_manage"],
+            "trace_id": "chat-context-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "chat-context-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    create_context_response = client.post(
+        "/api/v1/chat-contexts",
+        json={
+            "bot_instance_id": "bot-test",
+            "platform": "onebot.v11",
+            "chat_space_id": "chat-context-manager-scope",
+        },
+        headers=headers,
+    )
+    context_id = create_context_response.json().get("id")
+    active_project_response = client.put(
+        f"/api/v1/chat-contexts/{context_id}/active-project",
+        json={
+            "actor": maintainer,
+            "project": project["id"],
+            "trace_id": "chat-context-manager-project-select",
+        },
+        headers=headers,
+    )
+    active_session_response = client.put(
+        f"/api/v1/chat-contexts/{context_id}/active-session",
+        json={
+            "actor": maintainer,
+            "session": session["id"],
+            "trace_id": "chat-context-manager-session-select",
+        },
+        headers=headers,
+    )
+
+    assert create_identity_response.status_code == 200
+    assert create_context_response.status_code == 200
+    assert active_project_response.status_code == 200
+    assert active_project_response.json()["active_project_id"] == project["id"]
+    assert active_session_response.status_code == 200
+    assert active_session_response.json()["active_session_id"] == session["id"]
 
 
 def test_managed_device_identity_requires_session_manage_scope_for_session_writes(
@@ -815,6 +995,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "device_manage" in html
     assert "policy_manage" in html
     assert "group_role_manage" in html
+    assert "chat_context_manage" in html
     assert "project_manage" in html
     assert "session_manage" in html
     assert "interaction_manage" in html

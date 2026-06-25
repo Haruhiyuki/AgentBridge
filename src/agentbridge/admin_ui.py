@@ -3440,6 +3440,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       "device_manage",
       "policy_manage",
       "group_role_manage",
+      "chat_context_manage",
       "project_manage",
       "session_manage",
       "interaction_manage",
