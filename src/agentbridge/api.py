@@ -356,6 +356,22 @@ class DeliverSessionEventsRequest(BaseModel):
     limit: int = 100
 
 
+class DeliverEventsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chat_context_id: str
+    platform: BotPlatform = BotPlatform.ONEBOT_V11
+    project_id: str | None = None
+    session_id: str | None = None
+    turn_id: str | None = None
+    interaction_id: str | None = None
+    event_type: str | None = None
+    source: SemanticEventSource | None = None
+    trace_id: str | None = None
+    q: str | None = None
+    limit: int = 100
+
+
 class RetryBotDeliveriesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1740,6 +1756,26 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             chat_context_id=payload.chat_context_id,
             platform=payload.platform,
             after_seq=payload.after_seq,
+            limit=payload.limit,
+        )
+        return [record.model_dump(mode="json") for record in records]
+
+    @app.post("/api/v1/bot-gateway/deliver-events")
+    def deliver_events(
+        payload: DeliverEventsRequest,
+        bot_gateway_service: BotGatewayService = Depends(get_bot_gateway),
+    ):
+        records = bot_gateway_service.deliver_events(
+            chat_context_id=payload.chat_context_id,
+            platform=payload.platform,
+            project_id=payload.project_id,
+            session_id=payload.session_id,
+            turn_id=payload.turn_id,
+            interaction_id=payload.interaction_id,
+            event_type=payload.event_type,
+            source=payload.source,
+            trace_id=payload.trace_id,
+            payload_query=payload.q,
             limit=payload.limit,
         )
         return [record.model_dump(mode="json") for record in records]

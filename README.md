@@ -354,6 +354,16 @@ curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/deliver-session-events \
   -d '{"session_id":"<session-id>","chat_context_id":"<chat-context-id>"}'
 ```
 
+Filtered cross-stream operator events can be delivered to a chat context through the
+same Bot Gateway delivery records. At least one event filter is required to avoid
+accidental broad fan-out:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/deliver-events \
+  -H 'content-type: application/json' \
+  -d '{"chat_context_id":"<chat-context-id>","event_type":"device_identity.certificates_scanned","trace_id":"<scan-trace-id>"}'
+```
+
 Delivery records are idempotent by platform, chat context, event, and message index, and can be persisted through the SQLAlchemy repository. Failed sends are recorded with attempt count, last error, and next retry time; `POST /api/v1/bot-gateway/retry-failed-deliveries` retries due failures.
 
 External Bot Gateway subscribers can also receive Bot-facing render frames without mutating delivery records:

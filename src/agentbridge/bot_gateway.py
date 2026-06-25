@@ -17,6 +17,7 @@ from agentbridge.domain import (
     BotPlatform,
     ChatContext,
     ErrorCode,
+    SemanticEventSource,
     utc_now,
 )
 from agentbridge.renderer import OneBotV11TextRenderer, RenderDocument, document_from_event
@@ -226,6 +227,70 @@ class BotGatewayService:
         )
         records: list[BotDeliveryRecord] = []
         for event in events:
+            document = document_from_event(event)
+            records.extend(
+                self.deliver_document(
+                    document=document,
+                    event_id=event.id,
+                    event_seq=event.seq,
+                    chat_context_id=chat_context_id,
+                    platform=platform,
+                )
+            )
+        return records
+
+    def deliver_events(
+        self,
+        *,
+        chat_context_id: str,
+        platform: BotPlatform = BotPlatform.ONEBOT_V11,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        interaction_id: str | None = None,
+        event_type: str | None = None,
+        source: SemanticEventSource | None = None,
+        trace_id: str | None = None,
+        payload_query: str | None = None,
+        limit: int = 100,
+    ) -> list[BotDeliveryRecord]:
+        if not has_delivery_filter(
+            project_id=project_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            interaction_id=interaction_id,
+            event_type=event_type,
+            source=source,
+            trace_id=trace_id,
+            payload_query=payload_query,
+        ):
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "跨流 Bot 事件投递需要至少一个事件过滤条件。",
+                next_step=(
+                    "请提供 project_id、session_id、event_type、source、trace_id "
+                    "或 q 等过滤条件后重试。"
+                ),
+                status_code=400,
+            )
+        if session_id is not None:
+            self.control.repository.get_session(session_id)
+        elif project_id is not None:
+            self.control.repository.get_project(project_id)
+        self.control.repository.get_chat_context(chat_context_id)
+        events = self.control.repository.list_semantic_events(
+            project_id=project_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            interaction_id=interaction_id,
+            event_type=event_type,
+            source=source,
+            trace_id=trace_id,
+            payload_query=payload_query,
+            limit=limit,
+        )
+        records: list[BotDeliveryRecord] = []
+        for event in reversed(events):
             document = document_from_event(event)
             records.extend(
                 self.deliver_document(
@@ -843,6 +908,31 @@ def retry_after_seconds_from_error(exc: AgentBridgeError) -> float | None:
         return max(float(value), 0.0)
     except (TypeError, ValueError):
         return None
+
+
+def has_delivery_filter(
+    *,
+    project_id: str | None,
+    session_id: str | None,
+    turn_id: str | None,
+    interaction_id: str | None,
+    event_type: str | None,
+    source: SemanticEventSource | None,
+    trace_id: str | None,
+    payload_query: str | None,
+) -> bool:
+    return any(
+        (
+            bool(project_id),
+            bool(session_id),
+            bool(turn_id),
+            bool(interaction_id),
+            bool(event_type),
+            source is not None,
+            bool(trace_id),
+            bool(payload_query),
+        )
+    )
 
 
 def merge_platform_payload(

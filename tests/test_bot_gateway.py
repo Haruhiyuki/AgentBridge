@@ -22,6 +22,7 @@ from agentbridge.domain import (
     BotPlatform,
     ErrorCode,
     InteractionType,
+    SemanticEventSource,
 )
 from agentbridge.persistence import SQLAlchemyRepository
 
@@ -124,6 +125,79 @@ def test_bot_gateway_delivers_rendered_events_idempotently(tmp_path):
     assert len(transport.sent) == 2
     assert "Bot Delivery" in transport.sent[0]["text"]
     assert "任务已排队" in transport.sent[1]["text"]
+
+
+def test_bot_gateway_delivers_filtered_semantic_events_idempotently():
+    control = ControlPlane()
+    context = control.get_or_create_chat_context(
+        bot_instance_id="bot-test",
+        platform="onebot.v11",
+        chat_space_id="group-security",
+    )
+    control.emit_event(
+        event_type="device_identity.certificates_scanned",
+        source=SemanticEventSource.CONTROL_PLANE,
+        trace_id="security-scan-alert",
+        payload={
+            "total_device_count": 1,
+            "action_required_count": 1,
+            "status_counts": {"expired": 1},
+            "warning_days": 7,
+            "scanned_at": "2026-06-26T00:00:00Z",
+            "action_required_devices": [
+                {
+                    "device_id": "expired-device",
+                    "certificate_health_status": "expired",
+                    "expired_count": 1,
+                }
+            ],
+        },
+    )
+    control.emit_event(
+        event_type="assistant.delta",
+        source=SemanticEventSource.TERMINAL_AGENT,
+        trace_id="unrelated",
+        payload={"text": "ignore me"},
+    )
+    transport = InMemoryBotTransport()
+    gateway = BotGatewayService(control, transport=transport)
+
+    first = gateway.deliver_events(
+        chat_context_id=context.id,
+        event_type="device_identity.certificates_scanned",
+        trace_id="security-scan-alert",
+    )
+    second = gateway.deliver_events(
+        chat_context_id=context.id,
+        event_type="device_identity.certificates_scanned",
+        trace_id="security-scan-alert",
+    )
+
+    assert [record.status for record in first] == [BotDeliveryStatus.SENT]
+    assert [record.status for record in second] == [BotDeliveryStatus.SKIPPED_DUPLICATE]
+    assert len(transport.sent) == 1
+    assert "设备证书扫描" in transport.sent[0]["text"]
+    assert "expired-device" in transport.sent[0]["text"]
+
+
+def test_bot_gateway_rejects_unfiltered_cross_stream_delivery():
+    control = ControlPlane()
+    context = control.get_or_create_chat_context(
+        bot_instance_id="bot-test",
+        platform="onebot.v11",
+        chat_space_id="group-security",
+    )
+    gateway = BotGatewayService(control, transport=InMemoryBotTransport())
+
+    try:
+        gateway.deliver_events(chat_context_id=context.id)
+    except AgentBridgeError as exc:
+        error = exc
+    else:
+        raise AssertionError("deliver_events should require at least one event filter")
+
+    assert error.status_code == 400
+    assert error.code == ErrorCode.COMMAND_ARGUMENT_INVALID
 
 
 def test_bot_gateway_can_resume_delivery_after_seq(tmp_path):
@@ -667,6 +741,71 @@ def test_bot_gateway_websocket_reports_missing_chat_context(tmp_path):
 
     assert message["type"] == "error"
     assert message["error"]["error_code"] == "NOT_FOUND"
+
+
+def test_bot_gateway_api_delivers_filtered_semantic_events():
+    control = ControlPlane()
+    context = control.get_or_create_chat_context(
+        bot_instance_id="bot-test",
+        platform="onebot.v11",
+        chat_space_id="group-security-api",
+    )
+    control.emit_event(
+        event_type="device_identity.certificates_scanned",
+        source=SemanticEventSource.CONTROL_PLANE,
+        trace_id="security-scan-api",
+        payload={
+            "total_device_count": 1,
+            "action_required_count": 1,
+            "status_counts": {"expired": 1},
+            "warning_days": 14,
+            "scanned_at": "2026-06-26T00:00:00Z",
+            "action_required_devices": [
+                {
+                    "device_id": "api-expired-device",
+                    "certificate_health_status": "expired",
+                    "expired_count": 1,
+                }
+            ],
+        },
+    )
+    transport = InMemoryBotTransport()
+    gateway = BotGatewayService(control, transport=transport)
+    app = create_app(control)
+    app.state.bot_gateway = gateway
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/v1/bot-gateway/deliver-events",
+        json={
+            "chat_context_id": context.id,
+            "event_type": "device_identity.certificates_scanned",
+            "trace_id": "security-scan-api",
+        },
+    )
+    duplicate_response = client.post(
+        "/api/v1/bot-gateway/deliver-events",
+        json={
+            "chat_context_id": context.id,
+            "event_type": "device_identity.certificates_scanned",
+            "trace_id": "security-scan-api",
+        },
+    )
+    unfiltered_response = client.post(
+        "/api/v1/bot-gateway/deliver-events",
+        json={"chat_context_id": context.id},
+    )
+
+    assert response.status_code == 200
+    assert [record["status"] for record in response.json()] == ["sent"]
+    assert duplicate_response.status_code == 200
+    assert [record["status"] for record in duplicate_response.json()] == [
+        "skipped_duplicate"
+    ]
+    assert unfiltered_response.status_code == 400
+    assert unfiltered_response.json()["error_code"] == "COMMAND_ARGUMENT_INVALID"
+    assert len(transport.sent) == 1
+    assert "api-expired-device" in transport.sent[0]["text"]
 
 
 def test_bot_retry_worker_api_reports_status_and_runs_once(tmp_path):
