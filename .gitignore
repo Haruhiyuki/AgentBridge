@@ -9,3 +9,6 @@ dist/
 build/
 htmlcov/
 .coverage
+agentbridge.db
+*.sqlite
+*.sqlite3

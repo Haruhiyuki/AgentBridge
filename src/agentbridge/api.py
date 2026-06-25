@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import uvicorn
 from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
@@ -16,6 +18,8 @@ from agentbridge.domain import (
     Visibility,
     WorkspaceType,
 )
+from agentbridge.persistence import SQLAlchemyRepository
+from agentbridge.storage import InMemoryRepository
 
 
 class ActorPayload(BaseModel):
@@ -152,7 +156,7 @@ class CommandRequest(BaseModel):
 
 def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     app = FastAPI(title="AgentBridge Control Plane", version="0.1.0")
-    control = control_plane or ControlPlane()
+    control = control_plane or ControlPlane(repository=create_repository_from_env())
     commands = CommandService(control)
     app.state.control = control
     app.state.commands = commands
@@ -452,6 +456,17 @@ def ensure_chat_context_id(payload: CommandRequest, control: ControlPlane) -> st
         return payload.chat_context_id
     context = control.get_or_create_chat_context(**payload.chat.model_dump())
     return context.id
+
+
+def create_repository_from_env() -> InMemoryRepository:
+    database_url = os.environ.get("AGENTBRIDGE_DATABASE_URL")
+    if not database_url:
+        return InMemoryRepository()
+    auto_create_schema = os.environ.get("AGENTBRIDGE_AUTO_CREATE_SCHEMA", "false").lower()
+    return SQLAlchemyRepository(
+        database_url,
+        create_schema=auto_create_schema in {"1", "true", "yes", "on"},
+    )
 
 
 def run() -> None:

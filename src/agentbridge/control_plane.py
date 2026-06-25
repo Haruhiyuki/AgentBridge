@@ -33,7 +33,7 @@ class ControlPlane:
     def health(self) -> dict[str, object]:
         return {
             "status": "ok",
-            "storage": "memory",
+            "storage": getattr(self.repository, "storage_label", "memory"),
             "projects": len(self.repository.projects),
             "sessions": len(self.repository.sessions),
         }

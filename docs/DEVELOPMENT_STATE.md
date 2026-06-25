@@ -30,23 +30,28 @@ Implemented in this slice:
 - Ordered semantic event streams for project/session state changes.
 - REST event replay through `GET /api/v1/sessions/{id}/events`.
 - Idempotent Terminal Agent event ingestion through `POST /api/v1/sessions/{id}/events`.
+- SQLAlchemy-backed repository enabled with `AGENTBRIDGE_DATABASE_URL`.
+- Alembic initial migration for projects, workspaces, chat contexts, bindings, sessions, turns, interactions, writer leases, command idempotency records, audit events, and semantic events.
+- Recovery tests proving persisted control-plane state survives repository re-instantiation.
 - Focused unit/API tests for the above.
 
 Not implemented yet:
 
-- Persistent PostgreSQL/SQLAlchemy storage and Alembic migrations.
 - Terminal Agent process, tmux/PTY broker, or visible terminal launch.
 - NoneBot/OneBot adapter and renderer.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
 - Full RBAC/ABAC policy editor and multi-person approval flows.
 - WebSocket transport for Terminal Agent and Bot Gateway event delivery.
+- Normalized relational query layer for large audit/event searches; the current SQLAlchemy repository persists Pydantic payload snapshots with indexed routing columns.
+- PostgreSQL-specific operational hardening, connection pooling policy, and migration deployment docs.
 
 ## Important Decisions
 
 - The first backend slice uses an in-memory repository to make command, routing, lease, and API semantics testable before introducing persistence.
 - Unknown ASCII-looking `/agent` management commands are rejected instead of being silently treated as prompts. Non-command free text still becomes `ask` to support the documented shortcut pattern.
 - Semantic events are separate from audit records: events drive product state replay and Bot rendering, while audit records preserve security/accountability history.
+- SQLAlchemy persistence is currently a single-process write-through snapshot repository. It is sufficient for restart recovery and contract tests, but multi-process production deployments need row-level updates and stronger transaction boundaries.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
 
 ## Verification
@@ -57,11 +62,12 @@ Run:
 uv sync --extra dev
 uv run pytest
 uv run ruff check .
+AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgrade head
 ```
 
 ## Next Development Backlog
 
-1. Add SQLAlchemy models, repository interface split, and Alembic initial migration.
+1. Refine the repository boundary so SQLAlchemy writes are row-level instead of full snapshots.
 2. Implement Terminal Agent MVP using tmux control mode and a fake CLI fixture.
 3. Add Bot Gateway event subscription and renderer intermediate representation.
 4. Add plain-text/OneBot V11 rendering with golden snapshots.

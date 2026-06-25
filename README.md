@@ -13,9 +13,10 @@ This repository currently contains the first executable backend slice:
 - In-memory repository suitable for contract tests and local MVP prototyping.
 - `/agent` command parser and executor for project/session routing, turn enqueueing, lease control, and idempotent invocation handling.
 - Ordered semantic event streams with replay and idempotent Terminal Agent event ingestion.
+- Optional SQLAlchemy persistence with an Alembic-managed schema.
 - REST API routes aligned with the design document's service interface.
 
-Terminal Agent, NoneBot integration, persistent PostgreSQL storage, Admin Web, and real PTY/tmux control are planned next milestones.
+Terminal Agent, NoneBot integration, Admin Web, and real PTY/tmux control are planned next milestones.
 
 ## Development
 
@@ -23,6 +24,7 @@ Terminal Agent, NoneBot integration, persistent PostgreSQL storage, Admin Web, a
 uv sync --extra dev
 uv run pytest
 uv run ruff check .
+uv run alembic upgrade head
 uv run uvicorn agentbridge.api:create_app --factory --reload
 ```
 
@@ -32,6 +34,18 @@ Without `uv`, use the active Python environment:
 python3 -m pytest
 python3 -m uvicorn agentbridge.api:create_app --factory --reload
 ```
+
+## Persistence
+
+The app defaults to in-memory storage. Set `AGENTBRIDGE_DATABASE_URL` to enable the SQLAlchemy repository:
+
+```bash
+export AGENTBRIDGE_DATABASE_URL=sqlite:///./agentbridge.db
+uv run alembic upgrade head
+uv run uvicorn agentbridge.api:create_app --factory --reload
+```
+
+For local throwaway development, `AGENTBRIDGE_AUTO_CREATE_SCHEMA=true` can create tables on startup. Production deployments should run Alembic migrations explicitly.
 
 ## API Smoke Test
 
