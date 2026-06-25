@@ -1225,7 +1225,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       table-layout: fixed;
     }
     .ops-table {
-      min-width: 880px;
+      min-width: 980px;
     }
     th, td {
       padding: 9px 10px;
@@ -1467,6 +1467,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
               <th>Workspace</th>
               <th>Active Turn</th>
               <th>Queue</th>
+              <th>Pending Approvals</th>
               <th>Lease</th>
             </tr>
           </thead>
@@ -1520,6 +1521,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     let currentSessions = [];
     let sessionQueues = new Map();
     let sessionLeases = new Map();
+    let sessionPendingApprovals = new Map();
 
     function csv(value) {
       return value.split(",").map((item) => item.trim()).filter(Boolean);
@@ -1597,11 +1599,20 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       return `${lease.owner_type}:${lease.owner_id} #${lease.epoch}`;
     }
 
+    function formatSessionPendingApprovals(session) {
+      const summary = sessionPendingApprovals.get(session.id);
+      if (!summary) return "-";
+      const total = summary.pending + summary.partially_approved;
+      if (!total) return "0";
+      return `${total} open`;
+    }
+
     function sessionDetail(session) {
       return {
         ...session,
         queue: sessionQueues.get(session.id) || null,
         lease: sessionLeases.get(session.id) || null,
+        pending_approvals: sessionPendingApprovals.get(session.id) || null,
       };
     }
 
@@ -1674,6 +1685,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
           session.workspace_id,
           session.active_turn_id || "-",
           formatSessionQueue(session),
+          formatSessionPendingApprovals(session),
           formatSessionLease(session),
         ]) {
           appendCell(tr, value);
@@ -1693,14 +1705,34 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     async function refreshSessionOperations(sessions) {
       sessionQueues = new Map();
       sessionLeases = new Map();
+      sessionPendingApprovals = new Map();
       await Promise.all(sessions.map(async (session) => {
         const encodedSession = encodeURIComponent(session.id);
-        const [queue, lease] = await Promise.all([
+        const [
+          queue,
+          lease,
+          pendingInteractions,
+          partiallyApprovedInteractions,
+        ] = await Promise.all([
           requestJson(`/api/v1/sessions/${encodedSession}/queue`),
           requestJson(`/api/v1/sessions/${encodedSession}/lease`),
+          requestJson(`/api/v1/interactions?session_id=${encodedSession}&status=pending`),
+          requestJson(
+            `/api/v1/interactions?session_id=${encodedSession}&status=partially_approved`,
+          ),
         ]);
+        const pendingApprovals = pendingInteractions.filter(
+          (interaction) => interaction.type === "approval",
+        );
+        const partiallyApprovedApprovals = partiallyApprovedInteractions.filter(
+          (interaction) => interaction.type === "approval",
+        );
         sessionQueues.set(session.id, queue);
         sessionLeases.set(session.id, lease);
+        sessionPendingApprovals.set(session.id, {
+          pending: pendingApprovals.length,
+          partially_approved: partiallyApprovedApprovals.length,
+        });
       }));
     }
 
@@ -1778,6 +1810,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       if (!project) {
         sessionQueues = new Map();
         sessionLeases = new Map();
+        sessionPendingApprovals = new Map();
         renderWorkspaces([]);
         renderSessions([]);
         return;

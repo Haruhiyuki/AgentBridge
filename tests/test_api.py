@@ -1654,9 +1654,12 @@ def test_project_session_admin_ui_serves_dashboard():
     assert "queue-clear" in html
     assert "queue-version" in html
     assert "Active Turn" in html
+    assert "Pending Approvals" in html
     assert "Lease" in html
     assert "sessionQueues" in html
     assert "sessionLeases" in html
+    assert "sessionPendingApprovals" in html
+    assert "function formatSessionPendingApprovals(session)" in html
     assert "async function refreshSessionOperations(sessions)" in html
     assert "queue_paused" in html
     assert "async function loadQueue()" in html
@@ -1665,6 +1668,8 @@ def test_project_session_admin_ui_serves_dashboard():
     assert "/queue/${action}" in html
     assert "/queue/clear" in html
     assert "/lease" in html
+    assert "status=pending" in html
+    assert "status=partially_approved" in html
 
 
 def test_interaction_admin_ui_serves_dashboard():

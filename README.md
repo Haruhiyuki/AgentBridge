@@ -30,7 +30,7 @@ This repository currently contains the first executable backend slice:
 - Project/chat-context approval quorum overrides through REST and `/agent policy`.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - Persistent access policy allow/deny rules with action/resource/actor/role/attribute matching and a simulation API.
-- Built-in Admin Web pages for system health, project/session operations with active Turn, queue, and lease status, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
+- Built-in Admin Web pages for system health, project/session operations with active Turn, queue, pending approval, and lease status, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
 Production PTY supervision, full mTLS/device certificate rotation workflows, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
@@ -507,8 +507,9 @@ audit/event explorer, access policy editor, system health dashboard, terminal li
 dashboard, device identity dashboard, and Bot delivery operations dashboard. The system
 health page summarizes `/api/v1/health`, terminal lifecycle monitor status, Bot retry
 worker status, Bot rate-limit policies, and managed-device endpoint reachability. The
-project/session page lists projects, adds workspaces, creates sessions, and closes
-selected sessions through the same REST APIs used by external clients. The interaction
+project/session page lists projects, adds workspaces, creates sessions, closes selected
+sessions, and surfaces active Turn, queue, pending approval, and lease status through
+the same REST APIs used by external clients. The interaction
 page lists and filters questions/approvals, creates new interactions, answers questions,
 votes on approvals, and cancels pending items. The audit/event page filters audit
 records, searches semantic events across streams, supports `q` text search over audit
