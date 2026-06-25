@@ -689,6 +689,7 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
         <button id="audit-refresh" type="button">Refresh Audit</button>
         <button id="audit-export-json" type="button">Export JSON</button>
         <button id="audit-export-csv" type="button">Export CSV</button>
+        <button id="audit-export-archive" type="button">Export Archive</button>
         <label class="compact">
           Action
           <input id="audit-action" autocomplete="off" placeholder="session.created">
@@ -1050,6 +1051,7 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
     $("audit-refresh").addEventListener("click", () => run(refreshAudit));
     $("audit-export-json").addEventListener("click", () => run(() => downloadAudit("json")));
     $("audit-export-csv").addEventListener("click", () => run(() => downloadAudit("csv")));
+    $("audit-export-archive").addEventListener("click", () => run(() => downloadAudit("archive")));
     $("event-refresh").addEventListener("click", () => run(refreshEvents));
     $("event-search").addEventListener("click", () => run(searchEvents));
     $("event-live-connect").addEventListener("click", () => run(connectEventsLive));

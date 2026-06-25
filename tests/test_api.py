@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import threading
 
 from fastapi.testclient import TestClient
@@ -1758,6 +1761,7 @@ def test_audit_events_admin_ui_serves_dashboard():
     assert "function downloadAudit(format)" in html
     assert "audit-export-json" in html
     assert "audit-export-csv" in html
+    assert "audit-export-archive" in html
     assert "async function refreshEvents()" in html
     assert "async function searchEvents()" in html
     assert "event-search" in html
@@ -2375,7 +2379,9 @@ def test_project_session_rest_flow_supports_admin_operations(tmp_path):
     assert close_response.json()["status"] == "closed"
 
 
-def test_audit_api_filters_and_limits_records(tmp_path):
+def test_audit_api_filters_and_limits_records(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY", "audit-secret")
+    monkeypatch.setenv("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID", "test-key")
     client = TestClient(create_app())
     actor = {"id": "admin-ui", "roles": ["admin"]}
 
@@ -2441,6 +2447,16 @@ def test_audit_api_filters_and_limits_records(tmp_path):
             "format": "csv",
         },
     )
+    export_archive_response = client.get(
+        "/api/v1/audit/export",
+        params={
+            "action": "session.created",
+            "actor_id": "admin-ui",
+            "session_id": session["id"],
+            "limit": 1,
+            "format": "archive",
+        },
+    )
     missing_response = client.get(
         "/api/v1/audit",
         params={"action": "session.created", "actor_id": "other"},
@@ -2474,6 +2490,33 @@ def test_audit_api_filters_and_limits_records(tmp_path):
     )
     assert "session.created" in export_csv_response.text
     assert session["id"] in export_csv_response.text
+    assert export_archive_response.status_code == 200
+    assert export_archive_response.headers["content-disposition"].endswith(
+        'filename="agentbridge-audit-archive.json"'
+    )
+    archive_payload = export_archive_response.json()
+    archive = archive_payload["archive"]
+    canonical_archive = json.dumps(
+        archive,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    expected_signature = hmac.new(
+        b"audit-secret",
+        canonical_archive.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    assert archive["format"] == "signed_audit_archive"
+    assert archive["record_count"] == 1
+    assert archive["records"][0]["id"] == audit_event["id"]
+    assert archive["newest_entry_hash"] == audit_event["entry_hash"]
+    assert archive["oldest_entry_hash"] == audit_event["entry_hash"]
+    assert archive_payload["signature"]["key_id"] == "test-key"
+    assert archive_payload["signature"]["archive_sha256"] == hashlib.sha256(
+        canonical_archive.encode("utf-8")
+    ).hexdigest()
+    assert archive_payload["signature"]["value"] == expected_signature
     assert payload_response.status_code == 200
     assert [event["details"]["workspace_id"] for event in payload_response.json()] == [
         workspace["id"]
@@ -2482,6 +2525,45 @@ def test_audit_api_filters_and_limits_records(tmp_path):
     assert payload_missing_response.json() == []
     assert missing_response.status_code == 200
     assert missing_response.json() == []
+
+
+def test_audit_archive_export_requires_signing_key(tmp_path):
+    client = TestClient(create_app())
+    actor = {"id": "admin-ui", "roles": ["admin"]}
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": actor,
+            "name": "Unsigned Audit Backend",
+            "trace_id": "test-audit-unsigned-project",
+        },
+    )
+    workspace_response = client.post(
+        f"/api/v1/projects/{project_response.json()['id']}/workspaces",
+        json={
+            "actor": actor,
+            "machine_id": "local",
+            "path": str(tmp_path),
+            "allowed_root": str(tmp_path),
+            "trace_id": "test-audit-unsigned-workspace",
+        },
+    )
+    client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": actor,
+            "project_id": project_response.json()["id"],
+            "workspace_id": workspace_response.json()["id"],
+            "name": "Unsigned Audit Session",
+            "trace_id": "test-audit-unsigned-session",
+        },
+    )
+
+    response = client.get("/api/v1/audit/export", params={"format": "archive"})
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "COMMAND_ARGUMENT_INVALID"
+    assert "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY" in response.json()["next_step"]
 
 
 def test_command_execute_api_creates_project_session_and_turn(tmp_path):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import hashlib
 import hmac
 import io
 import json
@@ -1765,6 +1766,16 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         limit: int = 100,
         format: str = "json",
     ):
+        filters = audit_export_filter_payload(
+            actor_id=actor_id,
+            action=action,
+            project_id=project_id,
+            session_id=session_id,
+            interaction_id=interaction_id,
+            trace_id=trace_id,
+            q=q,
+            limit=limit,
+        )
         events = list_audit_events_for_export(
             control,
             actor_id=actor_id,
@@ -1796,10 +1807,19 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
                     "content-disposition": 'attachment; filename="agentbridge-audit.csv"'
                 },
             )
+        if normalized_format in {"archive", "signed_archive"}:
+            return JSONResponse(
+                content=signed_audit_archive(events, filters=filters),
+                headers={
+                    "content-disposition": (
+                        'attachment; filename="agentbridge-audit-archive.json"'
+                    )
+                },
+            )
         raise AgentBridgeError(
             ErrorCode.COMMAND_ARGUMENT_INVALID,
             "Unsupported audit export format.",
-            next_step="Use format=json or format=csv.",
+            next_step="Use format=json, format=csv, or format=archive.",
             status_code=400,
         )
 
@@ -1821,6 +1841,29 @@ AUDIT_EXPORT_COLUMNS = [
     "entry_hash",
     "details",
 ]
+
+
+def audit_export_filter_payload(
+    *,
+    actor_id: str | None,
+    action: str | None,
+    project_id: str | None,
+    session_id: str | None,
+    interaction_id: str | None,
+    trace_id: str | None,
+    q: str | None,
+    limit: int,
+) -> dict[str, object]:
+    return {
+        "actor_id": actor_id,
+        "action": action,
+        "project_id": project_id,
+        "session_id": session_id,
+        "interaction_id": interaction_id,
+        "trace_id": trace_id,
+        "q": q,
+        "limit": limit,
+    }
 
 
 def list_audit_events_for_export(
@@ -1877,6 +1920,63 @@ def audit_events_to_csv(events: list[AuditEvent]) -> str:
     for event in events:
         writer.writerow(audit_event_export_row(event))
     return output.getvalue()
+
+
+def canonical_json(data: object) -> str:
+    return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def audit_archive_signing_key() -> tuple[str, str]:
+    keys, configured = tokens_from_env("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY")
+    if keys:
+        key_id = os.environ.get("AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID", "").strip()
+        return keys[0], key_id or "default"
+    next_step = (
+        "Set AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY or "
+        "AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_FILE."
+    )
+    if configured:
+        next_step = "Check that the configured audit archive signing key file is readable."
+    raise AgentBridgeError(
+        ErrorCode.COMMAND_ARGUMENT_INVALID,
+        "Audit archive signing key is not configured.",
+        next_step=next_step,
+        status_code=400,
+    )
+
+
+def signed_audit_archive(
+    events: list[AuditEvent], *, filters: dict[str, object]
+) -> dict[str, object]:
+    signing_key, key_id = audit_archive_signing_key()
+    records = [event.model_dump(mode="json") for event in events]
+    archive = {
+        "format": "signed_audit_archive",
+        "version": 1,
+        "algorithm": "HMAC-SHA256",
+        "exported_at": utc_now().isoformat(),
+        "filters": filters,
+        "record_count": len(records),
+        "newest_entry_hash": records[0]["entry_hash"] if records else None,
+        "oldest_entry_hash": records[-1]["entry_hash"] if records else None,
+        "records": records,
+    }
+    canonical_archive = canonical_json(archive)
+    archive_sha256 = hashlib.sha256(canonical_archive.encode("utf-8")).hexdigest()
+    signature = hmac.new(
+        signing_key.encode("utf-8"),
+        canonical_archive.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return {
+        "archive": archive,
+        "signature": {
+            "algorithm": "HMAC-SHA256",
+            "key_id": key_id,
+            "archive_sha256": archive_sha256,
+            "value": signature,
+        },
+    }
 
 
 def ensure_chat_context_id(payload: CommandRequest, control: ControlPlane) -> str:

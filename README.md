@@ -270,7 +270,11 @@ Audit records can be queried through `GET /api/v1/audit` with optional `actor_id
 `limit` filters. `q` performs a case-insensitive contains match over audit
 `details`. Results are bounded and returned newest first for operational review.
 The same filters can be exported through `GET /api/v1/audit/export?format=json`
-or `format=csv`.
+or `format=csv`. Set `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY` or
+`AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_FILE` to enable
+`format=archive`, which returns a signed archive JSON document. The archive signs the
+canonical `archive` object with HMAC-SHA256 and includes the signing `key_id`
+from `AGENTBRIDGE_AUDIT_ARCHIVE_SIGNING_KEY_ID` when configured.
 
 Semantic events can be searched across streams through `GET /api/v1/events` with
 optional `project_id`, `session_id`, `turn_id`, `interaction_id`, `event_type`,
@@ -515,7 +519,8 @@ the same REST APIs used by external clients. The interaction
 page lists and filters questions/approvals, creates new interactions, answers questions,
 votes on approvals, and cancels pending items. The audit/event page filters audit
 records, searches semantic events across streams, supports `q` text search over audit
-details and event payloads, exports filtered audit records as JSON or CSV, replays
+details and event payloads, exports filtered audit records as JSON, CSV, or a signed
+archive, replays
 session semantic events, and can live-tail a selected session's event stream over WebSocket.
 The terminal lifecycle page shows tracked sessions, exit/loss counts, automatic restart
 attempts, command allowlist patterns, policy blocks, backend supervision state, and can
