@@ -516,6 +516,23 @@ class ControlPlane:
         )
         return self.repository.queue_snapshot(session_id)
 
+    def get_session_lease(
+        self,
+        *,
+        actor: Actor,
+        session_id: str,
+        chat_context_id: str | None = None,
+    ) -> WriterLease | None:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.require_session_permission(
+            effective_actor,
+            Permission.SESSION_VIEW,
+            session_id=session_id,
+            chat_context_id=chat_context_id,
+            attributes={"operation": "lease_status"},
+        )
+        return self.repository.current_lease(session_id)
+
     def remove_queued_turn(
         self,
         *,

@@ -30,7 +30,7 @@ This repository currently contains the first executable backend slice:
 - Project/chat-context approval quorum overrides through REST and `/agent policy`.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - Persistent access policy allow/deny rules with action/resource/actor/role/attribute matching and a simulation API.
-- Built-in Admin Web pages for system health, project/session and queue operations, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
+- Built-in Admin Web pages for system health, project/session operations with active Turn, queue, and lease status, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
 Production PTY supervision, full mTLS/device certificate rotation workflows, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
@@ -228,7 +228,7 @@ revoke chat-context roles,
 `chat_context_manage` to create chat contexts or update their active project/session
 pointers, `project_read` to list projects, show project details, or list workspaces,
 `project_manage` to create projects, add workspaces, or bind projects to
-chat spaces, `session_read` to list or show sessions or queued Turns,
+chat spaces, `session_read` to list or show sessions, queued Turns, or current writer leases,
 `session_manage` to create or close sessions, acquire or release writer leases,
 or clear/reorder/pause/resume queues, `session_send` to enqueue session turns or remove queued Turns,
 `session_event_ingest` to ingest Terminal Agent session events,

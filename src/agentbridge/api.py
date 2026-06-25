@@ -985,6 +985,14 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             "turns": [turn.model_dump(mode="json") for turn in turns],
         }
 
+    @app.get("/api/v1/sessions/{session_id}/lease")
+    def get_session_lease(session_id: str, control: ControlPlane = Depends(get_control)):
+        lease = control.get_session_lease(
+            actor=Actor(id="api", roles={"admin"}),
+            session_id=session_id,
+        )
+        return lease.model_dump(mode="json") if lease else None
+
     @app.post("/api/v1/sessions/{session_id}/queue/reorder")
     def reorder_turn_queue(
         session_id: str,
@@ -2385,7 +2393,7 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         or (
             len(path_segments) == 6
             and path_segments[:4] == ["", "api", "v1", "sessions"]
-            and path_segments[5] == "queue"
+            and path_segments[5] in {"queue", "lease"}
         )
     ):
         return DeviceIdentityScope.SESSION_READ

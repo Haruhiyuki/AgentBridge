@@ -1224,6 +1224,9 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       border-collapse: collapse;
       table-layout: fixed;
     }
+    .ops-table {
+      min-width: 880px;
+    }
     th, td {
       padding: 9px 10px;
       border-bottom: 1px solid var(--line);
@@ -1454,7 +1457,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       </div>
 
       <div class="table-wrap">
-        <table aria-label="Sessions">
+        <table aria-label="Sessions" class="ops-table">
           <thead>
             <tr>
               <th>Name</th>
@@ -1462,6 +1465,9 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
               <th>Status</th>
               <th>Agent</th>
               <th>Workspace</th>
+              <th>Active Turn</th>
+              <th>Queue</th>
+              <th>Lease</th>
             </tr>
           </thead>
           <tbody id="sessions"></tbody>
@@ -1511,6 +1517,9 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     let selectedProjectId = "";
     let selectedSessionId = "";
     let queueState = null;
+    let currentSessions = [];
+    let sessionQueues = new Map();
+    let sessionLeases = new Map();
 
     function csv(value) {
       return value.split(",").map((item) => item.trim()).filter(Boolean);
@@ -1575,6 +1584,27 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       row.appendChild(td);
     }
 
+    function formatSessionQueue(session) {
+      const queue = sessionQueues.get(session.id);
+      if (!queue) return session.queue_paused ? "paused" : "-";
+      const count = (queue.turns || []).length;
+      return `${count} ${queue.queue_paused ? "paused" : "active"}`;
+    }
+
+    function formatSessionLease(session) {
+      const lease = sessionLeases.get(session.id);
+      if (!lease) return "none";
+      return `${lease.owner_type}:${lease.owner_id} #${lease.epoch}`;
+    }
+
+    function sessionDetail(session) {
+      return {
+        ...session,
+        queue: sessionQueues.get(session.id) || null,
+        lease: sessionLeases.get(session.id) || null,
+      };
+    }
+
     function renderProjects() {
       const rows = projects.map((project) => {
         const tr = document.createElement("tr");
@@ -1631,6 +1661,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     }
 
     function renderSessions(sessions) {
+      currentSessions = sessions;
       const rows = sessions.map((session) => {
         const tr = document.createElement("tr");
         tr.dataset.sessionId = session.id;
@@ -1641,6 +1672,9 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
           session.status,
           session.agent_type,
           session.workspace_id,
+          session.active_turn_id || "-",
+          formatSessionQueue(session),
+          formatSessionLease(session),
         ]) {
           appendCell(tr, value);
         }
@@ -1654,6 +1688,20 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
         $("session-json").textContent = "{}";
         renderQueue(null);
       }
+    }
+
+    async function refreshSessionOperations(sessions) {
+      sessionQueues = new Map();
+      sessionLeases = new Map();
+      await Promise.all(sessions.map(async (session) => {
+        const encodedSession = encodeURIComponent(session.id);
+        const [queue, lease] = await Promise.all([
+          requestJson(`/api/v1/sessions/${encodedSession}/queue`),
+          requestJson(`/api/v1/sessions/${encodedSession}/lease`),
+        ]);
+        sessionQueues.set(session.id, queue);
+        sessionLeases.set(session.id, lease);
+      }));
     }
 
     function renderQueue(queue) {
@@ -1728,6 +1776,8 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       setText("selected-project", project ? project.slug : "-");
       $("project-json").textContent = JSON.stringify(project || {}, null, 2);
       if (!project) {
+        sessionQueues = new Map();
+        sessionLeases = new Map();
         renderWorkspaces([]);
         renderSessions([]);
         return;
@@ -1737,10 +1787,15 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
         requestJson(`/api/v1/projects/${encoded}/workspaces`),
         requestJson(`/api/v1/sessions?project_id=${encoded}`),
       ]);
+      await refreshSessionOperations(sessions);
       renderWorkspaces(workspaces);
       renderSessions(sessions);
+      const selectedSession = currentSessions.find((session) => session.id === selectedSessionId);
+      if (selectedSession) {
+        $("session-json").textContent = JSON.stringify(sessionDetail(selectedSession), null, 2);
+      }
       if (selectedSessionId) {
-        await loadQueue();
+        renderQueue(sessionQueues.get(selectedSessionId) || null);
       } else {
         renderQueue(null);
       }
@@ -1758,7 +1813,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
 
     function selectSession(session) {
       selectedSessionId = session.id;
-      $("session-json").textContent = JSON.stringify(session, null, 2);
+      $("session-json").textContent = JSON.stringify(sessionDetail(session), null, 2);
       document.querySelectorAll("#sessions tr").forEach((row) => {
         row.classList.toggle("selected", row.dataset.sessionId === selectedSessionId);
       });
@@ -1776,7 +1831,13 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       const queue = await requestJson(
         `/api/v1/sessions/${encodeURIComponent(selectedSessionId)}/queue`,
       );
+      sessionQueues.set(selectedSessionId, queue);
       renderQueue(queue);
+      const selectedSession = currentSessions.find((session) => session.id === selectedSessionId);
+      if (selectedSession) {
+        $("session-json").textContent = JSON.stringify(sessionDetail(selectedSession), null, 2);
+      }
+      renderSessions(currentSessions);
       return queue;
     }
 

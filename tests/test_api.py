@@ -1038,6 +1038,15 @@ def test_managed_device_identity_session_read_scope_allows_session_read_apis(
             "trace_id": "session-read-manager-turn",
         },
     ).json()
+    acquired_lease_response = client.post(
+        f"/api/v1/sessions/{existing_session['id']}/lease/acquire",
+        json={
+            "actor": maintainer,
+            "owner_type": "web_admin",
+            "owner_id": "usr_maintainer",
+            "trace_id": "session-read-manager-lease",
+        },
+    )
 
     create_identity_response = client.post(
         "/api/v1/device-identities",
@@ -1067,6 +1076,10 @@ def test_managed_device_identity_session_read_scope_allows_session_read_apis(
         f"/api/v1/sessions/{existing_session['id']}/queue",
         headers=key_headers,
     )
+    lease_response = client.get(
+        f"/api/v1/sessions/{existing_session['id']}/lease",
+        headers=key_headers,
+    )
     create_session_response = client.post(
         "/api/v1/sessions",
         json={
@@ -1090,6 +1103,11 @@ def test_managed_device_identity_session_read_scope_allows_session_read_apis(
     assert queue_response.json()["queue_version"].startswith("qv_")
     assert queue_response.json()["queue_paused"] is False
     assert [turn["id"] for turn in queue_response.json()["turns"]] == [queued_turn["id"]]
+    assert acquired_lease_response.status_code == 200
+    assert acquired_lease_response.json()["owner_id"] == "usr_maintainer"
+    assert lease_response.status_code == 200
+    assert lease_response.json()["owner_type"] == "web_admin"
+    assert lease_response.json()["owner_id"] == "usr_maintainer"
     assert create_session_response.status_code == 403
 
 
@@ -1635,12 +1653,18 @@ def test_project_session_admin_ui_serves_dashboard():
     assert "queue-resume" in html
     assert "queue-clear" in html
     assert "queue-version" in html
+    assert "Active Turn" in html
+    assert "Lease" in html
+    assert "sessionQueues" in html
+    assert "sessionLeases" in html
+    assert "async function refreshSessionOperations(sessions)" in html
     assert "queue_paused" in html
     assert "async function loadQueue()" in html
     assert "async function setQueuePaused(paused)" in html
     assert "async function clearQueue()" in html
     assert "/queue/${action}" in html
     assert "/queue/clear" in html
+    assert "/lease" in html
 
 
 def test_interaction_admin_ui_serves_dashboard():
