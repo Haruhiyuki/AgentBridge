@@ -185,6 +185,74 @@ def test_terminal_lifecycle_monitor_emits_exit_event_once(tmp_path):
     }
 
 
+def test_terminal_lifecycle_monitor_recovers_started_sessions_from_events(tmp_path):
+    class RecoveredExitedBackend(FakeTerminalBackend):
+        def status(self, *, session_id: str) -> TerminalStatus:
+            return TerminalStatus(
+                started=True,
+                running=False,
+                exit_code=8,
+                pid=5678,
+                output_cursor=99,
+            )
+
+    control = ControlPlane()
+    first_terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+    _, session = create_session(control, tmp_path)
+    first_terminal.start_session(
+        session_id=session.id,
+        command="fake-cli",
+        trace_id="terminal-start-before-restart",
+    )
+
+    restarted_terminal = TerminalAgentService(control, backend=RecoveredExitedBackend())
+    assert restarted_terminal.lifecycle_monitor_status()["tracked_sessions"] == 1
+
+    observed = restarted_terminal.run_lifecycle_monitor_once(trace_id="terminal-monitor-restart")
+
+    assert observed[session.id].exit_code == 8
+    exited_events = [
+        event
+        for event in control.repository.list_events(session_id=session.id)
+        if event.type == "terminal.exited"
+    ]
+    assert len(exited_events) == 1
+    assert exited_events[0].payload["generation"] == 1
+    assert exited_events[0].payload["exit_code"] == 8
+
+
+def test_terminal_lifecycle_recovery_does_not_duplicate_existing_exit(tmp_path):
+    class RecoveredExitedBackend(FakeTerminalBackend):
+        def status(self, *, session_id: str) -> TerminalStatus:
+            return TerminalStatus(
+                started=True,
+                running=False,
+                exit_code=8,
+                pid=5678,
+                output_cursor=99,
+            )
+
+    control = ControlPlane()
+    first_terminal = TerminalAgentService(control, backend=RecoveredExitedBackend())
+    _, session = create_session(control, tmp_path)
+    first_terminal.start_session(
+        session_id=session.id,
+        command="fake-cli",
+        trace_id="terminal-start-before-restart",
+    )
+    first_terminal.run_lifecycle_monitor_once(trace_id="terminal-monitor-before-restart")
+
+    restarted_terminal = TerminalAgentService(control, backend=RecoveredExitedBackend())
+    restarted_terminal.run_lifecycle_monitor_once(trace_id="terminal-monitor-after-restart")
+
+    exited_events = [
+        event
+        for event in control.repository.list_events(session_id=session.id)
+        if event.type == "terminal.exited"
+    ]
+    assert len(exited_events) == 1
+
+
 def test_terminal_api_writes_to_fake_backend_after_lease(tmp_path):
     client = TestClient(create_app())
     actor = {"id": "usr_1", "roles": ["maintainer"]}

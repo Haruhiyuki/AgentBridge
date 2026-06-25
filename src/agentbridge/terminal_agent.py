@@ -501,6 +501,7 @@ class TerminalAgentService:
         self._lifecycle_run_count = 0
         self._lifecycle_last_error: str | None = None
         self._lifecycle_last_observed_count = 0
+        self.recover_lifecycle_state_from_events()
 
     def start_session(
         self,
@@ -642,6 +643,36 @@ class TerminalAgentService:
             self._lifecycle_last_error = "; ".join(errors) if errors else None
             self._lifecycle_last_observed_count = len(observed)
         return observed
+
+    def recover_lifecycle_state_from_events(self) -> dict[str, int]:
+        recovered_generations: dict[str, int] = {}
+        recovered_exits: set[tuple[str, int]] = set()
+        for session in self.control.repository.list_sessions():
+            generation = 0
+            events = self.control.repository.list_events(
+                session_id=session.id,
+                limit=1_000_000,
+            )
+            for event in events:
+                if event.type == "terminal.started":
+                    generation += 1
+                elif event.type == "terminal.exited":
+                    event_generation = event.payload.get("generation")
+                    if isinstance(event_generation, int):
+                        recovered_exits.add((session.id, event_generation))
+                    elif generation > 0:
+                        recovered_exits.add((session.id, generation))
+            if generation > 0:
+                recovered_generations[session.id] = generation
+
+        with self._lifecycle_lock:
+            for session_id, generation in recovered_generations.items():
+                self._terminal_start_generations[session_id] = max(
+                    generation,
+                    self._terminal_start_generations.get(session_id, 0),
+                )
+            self._reported_terminal_exits.update(recovered_exits)
+        return recovered_generations
 
     def start_lifecycle_monitor(self, *, interval_seconds: float = 1.0) -> bool:
         with self._lifecycle_lock:

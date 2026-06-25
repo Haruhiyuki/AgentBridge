@@ -51,6 +51,7 @@ Implemented in this slice:
 - Terminal status is exposed through REST, Terminal WebSocket, and local daemon actions; PTY status includes running/exited state, exit code, pid, and current output cursor.
 - Terminal Agent emits `terminal.exited` once per observed terminal start generation when status or lifecycle polling first sees a backend has exited, and the renderer has an operator-visible fallback for that lifecycle event.
 - Terminal lifecycle monitor can poll known started terminals in the background; the local Terminal Agent daemon enables it by default, and the FastAPI lifespan can enable it with `AGENTBRIDGE_TERMINAL_LIFECYCLE_MONITOR_ENABLED=true`.
+- Terminal lifecycle tracking is reconstructed from persisted semantic events at service startup, restoring known terminal start generations and already-reported exits after Control Plane or daemon process restarts.
 - Terminal input request idempotency now prevents duplicate backend writes for repeated request IDs.
 - Terminal start/input/snapshot/status REST endpoints for MVP integration tests.
 - Terminal command WebSocket through `/api/v1/sessions/{id}/terminal/ws`, supporting `health`, `start_session`, `acquire_lease`, `release_lease`, `submit_input`, `snapshot`, and `status`.
@@ -119,7 +120,7 @@ Implemented in this slice:
 
 Not implemented yet:
 
-- Desktop terminal auto-launch, PTY restart recovery, independent PTY host process supervision, and persisted lifecycle state across process restarts.
+- Desktop terminal auto-launch, PTY process restart recovery, independent PTY host process supervision, and durable PTY host state beyond semantic lifecycle reconstruction.
 - Richer OneBot renderer/action adapter and native NoneBot lifecycle registration helpers.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
@@ -143,7 +144,7 @@ Not implemented yet:
 - Console raw mode is still an input/control passthrough over the Terminal Agent socket, not a full terminal emulator. Its daemon output stream consumes backend cursor chunks; with `AGENTBRIDGE_TERMINAL_BACKEND=pty` those chunks come from a stdlib PTY reader loop, while fake/tmux remain snapshot-derived.
 - The stdlib PTY backend is opt-in for local experiments. Fake remains the default test backend, and tmux remains the resumable MVP backend after Agent process restarts.
 - The PTY backend uses a bounded retained-output window rather than recording all terminal output. Cursor values are absolute within the session lifetime; when a reader falls behind the retained window, `read_output`/`stream_output` returns `reset=True` with the retained tail so consoles can repaint deterministically.
-- Terminal exit observation can be driven by the in-process lifecycle monitor, so clients do not have to call `status` to produce `terminal.exited`. It is still a lightweight in-process poller over known started terminals; production lifecycle supervision still needs an independent PTY host or persistent scheduler that survives Agent process restarts.
+- Terminal exit observation can be driven by the in-process lifecycle monitor, so clients do not have to call `status` to produce `terminal.exited`. The monitor recovers tracked terminal generations from semantic events, but production lifecycle supervision still needs an independent PTY host or persistent scheduler that keeps the actual CLI/PTY process alive across Agent process restarts.
 - The tmux backend treats an existing `agentbridge_<session-id>` session as resumable state after Agent restart, matching the design's MVP recovery path.
 - Rendering is split into platform-neutral documents and platform renderers. The first renderer intentionally targets text fallback so unsupported Bot platforms still receive coherent output.
 - Bot delivery idempotency is implemented before real platform integration so duplicate event replay cannot cause duplicate sends once a real transport is attached.
@@ -184,7 +185,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 
 ## Next Development Backlog
 
-1. Add desktop terminal auto-launch plus production PTY lifecycle hardening, including restart recovery, independent host process supervision, and persisted lifecycle state.
+1. Add desktop terminal auto-launch plus production PTY lifecycle hardening, including PTY process restart recovery, independent host process supervision, and durable PTY host state.
 2. Add an admin policy editor UI for access policy rules with simulation before save.
 3. Replace the MVP WebSocket token gate with mTLS/device-key auth.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.

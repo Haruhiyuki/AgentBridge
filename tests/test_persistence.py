@@ -13,9 +13,11 @@ from agentbridge.domain import (
     PolicyScope,
     RiskLevel,
     SemanticEventSource,
+    Visibility,
 )
 from agentbridge.persistence import SQLAlchemyRepository
 from agentbridge.policy import Permission
+from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService, TerminalStatus
 
 
 def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
@@ -143,6 +145,67 @@ def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
     )
     assert duplicate_result == session_result
     assert len(second_repo.sessions) == 1
+
+
+def test_terminal_lifecycle_tracking_recovers_from_persisted_events(tmp_path):
+    class RecoveredExitedBackend(FakeTerminalBackend):
+        def status(self, *, session_id: str) -> TerminalStatus:
+            return TerminalStatus(
+                started=True,
+                running=False,
+                exit_code=12,
+                pid=2468,
+                output_cursor=101,
+            )
+
+    database_url = f"sqlite:///{tmp_path / 'agentbridge.db'}"
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    first_control = ControlPlane(repository=first_repo)
+    project = first_control.create_project(actor=maintainer, name="Backend", trace_id="project")
+    workspace = first_control.add_workspace(
+        actor=maintainer,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="workspace",
+    )
+    session = first_control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Persisted Terminal",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="session",
+    )
+    first_terminal = TerminalAgentService(first_control, backend=FakeTerminalBackend())
+    first_terminal.start_session(
+        session_id=session.id,
+        command="fake-cli",
+        trace_id="terminal-start-before-repository-reload",
+    )
+
+    second_repo = SQLAlchemyRepository(database_url)
+    second_control = ControlPlane(repository=second_repo)
+    restarted_terminal = TerminalAgentService(second_control, backend=RecoveredExitedBackend())
+
+    assert restarted_terminal.lifecycle_monitor_status()["tracked_sessions"] == 1
+    observed = restarted_terminal.run_lifecycle_monitor_once(
+        trace_id="terminal-monitor-after-repository-reload"
+    )
+
+    assert observed[session.id].exit_code == 12
+    exited_events = [
+        event
+        for event in second_repo.list_events(session_id=session.id)
+        if event.type == "terminal.exited"
+    ]
+    assert len(exited_events) == 1
+    assert exited_events[0].payload["generation"] == 1
+    assert exited_events[0].payload["exit_code"] == 12
 
 
 def test_api_can_use_sqlalchemy_repository_from_environment(tmp_path, monkeypatch):
