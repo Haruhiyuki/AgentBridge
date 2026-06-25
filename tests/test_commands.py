@@ -176,7 +176,8 @@ def test_project_create_command_sets_queued_turn_quota(tmp_path):
         commands,
         (
             f"/agent project create --name Backend --path {tmp_path} "
-            f"--root {tmp_path} --max-running-turns 2 --max-queued-turns 1"
+            f"--root {tmp_path} --max-running-turns 2 --max-queued-turns 1 "
+            "--daily-turns-per-user 3"
         ),
         maintainer,
         context.id,
@@ -208,6 +209,7 @@ def test_project_create_command_sets_queued_turn_quota(tmp_path):
 
     assert project_result.data["project"]["max_queued_turns"] == 1
     assert project_result.data["project"]["max_running_turns"] == 2
+    assert project_result.data["project"]["daily_turns_per_user"] == 3
     assert session.canonical_command == "session.create"
     assert first_turn.canonical_command == "turn.enqueue"
     assert blocked.value.code == ErrorCode.QUOTA_EXCEEDED

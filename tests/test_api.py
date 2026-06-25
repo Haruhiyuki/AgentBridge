@@ -1528,6 +1528,8 @@ def test_project_session_admin_ui_serves_dashboard():
     assert "function readProjectMaxRunningTurns()" in html
     assert "project-max-queued-turns" in html
     assert "function readProjectMaxQueuedTurns()" in html
+    assert "project-daily-turns-per-user" in html
+    assert "function readProjectDailyTurnsPerUser()" in html
     assert "workspace-writable" in html
     assert "workspace-max-write-sessions" in html
     assert "function syncWorkspaceWritePolicy()" in html
@@ -1857,6 +1859,85 @@ def test_project_queued_turn_quota_blocks_excess_turns_per_project(tmp_path):
     }
 
 
+def test_project_daily_turn_quota_blocks_same_user_only(tmp_path):
+    client = TestClient(create_app())
+    admin = {"id": "admin-ui", "roles": ["admin"]}
+    first_actor = {"id": "usr_daily_one", "roles": ["admin"]}
+    second_actor = {"id": "usr_daily_two", "roles": ["admin"]}
+
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": admin,
+            "name": "Daily Turn Quota",
+            "daily_turns_per_user": 1,
+            "trace_id": "test-daily-turn-project",
+        },
+    )
+    assert project_response.status_code == 200
+    project = project_response.json()
+    workspace_response = client.post(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        json={
+            "actor": admin,
+            "machine_id": "local",
+            "path": str(tmp_path / "repo"),
+            "allowed_root": str(tmp_path),
+            "trace_id": "test-daily-turn-workspace",
+        },
+    )
+    assert workspace_response.status_code == 200
+    workspace = workspace_response.json()
+    session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": admin,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Daily Turn Session",
+            "trace_id": "test-daily-turn-session",
+        },
+    )
+    assert session_response.status_code == 200
+    session = session_response.json()
+    first_turn_response = client.post(
+        f"/api/v1/sessions/{session['id']}/turns",
+        json={
+            "actor": first_actor,
+            "prompt": "First daily turn",
+            "trace_id": "test-daily-turn-first",
+        },
+    )
+    blocked_turn_response = client.post(
+        f"/api/v1/sessions/{session['id']}/turns",
+        json={
+            "actor": first_actor,
+            "prompt": "Blocked daily turn",
+            "trace_id": "test-daily-turn-blocked",
+        },
+    )
+    other_user_turn_response = client.post(
+        f"/api/v1/sessions/{session['id']}/turns",
+        json={
+            "actor": second_actor,
+            "prompt": "Other user daily turn",
+            "trace_id": "test-daily-turn-other-user",
+        },
+    )
+
+    assert project["daily_turns_per_user"] == 1
+    assert first_turn_response.status_code == 200
+    assert blocked_turn_response.status_code == 409
+    blocked_payload = blocked_turn_response.json()
+    assert blocked_payload["error_code"] == "QUOTA_EXCEEDED"
+    assert blocked_payload["details"]["project_id"] == project["id"]
+    assert blocked_payload["details"]["actor_id"] == "usr_daily_one"
+    assert blocked_payload["details"]["daily_turns"] == 1
+    assert blocked_payload["details"]["daily_turns_per_user"] == 1
+    assert "reset_at" in blocked_payload["details"]
+    assert other_user_turn_response.status_code == 200
+
+
 def test_project_session_rest_flow_supports_admin_operations(tmp_path):
     client = TestClient(create_app())
     actor = {"id": "admin-ui", "roles": ["admin"]}
@@ -1873,6 +1954,7 @@ def test_project_session_rest_flow_supports_admin_operations(tmp_path):
             "max_active_sessions": 3,
             "max_running_turns": 2,
             "max_queued_turns": 5,
+            "daily_turns_per_user": 7,
             "trace_id": "test-admin-project-create",
         },
     )
@@ -1882,6 +1964,7 @@ def test_project_session_rest_flow_supports_admin_operations(tmp_path):
     assert project["max_active_sessions"] == 3
     assert project["max_running_turns"] == 2
     assert project["max_queued_turns"] == 5
+    assert project["daily_turns_per_user"] == 7
 
     workspace_path = tmp_path / "repo"
     workspace_response = client.post(

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from uuid import uuid4
@@ -127,6 +127,7 @@ class InMemoryRepository:
         max_active_sessions: int = 10,
         max_running_turns: int = 4,
         max_queued_turns: int = 100,
+        daily_turns_per_user: int = 50,
     ) -> Project:
         with self._lock:
             project_id = new_id("prj")
@@ -162,6 +163,14 @@ class InMemoryRepository:
                     status_code=400,
                     details={"max_running_turns": max_running_turns},
                 )
+            if daily_turns_per_user < 0:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "项目每日每用户任务数不能为负。",
+                    next_step="请将 daily_turns_per_user 设置为 0 或更大的整数。",
+                    status_code=400,
+                    details={"daily_turns_per_user": daily_turns_per_user},
+                )
             project = Project(
                 id=project_id,
                 name=name.strip(),
@@ -172,6 +181,7 @@ class InMemoryRepository:
                 max_active_sessions=max_active_sessions,
                 max_running_turns=max_running_turns,
                 max_queued_turns=max_queued_turns,
+                daily_turns_per_user=daily_turns_per_user,
                 created_by=actor.id,
             )
             self.projects[project.id] = project
@@ -876,6 +886,27 @@ class InMemoryRepository:
             if turn.session_id in session_ids and turn.status == TurnStatus.RUNNING
         )
 
+    def _count_project_daily_turns(self, *, project_id: str, actor_id: str) -> int:
+        today = utc_now().date()
+        session_ids = {
+            session.id for session in self.sessions.values() if session.project_id == project_id
+        }
+        return sum(
+            1
+            for turn in self.turns.values()
+            if turn.session_id in session_ids
+            and turn.actor_id == actor_id
+            and turn.queued_at.date() == today
+        )
+
+    def _next_utc_day_start(self) -> datetime:
+        now = utc_now()
+        return datetime.combine(
+            now.date() + timedelta(days=1),
+            datetime.min.time(),
+            tzinfo=now.tzinfo,
+        )
+
     def _select_default_workspace(self, project_id: str) -> Workspace:
         candidates = self.list_workspaces(project_id)
         if not candidates:
@@ -990,6 +1021,25 @@ class InMemoryRepository:
                         "queued_turns": queued_turn_count,
                         "max_queued_turns": project.max_queued_turns,
                         "queue_position": queued_turn_count + 1,
+                    },
+                )
+            daily_turn_count = self._count_project_daily_turns(
+                project_id=project.id,
+                actor_id=actor.id,
+            )
+            if daily_turn_count >= project.daily_turns_per_user:
+                reset_at = self._next_utc_day_start().isoformat()
+                raise AgentBridgeError(
+                    ErrorCode.QUOTA_EXCEEDED,
+                    "项目每日每用户任务数已达到配额上限。",
+                    next_step="请等待每日配额重置，或提高项目 daily_turns_per_user 配额。",
+                    status_code=409,
+                    details={
+                        "project_id": project.id,
+                        "actor_id": actor.id,
+                        "daily_turns": daily_turn_count,
+                        "daily_turns_per_user": project.daily_turns_per_user,
+                        "reset_at": reset_at,
                     },
                 )
             turn = Turn(

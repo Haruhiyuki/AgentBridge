@@ -93,6 +93,7 @@ class ControlPlane:
         max_active_sessions: int = 10,
         max_running_turns: int = 4,
         max_queued_turns: int = 100,
+        daily_turns_per_user: int = 50,
         trace_id: str,
         chat_context_id: str | None = None,
     ) -> Project:
@@ -109,6 +110,7 @@ class ControlPlane:
                 "max_active_sessions": max_active_sessions,
                 "max_running_turns": max_running_turns,
                 "max_queued_turns": max_queued_turns,
+                "daily_turns_per_user": daily_turns_per_user,
                 **self._chat_policy_attributes(chat_context_id),
             },
         )
@@ -122,6 +124,7 @@ class ControlPlane:
             max_active_sessions=max_active_sessions,
             max_running_turns=max_running_turns,
             max_queued_turns=max_queued_turns,
+            daily_turns_per_user=daily_turns_per_user,
         )
         self.audit(
             action="project.created",
@@ -142,6 +145,7 @@ class ControlPlane:
                 "max_active_sessions": project.max_active_sessions,
                 "max_running_turns": project.max_running_turns,
                 "max_queued_turns": project.max_queued_turns,
+                "daily_turns_per_user": project.daily_turns_per_user,
             },
         )
         return project
@@ -1977,6 +1981,7 @@ class ControlPlane:
                     "max_active_sessions": project.max_active_sessions,
                     "max_running_turns": project.max_running_turns,
                     "max_queued_turns": project.max_queued_turns,
+                    "daily_turns_per_user": project.daily_turns_per_user,
                     "created_by": project.created_by,
                 }
             )

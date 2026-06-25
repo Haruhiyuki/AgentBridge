@@ -1307,6 +1307,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
               <th>Max Sessions</th>
               <th>Max Running</th>
               <th>Max Queue</th>
+              <th>Daily/User</th>
             </tr>
           </thead>
           <tbody id="projects"></tbody>
@@ -1344,6 +1345,10 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
         <label>
           Max Queued Turns
           <input id="project-max-queued-turns" type="number" min="0" step="1" value="100">
+        </label>
+        <label>
+          Daily Turns/User
+          <input id="project-daily-turns-per-user" type="number" min="0" step="1" value="50">
         </label>
         <label class="wide">
           Description
@@ -1503,6 +1508,11 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       return Number.isFinite(parsed) ? Math.max(0, parsed) : 100;
     }
 
+    function readProjectDailyTurnsPerUser() {
+      const parsed = Number.parseInt($("project-daily-turns-per-user").value || "50", 10);
+      return Number.isFinite(parsed) ? Math.max(0, parsed) : 50;
+    }
+
     function setStatus(text) {
       $("status").textContent = text;
     }
@@ -1543,6 +1553,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
           project.max_active_sessions,
           project.max_running_turns,
           project.max_queued_turns,
+          project.daily_turns_per_user,
         ]) {
           appendCell(tr, value);
         }
@@ -1690,6 +1701,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
           max_active_sessions: readProjectMaxActiveSessions(),
           max_running_turns: readProjectMaxRunningTurns(),
           max_queued_turns: readProjectMaxQueuedTurns(),
+          daily_turns_per_user: readProjectDailyTurnsPerUser(),
           trace_id: "admin-ui-project-create",
         }),
       });
