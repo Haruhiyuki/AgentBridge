@@ -267,6 +267,13 @@ class TerminalInputRequest(BaseModel):
     trace_id: str = "api"
 
 
+class TerminalLifecycleRunOnceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    trace_id: str = "terminal-lifecycle-api"
+
+
 class CommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1160,6 +1167,41 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             session_id=session_id,
             trace_id="terminal-status",
         ).to_payload()
+
+    @app.get("/api/v1/terminal/lifecycle-monitor")
+    def terminal_lifecycle_monitor_status(
+        control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
+    ):
+        actor = Actor(id="api", roles={"admin"})
+        control.require_collection_permission(
+            actor,
+            Permission.AUDIT_VIEW,
+            resource_type="terminal_lifecycle",
+            attributes={"operation": "terminal_lifecycle_status"},
+        )
+        return terminal_service.lifecycle_monitor_status()
+
+    @app.post("/api/v1/terminal/lifecycle-monitor/run-once")
+    def run_terminal_lifecycle_monitor_once(
+        payload: TerminalLifecycleRunOnceRequest,
+        control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
+    ):
+        control.require_collection_permission(
+            payload.actor.to_actor(),
+            Permission.TERMINAL_CONTROL,
+            resource_type="terminal_lifecycle",
+            attributes={"operation": "terminal_lifecycle_run_once"},
+        )
+        observed = terminal_service.run_lifecycle_monitor_once(trace_id=payload.trace_id)
+        return {
+            "monitor": terminal_service.lifecycle_monitor_status(),
+            "observed": {
+                session_id: status.to_payload()
+                for session_id, status in observed.items()
+            },
+        }
 
     @app.websocket("/api/v1/sessions/{session_id}/terminal/ws")
     async def terminal_command_websocket(

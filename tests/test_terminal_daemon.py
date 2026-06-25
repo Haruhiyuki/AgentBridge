@@ -49,6 +49,7 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
             control=control,
             terminal=terminal,
             auth_token="secret-token",
+            lifecycle_monitor_enabled=False,
         )
         await server.start(socket_path)
         try:
@@ -64,6 +65,11 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
             assert health["ok"] is True
             assert health["data"]["status"] == "ok"
 
+            lifecycle_status = await client.request("lifecycle_status")
+            assert lifecycle_status["ok"] is True
+            assert lifecycle_status["data"]["running"] is False
+            assert lifecycle_status["data"]["backend_supervision"] == {"enabled": False}
+
             started = await client.request(
                 "start_session",
                 {
@@ -74,6 +80,14 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
             )
             assert started["ok"] is True
             assert started["data"]["desktop"] == {"launched": False, "pid": None, "error": None}
+
+            lifecycle_run = await client.request(
+                "run_lifecycle_monitor_once",
+                {"trace_id": "daemon-lifecycle-run-once"},
+            )
+            assert lifecycle_run["ok"] is True
+            assert lifecycle_run["data"]["monitor"]["run_count"] == 1
+            assert lifecycle_run["data"]["observed"][session.id]["started"] is True
 
             lease_response = await client.request(
                 "acquire_human_lease",

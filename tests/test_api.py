@@ -1005,6 +1005,59 @@ def test_terminal_lifecycle_policy_reads_auto_restart_env(monkeypatch):
     assert status["auto_restart_attempt_count"] == 0
 
 
+def test_terminal_lifecycle_monitor_status_and_run_once_api(tmp_path):
+    app = create_app()
+    client = TestClient(app)
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-terminal-lifecycle",
+        prefix="terminal-lifecycle",
+        name="Terminal Lifecycle",
+    )
+    client.post(
+        f"/api/v1/sessions/{session_id}/terminal/start",
+        json={
+            "actor": {"id": "usr_1", "roles": ["maintainer"]},
+            "command": "fake-cli --watch",
+            "trace_id": "terminal-lifecycle-start",
+        },
+    )
+
+    status_response = client.get("/api/v1/terminal/lifecycle-monitor")
+    assert status_response.status_code == 200
+    status = status_response.json()
+    assert status["tracked_sessions"] == 1
+    assert status["backend_supervision"] == {"enabled": False}
+
+    denied_response = client.post(
+        "/api/v1/terminal/lifecycle-monitor/run-once",
+        json={"actor": {"id": "usr_member", "roles": ["member"]}},
+    )
+    assert denied_response.status_code == 403
+
+    run_response = client.post(
+        "/api/v1/terminal/lifecycle-monitor/run-once",
+        json={
+            "actor": {"id": "usr_1", "roles": ["maintainer"]},
+            "trace_id": "terminal-lifecycle-run-once",
+        },
+    )
+
+    assert run_response.status_code == 200
+    payload = run_response.json()
+    assert payload["monitor"]["run_count"] == 1
+    assert payload["observed"][session_id] == {
+        "started": True,
+        "running": True,
+        "exit_code": None,
+        "pid": None,
+        "output_cursor": 0,
+        "output_base_cursor": 0,
+        "output_retained_chars": 0,
+    }
+
+
 def test_terminal_restart_api_uses_last_started_command_after_backend_state_loss(tmp_path):
     app = create_app()
     client = TestClient(app)

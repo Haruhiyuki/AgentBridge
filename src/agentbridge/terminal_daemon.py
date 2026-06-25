@@ -599,6 +599,19 @@ class LocalTerminalAgentServer:
             )
         if action == "health":
             return self.control.health()
+        if action == "lifecycle_status":
+            return self.terminal.lifecycle_monitor_status()
+        if action == "run_lifecycle_monitor_once":
+            observed = self.terminal.run_lifecycle_monitor_once(
+                trace_id=str(payload.get("trace_id") or "local-terminal-lifecycle")
+            )
+            return {
+                "monitor": self.terminal.lifecycle_monitor_status(),
+                "observed": {
+                    session_id: status.to_payload()
+                    for session_id, status in observed.items()
+                },
+            }
         if action == "start_session":
             session_id = required_str(payload, "session_id")
             self.terminal.start_session(
@@ -687,8 +700,9 @@ class LocalTerminalAgentServer:
             ErrorCode.COMMAND_UNKNOWN,
             f"未知本地 Terminal Agent action：{action}",
             next_step=(
-                "请使用 health、start_session、restart_session、acquire_human_lease、"
-                "release_lease、submit_input、snapshot、status、read_output 或 stream_output。"
+                "请使用 health、lifecycle_status、run_lifecycle_monitor_once、"
+                "start_session、restart_session、acquire_human_lease、release_lease、"
+                "submit_input、snapshot、status、read_output 或 stream_output。"
             ),
         )
 
