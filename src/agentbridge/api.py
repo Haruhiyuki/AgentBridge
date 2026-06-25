@@ -10,9 +10,10 @@ from time import monotonic
 
 import uvicorn
 from fastapi import Depends, FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from agentbridge.admin_ui import ACCESS_POLICY_ADMIN_HTML
 from agentbridge.bot_gateway import (
     BotDeliveryRateLimiter,
     BotDeliveryRetryWorker,
@@ -459,6 +460,10 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     @app.exception_handler(AgentBridgeError)
     async def agentbridge_error_handler(_, exc: AgentBridgeError):
         return JSONResponse(status_code=exc.status_code, content=exc.to_payload())
+
+    @app.get("/admin/access-policy", response_class=HTMLResponse)
+    def access_policy_admin_ui():
+        return HTMLResponse(ACCESS_POLICY_ADMIN_HTML)
 
     def get_control() -> ControlPlane:
         return app.state.control

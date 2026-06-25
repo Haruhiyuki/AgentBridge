@@ -126,6 +126,7 @@ Implemented in this slice:
 - PolicyEngine evaluates enabled access policy rules before RBAC fallback; explicit deny rules win over allow rules.
 - Access policy management REST APIs through `GET/POST/PUT /api/v1/access-policy/rules` and `POST /api/v1/access-policy/rules/{id}/delete`.
 - Policy simulation REST API through `POST /api/v1/access-policy/simulate`, returning decision source, reason, required permission, roles, and matched rule ID.
+- Built-in admin access policy editor at `/admin/access-policy`, with rule listing, rule editing, simulation-before-save, save, delete, and focused route coverage.
 - Alembic migration `0007_access_policy_rules` persists access policy rules.
 - Project, session, interaction, approval, group-role, policy-management, and terminal checks now pass resource type/id plus stable attributes into access policy evaluation.
 - Terminal REST and WebSocket paths reuse Control Plane `terminal` resource checks, so session-specific terminal rules are enforced outside the main command flow as well.
@@ -137,7 +138,6 @@ Not implemented yet:
 - Richer OneBot renderer/action adapter and native NoneBot lifecycle registration helpers.
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
-- Admin policy editor UI for access policy rules.
 - Production WebSocket hardening with mTLS/device keys.
 - Platform-specific rich card/button transport adapters and outbound message edit extensions beyond standard OneBot V11.
 - Native action/callback support for platforms that expose buttons or interactions.
@@ -181,6 +181,7 @@ Not implemented yet:
 - Access policy rules are stored separately from approval quorum overrides. Approval policy answers "how many votes"; access policy answers "who may do which action".
 - Access policy evaluation is deny-first and then allow-before-RBAC. This makes temporary freezes explicit while preserving the existing role matrix as the default baseline.
 - Access policy enforcement uses stable resource attributes only: IDs, status, project/session linkage, visibility, agent type, chat context, operation, risk level, and owner metadata. It intentionally avoids volatile or sensitive filesystem path values as policy attributes.
+- The first admin web surface is deliberately scoped to access policy editing at `/admin/access-policy`; broader admin navigation, authentication hardening, and live operational dashboards remain future work.
 - Session creation is evaluated against the target project because the session resource ID does not exist yet. Terminal control is evaluated as `resource_type=terminal` with the session ID so terminal-specific rules do not have to overmatch ordinary session sends.
 - WebSocket session streams are read-side transports over immutable semantic events. They use `after_seq` cursors for replay/reconnect and do not mutate Bot delivery records.
 - Bot Gateway WebSocket subscriptions fan out render frames for external platform adapters, but do not store delivery records. Platform adapters report delivery acknowledgements, edits, and deletes explicitly through the delivery-result API keyed by message idempotency key.
@@ -204,7 +205,7 @@ AGENTBRIDGE_DATABASE_URL=sqlite:////tmp/agentbridge-check.db uv run alembic upgr
 ## Next Development Backlog
 
 1. Harden PTY host recovery beyond watchdog plus command restart, including cross-platform socket/pipe cleanup, Windows ConPTY/Named Pipe parity, and clearer operator policy for non-idempotent CLI restarts.
-2. Add an admin policy editor UI for access policy rules with simulation before save.
+2. Expand the Admin Web UI beyond access policy editing, including project/session operations, lifecycle dashboards, and hardened browser authentication.
 3. Replace the MVP WebSocket token gate with mTLS/device-key auth.
 4. Add optional real-tmux integration smoke tests gated on tmux availability.
 5. Add platform-specific rich card/button transport adapters and outbound edit extensions.

@@ -303,3 +303,18 @@ def test_access_policy_api_manages_and_simulates_rules():
     assert delete_response.json()["id"] == rule_id
     assert denied_response.status_code == 200
     assert denied_response.json()["decision"]["allowed"] is False
+
+
+def test_access_policy_admin_ui_serves_editor():
+    client = TestClient(create_app())
+
+    response = client.get("/admin/access-policy")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    html = response.text
+    assert "AgentBridge Access Policy" in html
+    assert "/api/v1/access-policy/rules" in html
+    assert "/api/v1/access-policy/simulate" in html
+    assert "async function saveRule()" in html
+    assert "await simulatePolicy();" in html
