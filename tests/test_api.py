@@ -50,6 +50,88 @@ def test_health_endpoint_reports_memory_storage():
     assert response.json()["storage"] == "memory"
 
 
+def test_project_session_admin_ui_serves_dashboard():
+    client = TestClient(create_app())
+
+    response = client.get("/admin/projects")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    html = response.text
+    assert "AgentBridge Projects & Sessions" in html
+    assert "/api/v1/projects" in html
+    assert "/api/v1/sessions" in html
+    assert "/workspaces" in html
+    assert "async function createProject()" in html
+    assert "async function createSession()" in html
+    assert "async function closeSession()" in html
+
+
+def test_project_session_rest_flow_supports_admin_operations(tmp_path):
+    client = TestClient(create_app())
+    actor = {"id": "admin-ui", "roles": ["admin"]}
+
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": actor,
+            "name": "Backend",
+            "slug": "backend",
+            "aliases": ["api"],
+            "description": "Admin managed project",
+            "default_agent": "codex",
+            "trace_id": "test-admin-project-create",
+        },
+    )
+    assert project_response.status_code == 200
+    project = project_response.json()
+    assert project["slug"] == "backend"
+
+    workspace_path = tmp_path / "repo"
+    workspace_response = client.post(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        json={
+            "actor": actor,
+            "machine_id": "local",
+            "path": str(workspace_path),
+            "allowed_root": str(tmp_path),
+            "workspace_type": "shared",
+            "trace_id": "test-admin-workspace-add",
+        },
+    )
+    assert workspace_response.status_code == 200
+    workspace = workspace_response.json()
+    assert workspace["project_id"] == project["id"]
+
+    session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": actor,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Admin Session",
+            "agent_type": "codex",
+            "visibility": "group",
+            "trace_id": "test-admin-session-create",
+        },
+    )
+    assert session_response.status_code == 200
+    session = session_response.json()
+    assert session["project_id"] == project["id"]
+    assert session["workspace_id"] == workspace["id"]
+
+    list_response = client.get("/api/v1/sessions", params={"project_id": project["id"]})
+    assert list_response.status_code == 200
+    assert [item["id"] for item in list_response.json()] == [session["id"]]
+
+    close_response = client.post(
+        f"/api/v1/sessions/{session['id']}/close",
+        json=actor,
+    )
+    assert close_response.status_code == 200
+    assert close_response.json()["status"] == "closed"
+
+
 def test_command_execute_api_creates_project_session_and_turn(tmp_path):
     client = TestClient(create_app())
     chat = {

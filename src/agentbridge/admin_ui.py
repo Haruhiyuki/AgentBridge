@@ -80,6 +80,10 @@ ADMIN_HOME_HTML = """<!doctype html>
       <strong>Access Policy</strong>
       <span>Rules, simulation, save, delete</span>
     </a>
+    <a href="/admin/projects">
+      <strong>Projects & Sessions</strong>
+      <span>Project inventory, workspaces, session lifecycle</span>
+    </a>
     <a href="/admin/terminal-lifecycle">
       <strong>Terminal Lifecycle</strong>
       <span>Monitor status, backend supervision, run once</span>
@@ -89,6 +93,654 @@ ADMIN_HOME_HTML = """<!doctype html>
       <span>Records, retry worker, due retry, rate limits</span>
     </a>
   </main>
+</body>
+</html>
+"""
+
+
+PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentBridge Projects & Sessions</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --panel-muted: #f0f3f7;
+      --line: #d6dde6;
+      --text: #17202a;
+      --muted: #5b6878;
+      --accent: #0f766e;
+      --danger: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+    header {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-weight: 650;
+    }
+    nav a:hover { color: var(--accent); }
+    main {
+      display: grid;
+      grid-template-columns: minmax(460px, .95fr) minmax(520px, 1.05fr);
+      min-height: calc(100vh - 56px);
+    }
+    section {
+      min-width: 0;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+    }
+    section:last-child { border-right: 0; }
+    .toolbar {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-muted);
+      flex-wrap: wrap;
+    }
+    button, input, select, textarea {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      font: inherit;
+    }
+    button {
+      min-height: 34px;
+      padding: 6px 10px;
+      cursor: pointer;
+      font-weight: 650;
+    }
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+    button.danger {
+      border-color: #f3b4ad;
+      color: var(--danger);
+    }
+    input, select {
+      min-height: 34px;
+      width: 100%;
+      padding: 6px 8px;
+    }
+    textarea {
+      min-height: 68px;
+      width: 100%;
+      padding: 8px;
+      resize: vertical;
+    }
+    label {
+      display: grid;
+      gap: 5px;
+      min-width: 0;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .compact { max-width: 180px; }
+    .status {
+      flex: 1;
+      min-width: 180px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .wide { grid-column: 1 / -1; }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      padding: 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .metric {
+      min-height: 76px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .metric strong {
+      display: block;
+      margin-top: 6px;
+      font-size: 22px;
+      font-weight: 700;
+    }
+    .table-wrap {
+      max-height: 42vh;
+      overflow: auto;
+      border-bottom: 1px solid var(--line);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    th, td {
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      color: var(--muted);
+      background: #f9fafb;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    tr {
+      cursor: pointer;
+    }
+    tr.selected td {
+      background: #e8f5f3;
+    }
+    pre {
+      margin: 0 14px 14px;
+      padding: 10px;
+      min-height: 118px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfe;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow: auto;
+    }
+    .danger { color: var(--danger); }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+      section { border-right: 0; border-bottom: 1px solid var(--line); }
+      .field-grid, .metrics { grid-template-columns: 1fr; }
+      header { align-items: flex-start; flex-direction: column; }
+      .compact { max-width: none; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AgentBridge Projects & Sessions</h1>
+    <nav>
+      <a href="/admin">Admin</a>
+      <a href="/admin/access-policy">Access Policy</a>
+      <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
+      <a href="/admin/bot-delivery">Bot Delivery</a>
+    </nav>
+  </header>
+  <main>
+    <section>
+      <div class="toolbar">
+        <button id="refresh" type="button">Refresh</button>
+        <label class="compact">
+          Actor ID
+          <input id="actor-id" value="admin-ui">
+        </label>
+        <label class="compact">
+          Actor Roles
+          <input id="actor-roles" value="admin">
+        </label>
+        <div class="status" id="status">Ready</div>
+      </div>
+      <div class="table-wrap">
+        <table aria-label="Projects">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Slug</th>
+              <th>Status</th>
+              <th>Agent</th>
+            </tr>
+          </thead>
+          <tbody id="projects"></tbody>
+        </table>
+      </div>
+      <div class="field-grid">
+        <label>
+          Project Name
+          <input id="project-name" autocomplete="off" placeholder="Backend">
+        </label>
+        <label>
+          Slug
+          <input id="project-slug" autocomplete="off" placeholder="optional">
+        </label>
+        <label>
+          Default Agent
+          <select id="project-agent">
+            <option value="claude">claude</option>
+            <option value="codex">codex</option>
+            <option value="generic_tui">generic_tui</option>
+          </select>
+        </label>
+        <label>
+          Aliases
+          <input id="project-aliases" autocomplete="off" placeholder="backend, api">
+        </label>
+        <label class="wide">
+          Description
+          <textarea id="project-description"></textarea>
+        </label>
+        <button class="primary wide" id="create-project" type="button">Create Project</button>
+      </div>
+      <pre id="project-json">{}</pre>
+    </section>
+
+    <section>
+      <div class="metrics">
+        <div class="metric">
+          <span>Selected Project</span><strong id="selected-project">-</strong>
+        </div>
+        <div class="metric">
+          <span>Workspaces</span><strong id="workspace-count">-</strong>
+        </div>
+        <div class="metric">
+          <span>Sessions</span><strong id="session-count">-</strong>
+        </div>
+      </div>
+
+      <div class="field-grid">
+        <label>
+          Workspace Path
+          <input id="workspace-path" autocomplete="off" placeholder="/path/to/project">
+        </label>
+        <label>
+          Allowed Root
+          <input id="workspace-root" autocomplete="off" placeholder="/path/to">
+        </label>
+        <label>
+          Machine ID
+          <input id="workspace-machine" autocomplete="off" value="local">
+        </label>
+        <label>
+          Workspace Type
+          <select id="workspace-type">
+            <option value="shared">shared</option>
+            <option value="exclusive">exclusive</option>
+            <option value="git_worktree">git_worktree</option>
+            <option value="ephemeral_copy">ephemeral_copy</option>
+            <option value="read_only">read_only</option>
+          </select>
+        </label>
+        <button class="primary wide" id="add-workspace" type="button">Add Workspace</button>
+      </div>
+
+      <div class="table-wrap">
+        <table aria-label="Workspaces">
+          <thead>
+            <tr>
+              <th>Path</th>
+              <th>Root</th>
+              <th>Machine</th>
+              <th>Type</th>
+            </tr>
+          </thead>
+          <tbody id="workspaces"></tbody>
+        </table>
+      </div>
+
+      <div class="field-grid">
+        <label>
+          Session Name
+          <input id="session-name" autocomplete="off" value="AgentBridge Session">
+        </label>
+        <label>
+          Workspace
+          <select id="session-workspace-id"></select>
+        </label>
+        <label>
+          Agent Type
+          <select id="session-agent">
+            <option value="claude">claude</option>
+            <option value="codex">codex</option>
+            <option value="generic_tui">generic_tui</option>
+          </select>
+        </label>
+        <label>
+          Visibility
+          <select id="session-visibility">
+            <option value="group">group</option>
+            <option value="private">private</option>
+            <option value="thread">thread</option>
+            <option value="project">project</option>
+            <option value="organization">organization</option>
+          </select>
+        </label>
+        <button class="primary" id="create-session" type="button">Create Session</button>
+        <button class="danger" id="close-session" type="button">Close Selected Session</button>
+      </div>
+
+      <div class="table-wrap">
+        <table aria-label="Sessions">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Code</th>
+              <th>Status</th>
+              <th>Agent</th>
+              <th>Workspace</th>
+            </tr>
+          </thead>
+          <tbody id="sessions"></tbody>
+        </table>
+      </div>
+      <pre id="session-json">{}</pre>
+      <pre id="error" class="danger"></pre>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let projects = [];
+    let selectedProjectId = "";
+    let selectedSessionId = "";
+
+    function csv(value) {
+      return value.split(",").map((item) => item.trim()).filter(Boolean);
+    }
+
+    function actor() {
+      return {
+        id: $("actor-id").value.trim() || "admin-ui",
+        roles: csv($("actor-roles").value || "admin"),
+      };
+    }
+
+    function optional(value) {
+      const trimmed = value.trim();
+      return trimmed ? trimmed : null;
+    }
+
+    function setStatus(text) {
+      $("status").textContent = text;
+    }
+
+    function setText(id, value) {
+      $(id).textContent = String(value ?? "-");
+    }
+
+    async function requestJson(url, options = {}) {
+      const response = await fetch(url, {
+        headers: {"content-type": "application/json"},
+        ...options,
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.message || data.detail || response.statusText);
+      }
+      return data;
+    }
+
+    function appendCell(row, value) {
+      const td = document.createElement("td");
+      td.textContent = String(value ?? "");
+      td.title = String(value ?? "");
+      row.appendChild(td);
+    }
+
+    function renderProjects() {
+      const rows = projects.map((project) => {
+        const tr = document.createElement("tr");
+        tr.dataset.projectId = project.id;
+        tr.className = project.id === selectedProjectId ? "selected" : "";
+        for (const value of [project.name, project.slug, project.status, project.default_agent]) {
+          appendCell(tr, value);
+        }
+        tr.addEventListener("click", () => selectProject(project.id));
+        return tr;
+      });
+      $("projects").replaceChildren(...rows);
+    }
+
+    function renderWorkspaces(workspaces) {
+      const rows = workspaces.map((workspace) => {
+        const tr = document.createElement("tr");
+        for (const value of [
+          workspace.path,
+          workspace.allowed_root,
+          workspace.machine_id,
+          workspace.type,
+        ]) {
+          appendCell(tr, value);
+        }
+        return tr;
+      });
+      $("workspaces").replaceChildren(...rows);
+      const options = workspaces.map((workspace) => {
+        const option = document.createElement("option");
+        option.value = workspace.id;
+        option.textContent = `${workspace.id} ${workspace.path}`;
+        return option;
+      });
+      if (options.length === 0) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "Add a workspace first";
+        options.push(option);
+      }
+      $("session-workspace-id").replaceChildren(...options);
+      setText("workspace-count", workspaces.length);
+    }
+
+    function renderSessions(sessions) {
+      const rows = sessions.map((session) => {
+        const tr = document.createElement("tr");
+        tr.dataset.sessionId = session.id;
+        tr.className = session.id === selectedSessionId ? "selected" : "";
+        for (const value of [
+          session.name,
+          session.short_code,
+          session.status,
+          session.agent_type,
+          session.workspace_id,
+        ]) {
+          appendCell(tr, value);
+        }
+        tr.addEventListener("click", () => selectSession(session));
+        return tr;
+      });
+      $("sessions").replaceChildren(...rows);
+      setText("session-count", sessions.length);
+      if (selectedSessionId && !sessions.some((session) => session.id === selectedSessionId)) {
+        selectedSessionId = "";
+        $("session-json").textContent = "{}";
+      }
+    }
+
+    async function loadProjects() {
+      setStatus("Loading projects");
+      projects = await requestJson("/api/v1/projects");
+      if (selectedProjectId && !projects.some((project) => project.id === selectedProjectId)) {
+        selectedProjectId = "";
+      }
+      if (!selectedProjectId && projects.length > 0) {
+        selectedProjectId = projects[0].id;
+      }
+      renderProjects();
+      await refreshSelectedProject();
+      setStatus(`${projects.length} projects`);
+    }
+
+    async function refreshSelectedProject() {
+      const project = projects.find((item) => item.id === selectedProjectId);
+      setText("selected-project", project ? project.slug : "-");
+      $("project-json").textContent = JSON.stringify(project || {}, null, 2);
+      if (!project) {
+        renderWorkspaces([]);
+        renderSessions([]);
+        return;
+      }
+      const encoded = encodeURIComponent(project.id);
+      const [workspaces, sessions] = await Promise.all([
+        requestJson(`/api/v1/projects/${encoded}/workspaces`),
+        requestJson(`/api/v1/sessions?project_id=${encoded}`),
+      ]);
+      renderWorkspaces(workspaces);
+      renderSessions(sessions);
+    }
+
+    async function selectProject(projectId) {
+      selectedProjectId = projectId;
+      selectedSessionId = "";
+      $("session-json").textContent = "{}";
+      renderProjects();
+      await refreshSelectedProject();
+      setStatus(`Selected ${projectId}`);
+    }
+
+    function selectSession(session) {
+      selectedSessionId = session.id;
+      $("session-json").textContent = JSON.stringify(session, null, 2);
+      document.querySelectorAll("#sessions tr").forEach((row) => {
+        row.classList.toggle("selected", row.dataset.sessionId === selectedSessionId);
+      });
+    }
+
+    async function createProject() {
+      setStatus("Creating project");
+      const project = await requestJson("/api/v1/projects", {
+        method: "POST",
+        body: JSON.stringify({
+          actor: actor(),
+          name: $("project-name").value.trim(),
+          slug: optional($("project-slug").value),
+          aliases: csv($("project-aliases").value),
+          description: optional($("project-description").value),
+          default_agent: $("project-agent").value,
+          trace_id: "admin-ui-project-create",
+        }),
+      });
+      selectedProjectId = project.id;
+      await loadProjects();
+      setStatus(`Created ${project.slug}`);
+    }
+
+    async function addWorkspace() {
+      if (!selectedProjectId) throw new Error("Select a project first");
+      setStatus("Adding workspace");
+      const encoded = encodeURIComponent(selectedProjectId);
+      const workspace = await requestJson(`/api/v1/projects/${encoded}/workspaces`, {
+        method: "POST",
+        body: JSON.stringify({
+          actor: actor(),
+          machine_id: $("workspace-machine").value.trim() || "local",
+          path: $("workspace-path").value.trim(),
+          allowed_root: $("workspace-root").value.trim(),
+          workspace_type: $("workspace-type").value,
+          trace_id: "admin-ui-workspace-add",
+        }),
+      });
+      await refreshSelectedProject();
+      setStatus(`Added workspace ${workspace.id}`);
+    }
+
+    async function createSession() {
+      if (!selectedProjectId) throw new Error("Select a project first");
+      const workspaceId = $("session-workspace-id").value;
+      if (!workspaceId) throw new Error("Add a workspace first");
+      setStatus("Creating session");
+      const session = await requestJson("/api/v1/sessions", {
+        method: "POST",
+        body: JSON.stringify({
+          actor: actor(),
+          project_id: selectedProjectId,
+          workspace_id: workspaceId,
+          name: $("session-name").value.trim() || "AgentBridge Session",
+          agent_type: $("session-agent").value,
+          visibility: $("session-visibility").value,
+          trace_id: "admin-ui-session-create",
+        }),
+      });
+      selectedSessionId = session.id;
+      $("session-json").textContent = JSON.stringify(session, null, 2);
+      await refreshSelectedProject();
+      setStatus(`Created session ${session.short_code}`);
+    }
+
+    async function closeSession() {
+      if (!selectedSessionId) throw new Error("Select a session first");
+      setStatus("Closing session");
+      const session = await requestJson(
+        `/api/v1/sessions/${encodeURIComponent(selectedSessionId)}/close`,
+        {
+          method: "POST",
+          body: JSON.stringify(actor()),
+        },
+      );
+      $("session-json").textContent = JSON.stringify(session, null, 2);
+      await refreshSelectedProject();
+      setStatus(`Closed session ${session.short_code}`);
+    }
+
+    async function run(action) {
+      try {
+        $("error").textContent = "";
+        await action();
+      } catch (error) {
+        $("error").textContent = error.message;
+        setStatus(error.message);
+      }
+    }
+
+    $("refresh").addEventListener("click", () => run(loadProjects));
+    $("create-project").addEventListener("click", () => run(createProject));
+    $("add-workspace").addEventListener("click", () => run(addWorkspace));
+    $("create-session").addEventListener("click", () => run(createSession));
+    $("close-session").addEventListener("click", () => run(closeSession));
+    loadProjects().catch((error) => {
+      $("error").textContent = error.message;
+      setStatus(error.message);
+    });
+  </script>
 </body>
 </html>
 """
@@ -307,7 +959,9 @@ ACCESS_POLICY_ADMIN_HTML = """<!doctype html>
     <h1>AgentBridge Access Policy</h1>
     <nav>
       <a href="/admin">Admin</a>
+      <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
+      <a href="/admin/bot-delivery">Bot Delivery</a>
     </nav>
     <div class="status" id="status">Ready</div>
   </header>
@@ -811,7 +1465,9 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
     <h1>AgentBridge Terminal Lifecycle</h1>
     <nav>
       <a href="/admin">Admin</a>
+      <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/access-policy">Access Policy</a>
+      <a href="/admin/bot-delivery">Bot Delivery</a>
     </nav>
   </header>
   <main>
@@ -1160,6 +1816,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
     <h1>AgentBridge Bot Delivery</h1>
     <nav>
       <a href="/admin">Admin</a>
+      <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/access-policy">Access Policy</a>
       <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
     </nav>

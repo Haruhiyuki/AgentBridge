@@ -29,9 +29,10 @@ This repository currently contains the first executable backend slice:
 - Project/chat-context approval quorum overrides through REST and `/agent policy`.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - Persistent access policy allow/deny rules with action/resource/actor/role/attribute matching and a simulation API.
+- Built-in Admin Web pages for project/session operations, access policy editing, terminal lifecycle inspection, and Bot delivery operations.
 - REST API routes aligned with the design document's service interface.
 
-Admin Web, production PTY supervision, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
+Production PTY supervision, hardened browser authentication, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
 
 ## Development
 
@@ -354,9 +355,12 @@ curl -X POST http://127.0.0.1:8000/api/v1/access-policy/simulate \
 Rules are persisted by Alembic migration `0007_access_policy_rules`. The REST and WebSocket terminal paths reuse the same resource-aware checks, so a rule can allow or deny a specific session's terminal without changing the global role matrix.
 
 The built-in admin entrypoint is available at `http://127.0.0.1:8000/admin`.
-It links to the access policy editor, terminal lifecycle dashboard, and Bot delivery
-operations dashboard. The policy editor lists rules, edits allow/deny match criteria, runs
-`/api/v1/access-policy/simulate`, and saves through the same audited REST APIs.
+It links to the project/session operations dashboard, access policy editor, terminal
+lifecycle dashboard, and Bot delivery operations dashboard. The project/session page
+lists projects, adds workspaces, creates sessions, and closes selected sessions through
+the same REST APIs used by external clients. The policy editor lists rules, edits
+allow/deny match criteria, runs `/api/v1/access-policy/simulate`, and saves through
+the same audited REST APIs.
 
 ## Console Client
 
