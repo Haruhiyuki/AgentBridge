@@ -5,6 +5,9 @@ import os
 import secrets
 import socket
 import socketserver
+import subprocess
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +30,17 @@ class PtyHostConfig:
     host_state_path: Path | None = None
 
 
+@dataclass(frozen=True)
+class PtyHostSupervisorConfig:
+    socket_path: Path
+    auth_token: str = ""
+    max_output_chars: int = DEFAULT_PTY_OUTPUT_LIMIT_CHARS
+    host_state_path: Path | None = None
+    start_command: tuple[str, ...] = ()
+    startup_timeout_seconds: float = 3.0
+    poll_interval_seconds: float = 0.05
+
+
 class PtyHostTerminalBackend:
     def __init__(
         self,
@@ -34,10 +48,12 @@ class PtyHostTerminalBackend:
         socket_path: Path,
         auth_token: str = "",
         timeout_seconds: float = 2.0,
+        supervisor: PtyHostSupervisor | None = None,
     ) -> None:
         self.socket_path = socket_path.expanduser()
         self.auth_token = auth_token
         self.timeout_seconds = timeout_seconds
+        self.supervisor = supervisor
 
     def start(self, *, session_id: str, cwd: str, command: str) -> None:
         self._request("start", {"session_id": session_id, "cwd": cwd, "command": command})
@@ -95,21 +111,16 @@ class PtyHostTerminalBackend:
             "payload": payload,
         }
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-                sock.settimeout(self.timeout_seconds)
-                sock.connect(str(self.socket_path))
-                file = sock.makefile("rwb")
-                file.write(json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n")
-                file.flush()
-                line = file.readline()
+            line = self._send_request(request)
         except OSError as exc:
-            raise AgentBridgeError(
-                ErrorCode.PLATFORM_CAPABILITY_MISSING,
-                "PTY Host 不可用。",
-                next_step="请启动 agentbridge-pty-host，或切换终端后端。",
-                status_code=503,
-                details={"reason": str(exc), "socket_path": str(self.socket_path)},
-            ) from exc
+            if self.supervisor is not None:
+                self.supervisor.ensure_running()
+                try:
+                    line = self._send_request(request)
+                except OSError as retry_exc:
+                    raise self._host_unavailable_error(retry_exc) from retry_exc
+            else:
+                raise self._host_unavailable_error(exc) from exc
         if not line:
             raise AgentBridgeError(
                 ErrorCode.RESOURCE_CONFLICT,
@@ -145,6 +156,106 @@ class PtyHostTerminalBackend:
             next_step=str(error.get("next_step") or "请检查 PTY Host 状态后重试。"),
             details=error.get("details") if isinstance(error.get("details"), dict) else None,
         )
+
+    def _send_request(self, request: dict[str, object]) -> bytes:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(self.timeout_seconds)
+            sock.connect(str(self.socket_path))
+            file = sock.makefile("rwb")
+            file.write(json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n")
+            file.flush()
+            return file.readline()
+
+    def _host_unavailable_error(self, exc: OSError) -> AgentBridgeError:
+        return AgentBridgeError(
+            ErrorCode.PLATFORM_CAPABILITY_MISSING,
+            "PTY Host 不可用。",
+            next_step="请启动 agentbridge-pty-host，或切换终端后端。",
+            status_code=503,
+            details={"reason": str(exc), "socket_path": str(self.socket_path)},
+        )
+
+
+class PtyHostSupervisor:
+    def __init__(self, config: PtyHostSupervisorConfig) -> None:
+        self.config = config
+        self.process: subprocess.Popen[bytes] | None = None
+
+    def ensure_running(self) -> bool:
+        if self.is_healthy():
+            return False
+        self._remove_stale_socket()
+        self.process = subprocess.Popen(
+            self.start_command(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,
+            env=self._host_env(),
+        )
+        deadline = time.monotonic() + self.config.startup_timeout_seconds
+        while time.monotonic() < deadline:
+            if self.is_healthy():
+                return True
+            if self.process.poll() is not None:
+                break
+            time.sleep(max(self.config.poll_interval_seconds, 0.01))
+        raise AgentBridgeError(
+            ErrorCode.PLATFORM_CAPABILITY_MISSING,
+            "PTY Host 启动后未就绪。",
+            next_step="请检查 agentbridge-pty-host 是否能正常启动。",
+            status_code=503,
+            details={
+                "socket_path": str(self.config.socket_path.expanduser()),
+                "return_code": self.process.poll() if self.process else None,
+            },
+        )
+
+    def is_healthy(self) -> bool:
+        try:
+            client = PtyHostTerminalBackend(
+                socket_path=self.config.socket_path,
+                auth_token=self.config.auth_token,
+                timeout_seconds=min(self.config.startup_timeout_seconds, 1.0),
+            )
+            return client.health().get("status") == "ok"
+        except AgentBridgeError:
+            return False
+
+    def start_command(self) -> list[str]:
+        if self.config.start_command:
+            return list(self.config.start_command)
+        return [sys.executable, "-m", "agentbridge.pty_host"]
+
+    def _host_env(self) -> dict[str, str]:
+        env = dict(os.environ)
+        env["AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET"] = str(
+            self.config.socket_path.expanduser()
+        )
+        env["AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN"] = self.config.auth_token
+        env["AGENTBRIDGE_TERMINAL_PTY_OUTPUT_LIMIT_CHARS"] = str(
+            self.config.max_output_chars
+        )
+        if self.config.host_state_path is not None:
+            env["AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH"] = str(
+                self.config.host_state_path.expanduser()
+            )
+        return env
+
+    def _remove_stale_socket(self) -> None:
+        socket_path = self.config.socket_path.expanduser()
+        if not socket_path.exists():
+            return
+        if not socket_path.is_socket():
+            raise AgentBridgeError(
+                ErrorCode.RESOURCE_CONFLICT,
+                "PTY Host socket 路径已被非 socket 文件占用。",
+                next_step="请移除该路径或配置新的 AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET。",
+                status_code=409,
+                details={"socket_path": str(socket_path)},
+            )
+        socket_path.unlink()
 
 
 class PtyHostServer(socketserver.ThreadingUnixStreamServer):
@@ -328,3 +439,7 @@ def run() -> None:
         serve(config_from_env())
     except KeyboardInterrupt:
         pass
+
+
+if __name__ == "__main__":
+    run()

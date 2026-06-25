@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -650,6 +651,39 @@ def test_terminal_backend_env_selects_pty_host(monkeypatch, tmp_path):
     assert isinstance(backend, PtyHostTerminalBackend)
     assert backend.socket_path == socket_path
     assert backend.auth_token == "secret-token"
+
+
+def test_pty_host_backend_auto_starts_host_and_cleans_stale_socket(monkeypatch, tmp_path):
+    socket_path = Path(f"/tmp/agentbridge-pty-host-{uuid4().hex}.sock")
+    stale_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale_socket.bind(str(socket_path))
+    stale_socket.close()
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_BACKEND", "pty_host")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_SOCKET", str(socket_path))
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN", "secret-token")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_AUTO_START", "true")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH", str(tmp_path / "host.json"))
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_PTY_HOST_STARTUP_TIMEOUT_SECONDS", "5")
+
+    backend = create_terminal_backend_from_env()
+
+    assert isinstance(backend, PtyHostTerminalBackend)
+    assert backend.supervisor is not None
+    try:
+        assert backend.health()["status"] == "ok"
+        assert backend.supervisor.process is not None
+        assert backend.supervisor.process.poll() is None
+        assert socket_path.exists()
+    finally:
+        if backend.supervisor.process is not None:
+            backend.supervisor.process.terminate()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                backend.supervisor.process.wait(timeout=5)
+            if backend.supervisor.process.poll() is None:
+                backend.supervisor.process.kill()
+                backend.supervisor.process.wait(timeout=5)
+        if socket_path.exists():
+            socket_path.unlink()
 
 
 def test_pty_host_backend_survives_client_recreation(tmp_path):

@@ -48,7 +48,11 @@ from agentbridge.onebot import (
 )
 from agentbridge.persistence import SQLAlchemyRepository
 from agentbridge.policy import ApprovalPolicy, Permission
-from agentbridge.pty_host import PtyHostTerminalBackend
+from agentbridge.pty_host import (
+    PtyHostSupervisor,
+    PtyHostSupervisorConfig,
+    PtyHostTerminalBackend,
+)
 from agentbridge.renderer import (
     OneBotV11TextRenderer,
     RenderDocument,
@@ -1907,9 +1911,29 @@ def create_terminal_backend_from_env():
                 str(Path.home() / ".agentbridge" / "pty-host.sock"),
             )
         ).expanduser()
+        host_state_path = os.environ.get("AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH")
+        host_state = Path(host_state_path).expanduser() if host_state_path else None
+        max_output_chars = terminal_pty_output_limit_from_env()
+        supervisor = (
+            PtyHostSupervisor(
+                PtyHostSupervisorConfig(
+                    socket_path=socket_path,
+                    auth_token=os.environ.get("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN", ""),
+                    max_output_chars=max_output_chars,
+                    host_state_path=host_state,
+                    startup_timeout_seconds=env_float(
+                        "AGENTBRIDGE_TERMINAL_PTY_HOST_STARTUP_TIMEOUT_SECONDS",
+                        default=3.0,
+                    ),
+                )
+            )
+            if env_bool("AGENTBRIDGE_TERMINAL_PTY_HOST_AUTO_START", default=False)
+            else None
+        )
         return PtyHostTerminalBackend(
             socket_path=socket_path,
             auth_token=os.environ.get("AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN", ""),
+            supervisor=supervisor,
         )
     raise RuntimeError("AGENTBRIDGE_TERMINAL_BACKEND must be one of: fake, tmux, pty, pty_host")
 
