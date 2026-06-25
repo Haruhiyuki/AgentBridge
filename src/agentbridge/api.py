@@ -44,6 +44,7 @@ from agentbridge.device_certificate_health import (
     device_identity_certificate_health,
     managed_device_certificate_active,
 )
+from agentbridge.device_certificate_scan import DeviceCertificateScanWorker
 from agentbridge.device_certificates import DeviceCertificateIssuer
 from agentbridge.domain import (
     AccessPolicyEffect,
@@ -452,6 +453,15 @@ class ScanDeviceCertificatesRequest(BaseModel):
     trace_id: str = "device-certificate-scan-api"
 
 
+class CertificateScanWorkerRunOnceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    warning_days: int | None = Field(default=None, ge=1)
+    include_revoked: bool | None = None
+    trace_id: str = "device-certificate-scan-worker-run-once-api"
+
+
 class GroupRoleChangeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -525,6 +535,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         rate_limiter=create_bot_rate_limiter_from_env(),
     )
     bot_retry_worker = create_bot_retry_worker_from_env(bot_gateway)
+    certificate_scan_worker = create_certificate_scan_worker_from_env(control)
     terminal_lifecycle_monitor_enabled = env_bool(
         "AGENTBRIDGE_TERMINAL_LIFECYCLE_MONITOR_ENABLED",
         default=False,
@@ -543,12 +554,15 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             )
         if bot_retry_worker.enabled:
             bot_retry_worker.start()
+        if certificate_scan_worker.enabled:
+            certificate_scan_worker.start()
         try:
             yield
         finally:
             terminal.stop_lifecycle_monitor()
             stop_terminal_backend_supervision(terminal)
             bot_retry_worker.stop()
+            certificate_scan_worker.stop()
 
     app = FastAPI(
         title="AgentBridge Control Plane",
@@ -560,6 +574,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     app.state.terminal = terminal
     app.state.bot_gateway = bot_gateway
     app.state.bot_retry_worker = bot_retry_worker
+    app.state.certificate_scan_worker = certificate_scan_worker
     app.state.terminal_lifecycle_monitor_enabled = terminal_lifecycle_monitor_enabled
 
     @app.exception_handler(AgentBridgeError)
@@ -622,6 +637,9 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
 
     def get_bot_retry_worker() -> BotDeliveryRetryWorker:
         return app.state.bot_retry_worker
+
+    def get_certificate_scan_worker() -> DeviceCertificateScanWorker:
+        return app.state.certificate_scan_worker
 
     @app.get("/api/v1/health")
     def health(control: ControlPlane = Depends(get_control)):
@@ -970,6 +988,28 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             include_revoked=payload.include_revoked,
             trace_id=payload.trace_id,
         )
+
+    @app.get("/api/v1/device-identities/certificates/scan-worker")
+    def certificate_scan_worker_status(
+        worker: DeviceCertificateScanWorker = Depends(get_certificate_scan_worker),
+    ):
+        return worker.status()
+
+    @app.post("/api/v1/device-identities/certificates/scan-worker/run-once")
+    def run_certificate_scan_worker_once(
+        payload: CertificateScanWorkerRunOnceRequest,
+        worker: DeviceCertificateScanWorker = Depends(get_certificate_scan_worker),
+    ):
+        result = worker.run_once(
+            actor=payload.actor.to_actor(),
+            warning_days=payload.warning_days,
+            include_revoked=payload.include_revoked,
+            trace_id=payload.trace_id,
+        )
+        return {
+            "worker": worker.status(),
+            "result": result,
+        }
 
     @app.post("/api/v1/device-identities/{device_id}/revoke")
     def revoke_device_identity(
@@ -3670,6 +3710,31 @@ def create_bot_retry_worker_from_env(bot_gateway: BotGatewayService) -> BotDeliv
         enabled=env_bool("AGENTBRIDGE_BOT_RETRY_WORKER_ENABLED", default=False),
         interval_seconds=env_float("AGENTBRIDGE_BOT_RETRY_INTERVAL_SECONDS", default=30.0),
         batch_size=env_int("AGENTBRIDGE_BOT_RETRY_BATCH_SIZE", default=100),
+    )
+
+
+def create_certificate_scan_worker_from_env(
+    control: ControlPlane,
+) -> DeviceCertificateScanWorker:
+    return DeviceCertificateScanWorker(
+        control,
+        enabled=env_bool(
+            "AGENTBRIDGE_DEVICE_CERT_SCAN_WORKER_ENABLED",
+            default=False,
+        ),
+        interval_seconds=env_float(
+            "AGENTBRIDGE_DEVICE_CERT_SCAN_INTERVAL_SECONDS",
+            default=3600.0,
+        ),
+        warning_days=device_certificate_expiry_warning_days_from_env(),
+        include_revoked=env_bool(
+            "AGENTBRIDGE_DEVICE_CERT_SCAN_INCLUDE_REVOKED",
+            default=False,
+        ),
+        actor_id=os.environ.get(
+            "AGENTBRIDGE_DEVICE_CERT_SCAN_ACTOR_ID",
+            "certificate-scan-worker",
+        ),
     )
 
 

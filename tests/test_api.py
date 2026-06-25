@@ -973,12 +973,25 @@ def test_managed_device_identity_rejects_expired_tracked_certificate_fingerprint
         "/api/v1/device-identities",
         headers=device_headers,
     )
+    worker_status_response = client.get(
+        "/api/v1/device-identities/certificates/scan-worker",
+        headers=device_headers,
+    )
     scan_response = client.post(
         "/api/v1/device-identities/certificates/scan",
         json={
             "actor": {"id": "security-admin", "roles": ["admin"]},
             "warning_days": 7,
             "trace_id": "managed-device-certificate-scan",
+        },
+        headers=device_headers,
+    )
+    worker_run_once_response = client.post(
+        "/api/v1/device-identities/certificates/scan-worker/run-once",
+        json={
+            "actor": {"id": "security-admin", "roles": ["admin"]},
+            "warning_days": 7,
+            "trace_id": "managed-device-certificate-scan-worker-run-once",
         },
         headers=device_headers,
     )
@@ -989,6 +1002,10 @@ def test_managed_device_identity_rejects_expired_tracked_certificate_fingerprint
         event_type="device_identity.certificates_scanned",
         trace_id="managed-device-certificate-scan",
     )
+    worker_events = control.repository.list_semantic_events(
+        event_type="device_identity.certificates_scanned",
+        trace_id="managed-device-certificate-scan-worker-run-once",
+    )
 
     assert certificate_response.status_code == 403
     assert key_response.status_code == 200
@@ -998,6 +1015,8 @@ def test_managed_device_identity_rejects_expired_tracked_certificate_fingerprint
     assert health["expired_count"] == 1
     assert health["expired_fingerprints"] == ["aabbcc"]
     assert health["next_expires_at"] is not None
+    assert worker_status_response.status_code == 200
+    assert worker_status_response.json()["enabled"] is False
     assert scan_response.status_code == 200
     scan = scan_response.json()
     assert scan["warning_days"] == 7
@@ -1009,11 +1028,34 @@ def test_managed_device_identity_rejects_expired_tracked_certificate_fingerprint
     )
     assert scan["action_required_devices"][0]["certificate_health_status"] == "expired"
     assert scan["devices"][0]["certificate_health"]["expired_fingerprints"] == ["aabbcc"]
-    assert len(audit_events) == 1
-    assert audit_events[0].details["action_required_count"] == 1
-    assert audit_events[0].details["status_counts"]["expired"] == 1
+    assert worker_run_once_response.status_code == 200
+    worker_scan = worker_run_once_response.json()
+    assert worker_scan["worker"]["run_count"] == 1
+    assert worker_scan["worker"]["last_action_required_count"] == 1
+    assert worker_scan["result"]["action_required_count"] == 1
+    assert len(audit_events) == 2
+    assert all(event.details["action_required_count"] == 1 for event in audit_events)
+    assert all(event.details["status_counts"]["expired"] == 1 for event in audit_events)
     assert len(semantic_events) == 1
     assert semantic_events[0].payload["action_required_count"] == 1
+    assert len(worker_events) == 1
+    assert worker_events[0].payload["action_required_count"] == 1
+
+
+def test_device_certificate_scan_worker_can_autostart_from_environment(monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_SCAN_WORKER_ENABLED", "true")
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_SCAN_INTERVAL_SECONDS", "60")
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_CERT_EXPIRY_WARNING_DAYS", "21")
+    app = create_app()
+
+    with TestClient(app) as client:
+        running_status = client.get("/api/v1/device-identities/certificates/scan-worker")
+        assert running_status.status_code == 200
+        assert running_status.json()["enabled"] is True
+        assert running_status.json()["running"] is True
+        assert running_status.json()["warning_days"] == 21
+
+    assert app.state.certificate_scan_worker.is_running() is False
 
 
 def test_managed_device_identity_rejects_certificate_issue_with_mismatched_ca_key(

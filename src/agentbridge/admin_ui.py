@@ -306,6 +306,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
         <div class="metric"><span>Lifecycle Running</span><strong id="lifecycle">-</strong></div>
         <div class="metric"><span>Tracked Terms</span><strong id="tracked">-</strong></div>
         <div class="metric"><span>Retry Worker</span><strong id="retry-worker">-</strong></div>
+        <div class="metric"><span>Cert Scan</span><strong id="cert-scan-worker">-</strong></div>
         <div class="metric"><span>Rate Policies</span><strong id="rate-policies">-</strong></div>
       </div>
     </section>
@@ -332,6 +333,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       ["Control Health", "/api/v1/health"],
       ["Terminal Lifecycle", "/api/v1/terminal/lifecycle-monitor"],
       ["Bot Retry Worker", "/api/v1/bot-gateway/retry-worker"],
+      ["Certificate Scan Worker", "/api/v1/device-identities/certificates/scan-worker"],
       ["Bot Rate Limits", "/api/v1/bot-gateway/rate-limits"],
       ["Device Identities", "/api/v1/device-identities?include_revoked=true"],
     ];
@@ -380,6 +382,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       const health = byName["Control Health"]?.data || {};
       const lifecycle = byName["Terminal Lifecycle"]?.data || {};
       const worker = byName["Bot Retry Worker"]?.data || {};
+      const certificateWorker = byName["Certificate Scan Worker"]?.data || {};
       const rateLimits = byName["Bot Rate Limits"]?.data || {};
       const policies = rateLimits.policies || [];
       setText("health-status", health.status);
@@ -389,6 +392,12 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       setText("lifecycle", lifecycle.running);
       setText("tracked", lifecycle.tracked_sessions);
       setText("retry-worker", worker.enabled ? (worker.running ? "running" : "idle") : "off");
+      setText(
+        "cert-scan-worker",
+        certificateWorker.enabled
+          ? (certificateWorker.running ? "running" : "idle")
+          : "off",
+      );
       setText("rate-policies", policies.length);
     }
 
