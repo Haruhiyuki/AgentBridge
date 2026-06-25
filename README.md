@@ -15,7 +15,7 @@ This repository currently contains the first executable backend slice:
 - Ordered semantic event streams with replay and idempotent Terminal Agent event ingestion.
 - Optional SQLAlchemy persistence with an Alembic-managed schema.
 - Terminal input gateway with fake, tmux, and stdlib PTY backends plus writer-lease epoch enforcement.
-- Local Terminal Agent daemon over a token-protected Unix socket.
+- Local Terminal Agent daemon over a token-protected Unix socket, with token-file hot reload for local rotation.
 - Optional token/device-key gated REST APIs, WebSocket streams, and Terminal command transport.
 - Local Console Client with line-mode, scripted input, raw TTY passthrough, and cursor-based output observation through the lease gateway.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
@@ -115,6 +115,8 @@ Run the local Terminal Agent socket server:
 
 ```bash
 export AGENTBRIDGE_LOCAL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+# Or store the token in a file; the daemon rereads it for each request.
+# export AGENTBRIDGE_LOCAL_TOKEN_FILE="$HOME/.agentbridge/terminal-agent.token"
 export AGENTBRIDGE_TERMINAL_SOCKET="$HOME/.agentbridge/terminal-agent.sock"
 export AGENTBRIDGE_LOCAL_REQUIRE_PEER_USER=true
 export AGENTBRIDGE_TERMINAL_LIFECYCLE_POLL_INTERVAL_SECONDS=1
@@ -129,9 +131,12 @@ uv run agentbridge-terminal-agent
 ```
 
 If `AGENTBRIDGE_LOCAL_TOKEN` is omitted, the daemon prints a generated token at startup.
-The socket file is created with mode `0600`, and Unix-domain connections must come from
-the same OS user by default. Set `AGENTBRIDGE_LOCAL_REQUIRE_PEER_USER=false` only for
-platforms that cannot expose peer credentials. The JSONL socket protocol currently
+When `AGENTBRIDGE_LOCAL_TOKEN_FILE` is used instead, the daemon and auto-open launcher
+reread the file for each request/launch, so operators can rotate the local token without
+restarting the daemon. The socket file is created with mode `0600`, and Unix-domain
+connections must come from the same OS user by default. Set
+`AGENTBRIDGE_LOCAL_REQUIRE_PEER_USER=false` only for platforms that cannot expose peer
+credentials. The JSONL socket protocol currently
 supports `health`, `lifecycle_status`, `run_lifecycle_monitor_once`, `start_session`,
 `restart_session`, `acquire_human_lease`, `release_lease`, `submit_input`, `snapshot`,
 `status`, cursor-based `read_output`, and multi-frame `stream_output`.

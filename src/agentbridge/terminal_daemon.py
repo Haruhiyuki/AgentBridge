@@ -39,6 +39,7 @@ from agentbridge.terminal_agent import (
 class LocalTerminalAgentConfig:
     socket_path: Path
     auth_token: str
+    auth_token_file: Path | None = None
     require_peer_user: bool = True
     lifecycle_poll_interval_seconds: float = 1.0
     terminal_auto_restart_on_lost: bool = False
@@ -173,6 +174,32 @@ AUTO_DESKTOP_TERMINAL_PRESETS: dict[str, tuple[str, ...]] = {
 }
 
 
+def current_local_auth_token(*, auth_token: str, auth_token_file: Path | None) -> str:
+    if auth_token_file is None:
+        return auth_token
+
+    token_path = auth_token_file.expanduser()
+    try:
+        token = token_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise AgentBridgeError(
+            ErrorCode.PERMISSION_DENIED,
+            "本地 Terminal Agent token 文件不可读。",
+            next_step="请检查 AGENTBRIDGE_LOCAL_TOKEN_FILE 路径和权限。",
+            status_code=403,
+            details={"token_file": str(token_path), "reason": str(exc)},
+        ) from exc
+    if not token:
+        raise AgentBridgeError(
+            ErrorCode.PERMISSION_DENIED,
+            "本地 Terminal Agent token 文件为空。",
+            next_step="请写入非空 token 后重试。",
+            status_code=403,
+            details={"token_file": str(token_path)},
+        )
+    return token
+
+
 class DesktopTerminalLauncher:
     def __init__(
         self,
@@ -182,6 +209,7 @@ class DesktopTerminalLauncher:
         open_preset: str | None = None,
         socket_path: Path | None = None,
         auth_token: str,
+        auth_token_file: Path | None = None,
         launcher_script_dir: Path | None = None,
     ) -> None:
         self.enabled = enabled
@@ -189,6 +217,7 @@ class DesktopTerminalLauncher:
         self.open_preset = open_preset
         self.socket_path = socket_path
         self.auth_token = auth_token
+        self.auth_token_file = auth_token_file
         self.launcher_script_dir = launcher_script_dir
 
     def launch(self, *, session_id: str) -> DesktopTerminalLaunchResult:
@@ -201,8 +230,12 @@ class DesktopTerminalLauncher:
             )
 
         try:
-            argv, launcher_script, error = self._build_argv(session_id=session_id)
-        except OSError as exc:
+            auth_token = self.current_auth_token()
+            argv, launcher_script, error = self._build_argv(
+                session_id=session_id,
+                auth_token=auth_token,
+            )
+        except (OSError, AgentBridgeError) as exc:
             return DesktopTerminalLaunchResult(launched=False, error=str(exc))
         if error is not None:
             return DesktopTerminalLaunchResult(launched=False, error=error)
@@ -210,7 +243,7 @@ class DesktopTerminalLauncher:
             return DesktopTerminalLaunchResult(launched=False, error="open command is empty")
 
         env = dict(os.environ)
-        env["AGENTBRIDGE_LOCAL_TOKEN"] = self.auth_token
+        env["AGENTBRIDGE_LOCAL_TOKEN"] = auth_token
         env["AGENTBRIDGE_TERMINAL_SOCKET"] = str(self.socket_path)
         try:
             process = subprocess.Popen(
@@ -229,7 +262,18 @@ class DesktopTerminalLauncher:
             return DesktopTerminalLaunchResult(launched=False, error=str(exc))
         return DesktopTerminalLaunchResult(launched=True, pid=process.pid)
 
-    def _build_argv(self, *, session_id: str) -> tuple[list[str], Path | None, str | None]:
+    def current_auth_token(self) -> str:
+        return current_local_auth_token(
+            auth_token=self.auth_token,
+            auth_token_file=self.auth_token_file,
+        )
+
+    def _build_argv(
+        self,
+        *,
+        session_id: str,
+        auth_token: str,
+    ) -> tuple[list[str], Path | None, str | None]:
         if self.command_template:
             try:
                 command = self.command_template.format(
@@ -250,13 +294,21 @@ class DesktopTerminalLauncher:
                 "is required when auto-open is enabled",
             )
         if preset_name == "auto":
-            return self._build_auto_preset_argv(session_id=session_id)
-        return self._build_named_preset_argv(preset_name, session_id=session_id)
+            return self._build_auto_preset_argv(
+                session_id=session_id,
+                auth_token=auth_token,
+            )
+        return self._build_named_preset_argv(
+            preset_name,
+            session_id=session_id,
+            auth_token=auth_token,
+        )
 
     def _build_auto_preset_argv(
         self,
         *,
         session_id: str,
+        auth_token: str,
     ) -> tuple[list[str], Path | None, str | None]:
         platform_name = platform.system().lower()
         preset_names = AUTO_DESKTOP_TERMINAL_PRESETS.get(platform_name, ())
@@ -264,6 +316,7 @@ class DesktopTerminalLauncher:
             argv, launcher_script, error = self._build_named_preset_argv(
                 preset_name,
                 session_id=session_id,
+                auth_token=auth_token,
                 missing_executable_is_error=False,
             )
             if error is None:
@@ -276,6 +329,7 @@ class DesktopTerminalLauncher:
         preset_name: str,
         *,
         session_id: str,
+        auth_token: str,
         missing_executable_is_error: bool = True,
     ) -> tuple[list[str], Path | None, str | None]:
         preset = DESKTOP_TERMINAL_OPEN_PRESETS.get(preset_name)
@@ -298,7 +352,10 @@ class DesktopTerminalLauncher:
 
         launcher_script = None
         if preset.macos_launcher_script:
-            launcher_script = self._write_macos_terminal_launcher_script(session_id=session_id)
+            launcher_script = self._write_macos_terminal_launcher_script(
+                session_id=session_id,
+                auth_token=auth_token,
+            )
 
         values = {
             "terminal_executable": executable_path,
@@ -316,7 +373,12 @@ class DesktopTerminalLauncher:
             return [], None, str(exc)
         return argv, launcher_script, None
 
-    def _write_macos_terminal_launcher_script(self, *, session_id: str) -> Path:
+    def _write_macos_terminal_launcher_script(
+        self,
+        *,
+        session_id: str,
+        auth_token: str,
+    ) -> Path:
         if self.socket_path is None:
             raise RuntimeError("Terminal Agent socket path is not available")
         script_dir = (
@@ -351,7 +413,7 @@ class DesktopTerminalLauncher:
                 file.write(
                     "#!/bin/sh\n"
                     "set -eu\n"
-                    f"export AGENTBRIDGE_LOCAL_TOKEN={shlex.quote(self.auth_token)}\n"
+                    f"export AGENTBRIDGE_LOCAL_TOKEN={shlex.quote(auth_token)}\n"
                     f"export AGENTBRIDGE_TERMINAL_SOCKET={shlex.quote(str(self.socket_path))}\n"
                     'rm -f "$0"\n'
                     f"exec {console_command}\n"
@@ -371,6 +433,7 @@ class LocalTerminalAgentServer:
         control: ControlPlane,
         terminal: TerminalAgentService,
         auth_token: str,
+        auth_token_file: Path | None = None,
         require_peer_user: bool = True,
         allowed_peer_uid: int | None = None,
         lifecycle_monitor_enabled: bool = True,
@@ -382,6 +445,7 @@ class LocalTerminalAgentServer:
         self.control = control
         self.terminal = terminal
         self.auth_token = auth_token
+        self.auth_token_file = auth_token_file
         self.require_peer_user = require_peer_user
         if allowed_peer_uid is not None:
             self.allowed_peer_uid = allowed_peer_uid
@@ -393,6 +457,7 @@ class LocalTerminalAgentServer:
         self.lifecycle_poll_interval_seconds = max(float(lifecycle_poll_interval_seconds), 0.05)
         self.desktop_launcher = desktop_launcher or DesktopTerminalLauncher(
             auth_token=auth_token,
+            auth_token_file=auth_token_file,
         )
         self._server: asyncio.AbstractServer | None = None
         self._socket_path: Path | None = None
@@ -408,13 +473,18 @@ class LocalTerminalAgentServer:
         self._server = await asyncio.start_unix_server(self._handle_client, path=str(socket_path))
         socket_path.chmod(0o600)
         self._socket_path = socket_path
-        if self.desktop_launcher.socket_path is None:
+        if (
+            self.desktop_launcher.socket_path != socket_path
+            or self.desktop_launcher.auth_token != self.auth_token
+            or self.desktop_launcher.auth_token_file != self.auth_token_file
+        ):
             self.desktop_launcher = DesktopTerminalLauncher(
                 enabled=self.desktop_launcher.enabled,
                 command_template=self.desktop_launcher.command_template,
                 open_preset=self.desktop_launcher.open_preset,
                 socket_path=socket_path,
                 auth_token=self.auth_token,
+                auth_token_file=self.auth_token_file,
                 launcher_script_dir=self.desktop_launcher.launcher_script_dir,
             )
         start_terminal_backend_supervision(self.terminal)
@@ -493,6 +563,24 @@ class LocalTerminalAgentServer:
             )
         return None
 
+    def current_auth_token(self) -> str:
+        return current_local_auth_token(
+            auth_token=self.auth_token,
+            auth_token_file=self.auth_token_file,
+        )
+
+    def require_valid_token(self, token: object) -> None:
+        if not isinstance(token, str) or not hmac.compare_digest(
+            token,
+            self.current_auth_token(),
+        ):
+            raise AgentBridgeError(
+                ErrorCode.PERMISSION_DENIED,
+                "本地 Terminal Agent token 无效。",
+                next_step="请使用当前本地 token 重新连接。",
+                status_code=403,
+            )
+
     def handle_request_line(self, line: bytes) -> dict[str, Any]:
         try:
             request = self.decode_request_line(line)
@@ -544,13 +632,7 @@ class LocalTerminalAgentServer:
     ) -> None:
         try:
             token = request.get("token")
-            if not isinstance(token, str) or not hmac.compare_digest(token, self.auth_token):
-                raise AgentBridgeError(
-                    ErrorCode.PERMISSION_DENIED,
-                    "本地 Terminal Agent token 无效。",
-                    next_step="请使用当前本地 token 重新连接。",
-                    status_code=403,
-                )
+            self.require_valid_token(token)
             payload = request.get("payload") or {}
             if not isinstance(payload, dict):
                 raise AgentBridgeError(
@@ -618,13 +700,7 @@ class LocalTerminalAgentServer:
 
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any]:
         token = request.get("token")
-        if not isinstance(token, str) or not hmac.compare_digest(token, self.auth_token):
-            raise AgentBridgeError(
-                ErrorCode.PERMISSION_DENIED,
-                "本地 Terminal Agent token 无效。",
-                next_step="请使用当前本地 token 重新连接。",
-                status_code=403,
-            )
+        self.require_valid_token(token)
         action = request.get("action")
         payload = request.get("payload") or {}
         if not isinstance(payload, dict):
@@ -907,14 +983,20 @@ def config_from_env() -> LocalTerminalAgentConfig:
     ).expanduser()
     token = os.environ.get("AGENTBRIDGE_LOCAL_TOKEN")
     token_file = os.environ.get("AGENTBRIDGE_LOCAL_TOKEN_FILE")
+    token_file_path = None
     if token is None and token_file:
-        token = Path(token_file).expanduser().read_text(encoding="utf-8").strip()
+        token_file_path = Path(token_file).expanduser()
+        token = current_local_auth_token(
+            auth_token="",
+            auth_token_file=token_file_path,
+        )
     if token is None:
         token = secrets.token_urlsafe(32)
         print(f"AGENTBRIDGE_LOCAL_TOKEN={token}", flush=True)
     return LocalTerminalAgentConfig(
         socket_path=socket_path,
         auth_token=token,
+        auth_token_file=token_file_path,
         require_peer_user=env_bool("AGENTBRIDGE_LOCAL_REQUIRE_PEER_USER", default=True),
         lifecycle_poll_interval_seconds=env_float(
             "AGENTBRIDGE_TERMINAL_LIFECYCLE_POLL_INTERVAL_SECONDS",
@@ -950,6 +1032,7 @@ async def async_main() -> None:
         control=control,
         terminal=terminal,
         auth_token=config.auth_token,
+        auth_token_file=config.auth_token_file,
         require_peer_user=config.require_peer_user,
         lifecycle_poll_interval_seconds=config.lifecycle_poll_interval_seconds,
         desktop_launcher=DesktopTerminalLauncher(
@@ -958,6 +1041,7 @@ async def async_main() -> None:
             open_preset=config.desktop_open_preset,
             socket_path=config.socket_path,
             auth_token=config.auth_token,
+            auth_token_file=config.auth_token_file,
         ),
     )
     await server.serve_forever(config.socket_path)

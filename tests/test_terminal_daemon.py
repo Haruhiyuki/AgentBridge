@@ -172,6 +172,39 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
     asyncio.run(scenario())
 
 
+def test_local_terminal_daemon_reloads_token_file(tmp_path):
+    async def scenario():
+        token_file = tmp_path / "local-token"
+        token_file.write_text("first-token\n", encoding="utf-8")
+        control = ControlPlane()
+        terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+        socket_path = Path(f"/tmp/agentbridge-token-reload-{uuid4().hex}.sock")
+        server = LocalTerminalAgentServer(
+            control=control,
+            terminal=terminal,
+            auth_token="first-token",
+            auth_token_file=token_file,
+            lifecycle_monitor_enabled=False,
+        )
+        await server.start(socket_path)
+        try:
+            first = await LocalTerminalAgentClient(socket_path, "first-token").request("health")
+            assert first["ok"] is True
+
+            token_file.write_text("second-token\n", encoding="utf-8")
+
+            stale = await LocalTerminalAgentClient(socket_path, "first-token").request("health")
+            assert stale["ok"] is False
+            assert stale["error"]["error_code"] == "PERMISSION_DENIED"
+
+            rotated = await LocalTerminalAgentClient(socket_path, "second-token").request("health")
+            assert rotated["ok"] is True
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
 def test_desktop_terminal_launcher_passes_token_in_environment(monkeypatch, tmp_path):
     calls: list[dict[str, object]] = []
 
@@ -205,6 +238,38 @@ def test_desktop_terminal_launcher_passes_token_in_environment(monkeypatch, tmp_
     env = calls[0]["env"]
     assert env["AGENTBRIDGE_LOCAL_TOKEN"] == "secret-token"
     assert env["AGENTBRIDGE_TERMINAL_SOCKET"] == str(socket_path)
+
+
+def test_desktop_terminal_launcher_reloads_token_file(monkeypatch, tmp_path):
+    calls: list[dict[str, object]] = []
+
+    class FakeProcess:
+        pid = 11223
+
+    def fake_popen(argv, **kwargs):
+        calls.append({"argv": argv, **kwargs})
+        return FakeProcess()
+
+    token_file = tmp_path / "local-token"
+    token_file.write_text("first-token\n", encoding="utf-8")
+    socket_path = tmp_path / "terminal-agent.sock"
+    monkeypatch.setattr(terminal_daemon.subprocess, "Popen", fake_popen)
+    launcher = DesktopTerminalLauncher(
+        enabled=True,
+        command_template="{console_command} {session_id} --socket {socket_path} --raw",
+        socket_path=socket_path,
+        auth_token="initial-token",
+        auth_token_file=token_file,
+    )
+
+    first = launcher.launch(session_id="ses_1")
+    token_file.write_text("second-token\n", encoding="utf-8")
+    second = launcher.launch(session_id="ses_2")
+
+    assert first.launched is True
+    assert second.launched is True
+    assert calls[0]["env"]["AGENTBRIDGE_LOCAL_TOKEN"] == "first-token"
+    assert calls[1]["env"]["AGENTBRIDGE_LOCAL_TOKEN"] == "second-token"
 
 
 def test_desktop_terminal_launcher_uses_named_preset(monkeypatch, tmp_path):
@@ -375,6 +440,7 @@ def test_terminal_daemon_config_reads_desktop_open_preset(monkeypatch, tmp_path)
 
     assert config.socket_path == socket_path
     assert config.auth_token == "secret-token"
+    assert config.auth_token_file is None
     assert config.require_peer_user is False
     assert config.lifecycle_poll_interval_seconds == 2.5
     assert config.terminal_auto_restart_on_lost is True
@@ -382,6 +448,21 @@ def test_terminal_daemon_config_reads_desktop_open_preset(monkeypatch, tmp_path)
     assert config.desktop_auto_open_enabled is True
     assert config.desktop_open_preset == "auto"
     assert config.desktop_open_command == "custom {session_id}"
+
+
+def test_terminal_daemon_config_reads_token_file(monkeypatch, tmp_path):
+    socket_path = tmp_path / "terminal-agent.sock"
+    token_file = tmp_path / "local-token"
+    token_file.write_text("file-token\n", encoding="utf-8")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_SOCKET", str(socket_path))
+    monkeypatch.delenv("AGENTBRIDGE_LOCAL_TOKEN", raising=False)
+    monkeypatch.setenv("AGENTBRIDGE_LOCAL_TOKEN_FILE", str(token_file))
+
+    config = terminal_daemon.config_from_env()
+
+    assert config.socket_path == socket_path
+    assert config.auth_token == "file-token"
+    assert config.auth_token_file == token_file
 
 
 def test_local_terminal_daemon_rejects_wrong_peer_uid():
