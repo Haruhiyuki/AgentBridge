@@ -16,7 +16,7 @@ This repository currently contains the first executable backend slice:
 - Optional SQLAlchemy persistence with an Alembic-managed schema.
 - Terminal input gateway with fake, tmux, and stdlib PTY backends plus writer-lease epoch enforcement.
 - Local Terminal Agent daemon over a token-protected Unix socket.
-- Optional token-gated WebSocket streams and Terminal command transport.
+- Optional token-gated REST APIs, WebSocket streams, and Terminal command transport.
 - Local Console Client with line-mode, scripted input, raw TTY passthrough, and cursor-based output observation through the lease gateway.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
 - Bot Gateway delivery service with persistent idempotent delivery records, WebSocket render subscriptions, in-memory text transport, and OneBot V11 HTTP transport.
@@ -32,7 +32,7 @@ This repository currently contains the first executable backend slice:
 - Built-in Admin Web pages for project/session operations, interaction/approval operations, access policy editing, terminal lifecycle inspection, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
-Production PTY supervision, API/device-key authentication, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
+Production PTY supervision, mTLS/device-key authentication, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
 
 ## Development
 
@@ -146,6 +146,14 @@ wscat -c 'ws://127.0.0.1:8000/api/v1/sessions/<session-id>/rendered-events/ws?af
 Both streams emit replayed events first, then poll for new events. `after_seq`, `limit`, `poll_interval_seconds`, and `idle_timeout_seconds` are accepted as query parameters.
 
 Set `AGENTBRIDGE_WS_TOKEN` to require WebSocket clients to pass either `?token=...` or `Authorization: Bearer ...`. If the variable is unset, WebSocket routes stay open for local MVP development.
+
+Set `AGENTBRIDGE_API_TOKEN` to require REST API clients to pass either
+`Authorization: Bearer <token>` or `X-AgentBridge-API-Token: <token>` for `/api/*`
+routes other than `/api/v1/health`. If `AGENTBRIDGE_ADMIN_TOKEN` is configured, that
+same token and the unlocked Admin Web cookie can also authorize REST API calls so the
+built-in admin pages continue to work after browser unlock. If only `AGENTBRIDGE_API_TOKEN`
+is configured, it also gates and unlocks the built-in admin pages. If neither variable is
+set, REST routes stay open for local MVP development.
 
 ## Terminal WebSocket
 
@@ -364,7 +372,9 @@ answers questions, votes on approvals, and cancels pending items. The policy edi
 lists rules, edits allow/deny match criteria, runs `/api/v1/access-policy/simulate`,
 and saves through the same audited REST APIs.
 
-Set `AGENTBRIDGE_ADMIN_TOKEN` to require a browser token before serving `/admin` pages:
+Set `AGENTBRIDGE_ADMIN_TOKEN` to require a browser token before serving `/admin` pages.
+When `AGENTBRIDGE_API_TOKEN` is configured and `AGENTBRIDGE_ADMIN_TOKEN` is not, the
+API token is also accepted for Admin Web unlock:
 
 ```bash
 export AGENTBRIDGE_ADMIN_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
@@ -374,8 +384,9 @@ Open `/admin?admin_token=<token>` once to set a short-lived HttpOnly, SameSite c
 or pass `Authorization: Bearer <token>` / `X-AgentBridge-Admin-Token: <token>` for
 scripted admin page access. `AGENTBRIDGE_ADMIN_COOKIE_MAX_AGE_SECONDS` controls cookie
 lifetime, and `AGENTBRIDGE_ADMIN_COOKIE_SECURE` can force Secure cookie behavior when
-AgentBridge is deployed behind TLS. This gates the built-in browser pages; broader
-API/device-key authentication remains a production hardening item.
+AgentBridge is deployed behind TLS. The unlocked Admin Web cookie is also accepted by
+the optional REST API token gate. These MVP gates do not replace the planned
+mTLS/device-key authentication model.
 
 ## Console Client
 

@@ -469,6 +469,12 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     async def agentbridge_error_handler(_, exc: AgentBridgeError):
         return JSONResponse(status_code=exc.status_code, content=exc.to_payload())
 
+    @app.middleware("http")
+    async def api_token_gate(request: Request, call_next):
+        if not http_api_request_authorized(request):
+            return http_api_auth_error_response()
+        return await call_next(request)
+
     @app.get("/admin", response_class=HTMLResponse)
     def admin_home_ui(request: Request):
         return admin_html_response(request, ADMIN_HOME_HTML)
@@ -1885,12 +1891,13 @@ ADMIN_AUTH_QUERY_PARAM = "admin_token"
 
 
 def admin_html_response(request: Request, html: str):
-    expected_token = os.environ.get("AGENTBRIDGE_ADMIN_TOKEN", "").strip()
-    if not expected_token:
+    expected_tokens = admin_expected_tokens()
+    if not expected_tokens:
         return HTMLResponse(html)
 
     presented_token = admin_presented_token(request)
-    if presented_token and hmac.compare_digest(presented_token, expected_token):
+    matched_token = matching_token(presented_token, expected_tokens)
+    if matched_token:
         query_token = request.query_params.get(ADMIN_AUTH_QUERY_PARAM)
         response = (
             RedirectResponse(url=request.url.path, status_code=303)
@@ -1899,7 +1906,7 @@ def admin_html_response(request: Request, html: str):
         )
         response.set_cookie(
             ADMIN_AUTH_COOKIE_NAME,
-            expected_token,
+            matched_token,
             max_age=admin_cookie_max_age_seconds(),
             httponly=True,
             secure=admin_cookie_secure(request),
@@ -1908,6 +1915,14 @@ def admin_html_response(request: Request, html: str):
         return response
 
     return HTMLResponse(ADMIN_AUTH_REQUIRED_HTML, status_code=401)
+
+
+def admin_expected_tokens() -> list[str]:
+    tokens = [
+        os.environ.get("AGENTBRIDGE_ADMIN_TOKEN", "").strip(),
+        os.environ.get("AGENTBRIDGE_API_TOKEN", "").strip(),
+    ]
+    return [token for token in tokens if token]
 
 
 def admin_presented_token(request: Request) -> str | None:
@@ -1944,6 +1959,73 @@ def admin_cookie_secure(request: Request) -> bool:
     if override in {"0", "false", "no", "off"}:
         return False
     return request.url.scheme == "https"
+
+
+def http_api_request_authorized(request: Request) -> bool:
+    if not request.url.path.startswith("/api/"):
+        return True
+    if request.url.path == "/api/v1/health":
+        return True
+    expected_tokens = http_api_expected_tokens()
+    if not expected_tokens:
+        return True
+    presented_tokens = http_api_presented_tokens(request)
+    return any(
+        matching_token(presented_token, expected_tokens)
+        for presented_token in presented_tokens
+    )
+
+
+def http_api_expected_tokens() -> list[str]:
+    tokens = [
+        os.environ.get("AGENTBRIDGE_API_TOKEN", "").strip(),
+        os.environ.get("AGENTBRIDGE_ADMIN_TOKEN", "").strip(),
+    ]
+    return [token for token in tokens if token]
+
+
+def http_api_presented_tokens(request: Request) -> list[str]:
+    tokens: list[str] = []
+    header_token = request.headers.get("x-agentbridge-api-token")
+    if header_token:
+        tokens.append(header_token.strip())
+    admin_header_token = request.headers.get("x-agentbridge-admin-token")
+    if admin_header_token:
+        tokens.append(admin_header_token.strip())
+    authorization = request.headers.get("authorization")
+    if authorization:
+        prefix = "Bearer "
+        tokens.append(
+            authorization[len(prefix) :].strip()
+            if authorization.startswith(prefix)
+            else authorization.strip()
+        )
+    admin_cookie_token = request.cookies.get(ADMIN_AUTH_COOKIE_NAME)
+    if admin_cookie_token:
+        tokens.append(admin_cookie_token)
+    return [token for token in tokens if token]
+
+
+def http_api_auth_error_response() -> JSONResponse:
+    error = AgentBridgeError(
+        ErrorCode.PERMISSION_DENIED,
+        "HTTP API token 无效。",
+        next_step=(
+            "请设置 Authorization: Bearer <token>、X-AgentBridge-API-Token，"
+            "或使用已解锁的 Admin Web cookie。"
+        ),
+        status_code=403,
+    )
+    return JSONResponse(status_code=error.status_code, content=error.to_payload())
+
+
+def matching_token(presented_token: str | None, expected_tokens: list[str]) -> str | None:
+    if not presented_token:
+        return None
+    for expected_token in expected_tokens:
+        if hmac.compare_digest(presented_token, expected_token):
+            return expected_token
+    return None
 
 
 def invalid_terminal_frame(reason: str) -> AgentBridgeError:

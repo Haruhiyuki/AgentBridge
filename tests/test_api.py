@@ -50,6 +50,56 @@ def test_health_endpoint_reports_memory_storage():
     assert response.json()["storage"] == "memory"
 
 
+def test_api_token_gate_protects_rest_api_when_configured(monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_API_TOKEN", "api-secret")
+    client = TestClient(create_app())
+
+    health_response = client.get("/api/v1/health")
+    denied_response = client.get("/api/v1/projects")
+    locked_admin_response = client.get("/admin")
+    unlock_admin_response = client.get(
+        "/admin?admin_token=api-secret",
+        follow_redirects=False,
+    )
+    cookie_api_response = client.get("/api/v1/projects")
+    header_response = client.get(
+        "/api/v1/projects",
+        headers={"x-agentbridge-api-token": "api-secret"},
+    )
+    bearer_response = client.get(
+        "/api/v1/projects",
+        headers={"authorization": "Bearer api-secret"},
+    )
+
+    assert health_response.status_code == 200
+    assert denied_response.status_code == 403
+    assert denied_response.json()["error_code"] == "PERMISSION_DENIED"
+    assert locked_admin_response.status_code == 401
+    assert unlock_admin_response.status_code == 303
+    assert "agentbridge_admin_token=api-secret" in unlock_admin_response.headers["set-cookie"]
+    assert cookie_api_response.status_code == 200
+    assert cookie_api_response.json() == []
+    assert header_response.status_code == 200
+    assert header_response.json() == []
+    assert bearer_response.status_code == 200
+    assert bearer_response.json() == []
+
+
+def test_admin_cookie_authorizes_rest_api_when_admin_token_configured(monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_ADMIN_TOKEN", "admin-secret")
+    client = TestClient(create_app())
+
+    denied_response = client.get("/api/v1/projects")
+    unlock_response = client.get("/admin?admin_token=admin-secret")
+    api_response = client.get("/api/v1/projects")
+
+    assert denied_response.status_code == 403
+    assert unlock_response.status_code == 200
+    assert "AgentBridge Admin" in unlock_response.text
+    assert api_response.status_code == 200
+    assert api_response.json() == []
+
+
 def test_project_session_admin_ui_serves_dashboard():
     client = TestClient(create_app())
 
