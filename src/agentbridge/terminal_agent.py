@@ -198,6 +198,9 @@ class TerminalAgentService:
     ) -> str:
         request_id = request_id or f"tin_{uuid4().hex[:12]}"
         session = self.control.repository.get_session(session_id)
+        existing_event = self.control.repository.event_idempotency.get(request_id)
+        if existing_event and existing_event.type == "terminal.input.accepted":
+            return request_id
         lease = self.control.repository.current_lease(session_id)
         if (
             lease is None

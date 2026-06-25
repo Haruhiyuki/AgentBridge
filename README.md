@@ -15,6 +15,7 @@ This repository currently contains the first executable backend slice:
 - Ordered semantic event streams with replay and idempotent Terminal Agent event ingestion.
 - Optional SQLAlchemy persistence with an Alembic-managed schema.
 - Terminal input gateway with fake/tmux backends and writer-lease epoch enforcement.
+- Local Terminal Agent daemon over a token-protected Unix socket.
 - REST API routes aligned with the design document's service interface.
 
 NoneBot integration, Admin Web, visible local console attachment, and real Claude/Codex adapters are planned next milestones.
@@ -57,6 +58,18 @@ export AGENTBRIDGE_TERMINAL_BACKEND=tmux
 ```
 
 Terminal input is accepted only when the request carries the current writer lease `epoch`, owner type, and owner ID. Stale Bot/Web inputs are rejected after human or higher-priority control preempts the lease.
+
+## Local Terminal Agent
+
+Run the local Terminal Agent socket server:
+
+```bash
+export AGENTBRIDGE_LOCAL_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export AGENTBRIDGE_TERMINAL_SOCKET="$HOME/.agentbridge/terminal-agent.sock"
+uv run agentbridge-terminal-agent
+```
+
+If `AGENTBRIDGE_LOCAL_TOKEN` is omitted, the daemon prints a generated token at startup. The socket file is created with mode `0600`. The JSONL socket protocol currently supports `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, and `snapshot`.
 
 ## API Smoke Test
 
