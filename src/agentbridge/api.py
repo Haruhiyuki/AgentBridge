@@ -1081,6 +1081,24 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         return {"snapshot": terminal_service.snapshot(session_id=session_id)}
 
+    @app.get("/api/v1/sessions/{session_id}/terminal/status")
+    def terminal_status(
+        session_id: str,
+        control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
+    ):
+        actor = Actor(id="api", roles={"admin"})
+        control.require_session_permission(
+            actor,
+            Permission.SESSION_VIEW,
+            session_id=session_id,
+            attributes={"operation": "terminal_status"},
+        )
+        return terminal_service.status(
+            session_id=session_id,
+            trace_id="terminal-status",
+        ).to_payload()
+
     @app.websocket("/api/v1/sessions/{session_id}/terminal/ws")
     async def terminal_command_websocket(
         websocket: WebSocket,
@@ -1642,12 +1660,24 @@ def handle_terminal_ws_action(
             attributes={"operation": "terminal_ws_snapshot"},
         )
         return {"snapshot": terminal_service.snapshot(session_id=session_id)}
+    if action == "status":
+        actor = actor_from_terminal_ws_payload(payload)
+        control.require_session_permission(
+            actor,
+            Permission.SESSION_VIEW,
+            session_id=session_id,
+            attributes={"operation": "terminal_ws_status"},
+        )
+        return terminal_service.status(
+            session_id=session_id,
+            trace_id=str(payload.get("trace_id") or "terminal-ws"),
+        ).to_payload()
     raise AgentBridgeError(
         ErrorCode.COMMAND_UNKNOWN,
         f"未知 Terminal WebSocket action：{action}",
         next_step=(
             "请使用 health、start_session、acquire_lease、release_lease、"
-            "submit_input 或 snapshot。"
+            "submit_input、snapshot 或 status。"
         ),
     )
 

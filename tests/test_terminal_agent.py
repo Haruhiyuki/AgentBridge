@@ -16,6 +16,7 @@ from agentbridge.terminal_agent import (
     TerminalAgentService,
     TerminalInputKind,
     TerminalOutputChunk,
+    TerminalStatus,
     TmuxTerminalBackend,
 )
 
@@ -148,6 +149,42 @@ def test_terminal_agent_enforces_current_writer_lease_epoch(tmp_path):
     ]
 
 
+def test_terminal_status_emits_exit_event_once(tmp_path):
+    class ExitedBackend(FakeTerminalBackend):
+        def status(self, *, session_id: str) -> TerminalStatus:
+            self._require_started(session_id)
+            return TerminalStatus(
+                started=True,
+                running=False,
+                exit_code=7,
+                pid=1234,
+                output_cursor=42,
+            )
+
+    control = ControlPlane()
+    backend = ExitedBackend()
+    terminal = TerminalAgentService(control, backend=backend)
+    _, session = create_session(control, tmp_path)
+
+    terminal.start_session(session_id=session.id, command="fake-cli", trace_id="terminal-start")
+    first_status = terminal.status(session_id=session.id, trace_id="terminal-status-1")
+    second_status = terminal.status(session_id=session.id, trace_id="terminal-status-2")
+
+    assert first_status == second_status
+    exited_events = [
+        event
+        for event in control.repository.list_events(session_id=session.id)
+        if event.type == "terminal.exited"
+    ]
+    assert len(exited_events) == 1
+    assert exited_events[0].payload == {
+        "generation": 1,
+        "exit_code": 7,
+        "pid": 1234,
+        "output_cursor": 42,
+    }
+
+
 def test_terminal_api_writes_to_fake_backend_after_lease(tmp_path):
     client = TestClient(create_app())
     actor = {"id": "usr_1", "roles": ["maintainer"]}
@@ -213,6 +250,18 @@ def test_terminal_api_writes_to_fake_backend_after_lease(tmp_path):
     snapshot_response = client.get(f"/api/v1/sessions/{session_id}/terminal/snapshot")
     assert snapshot_response.status_code == 200
     assert snapshot_response.json()["snapshot"] == "hello api\n"
+
+    status_response = client.get(f"/api/v1/sessions/{session_id}/terminal/status")
+    assert status_response.status_code == 200
+    assert status_response.json() == {
+        "started": True,
+        "running": True,
+        "exit_code": None,
+        "pid": None,
+        "output_cursor": 10,
+        "output_base_cursor": 0,
+        "output_retained_chars": 10,
+    }
 
 
 def test_tmux_backend_reuses_existing_session_after_agent_restart(monkeypatch, tmp_path):
@@ -318,6 +367,31 @@ def test_pty_backend_streams_process_output(tmp_path):
             backend.signal(session_id=session_id, name="eof")
         except AgentBridgeError:
             pass
+        backend.terminate(session_id)
+
+
+def test_pty_backend_status_reports_process_exit(tmp_path):
+    shell = shutil.which("sh")
+    if shell is None:
+        pytest.skip("sh executable is required for PTY exit status test")
+
+    backend = PtyTerminalBackend()
+    session_id = "pty-exit"
+    backend.start(session_id=session_id, cwd=str(tmp_path), command=f"{shell} -c 'exit 7'")
+    try:
+        deadline = time.monotonic() + 2
+        status = backend.status(session_id=session_id)
+        while time.monotonic() < deadline:
+            status = backend.status(session_id=session_id)
+            if not status.running:
+                break
+            time.sleep(0.05)
+
+        assert status.started is True
+        assert status.running is False
+        assert status.exit_code == 7
+        assert status.pid is not None
+    finally:
         backend.terminate(session_id)
 
 

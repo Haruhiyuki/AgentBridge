@@ -44,6 +44,28 @@ class TerminalOutputChunk:
     reset: bool = False
 
 
+@dataclass(frozen=True)
+class TerminalStatus:
+    started: bool
+    running: bool
+    exit_code: int | None = None
+    pid: int | None = None
+    output_cursor: int = 0
+    output_base_cursor: int = 0
+    output_retained_chars: int = 0
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "started": self.started,
+            "running": self.running,
+            "exit_code": self.exit_code,
+            "pid": self.pid,
+            "output_cursor": self.output_cursor,
+            "output_base_cursor": self.output_base_cursor,
+            "output_retained_chars": self.output_retained_chars,
+        }
+
+
 class TerminalBackend(Protocol):
     def start(self, *, session_id: str, cwd: str, command: str) -> None: ...
 
@@ -56,6 +78,8 @@ class TerminalBackend(Protocol):
     def snapshot(self, *, session_id: str) -> str: ...
 
     def read_output(self, *, session_id: str, after_cursor: int = 0) -> TerminalOutputChunk: ...
+
+    def status(self, *, session_id: str) -> TerminalStatus: ...
 
 
 DEFAULT_PTY_OUTPUT_LIMIT_CHARS = 1_000_000
@@ -102,6 +126,17 @@ class FakeTerminalBackend:
             cursor=cursor,
             data=snapshot[after_cursor:],
             snapshot=snapshot,
+        )
+
+    def status(self, *, session_id: str) -> TerminalStatus:
+        if session_id not in self.started:
+            return TerminalStatus(started=False, running=False)
+        snapshot = self.snapshot(session_id=session_id)
+        return TerminalStatus(
+            started=True,
+            running=True,
+            output_cursor=len(snapshot),
+            output_retained_chars=len(snapshot),
         )
 
     def _require_started(self, session_id: str) -> None:
@@ -180,6 +215,10 @@ class TmuxTerminalBackend:
             data=snapshot[after_cursor:],
             snapshot=snapshot,
         )
+
+    def status(self, *, session_id: str) -> TerminalStatus:
+        running = self._has_session(self._tmux_name(session_id))
+        return TerminalStatus(started=running, running=running)
 
     def _has_session(self, name: str) -> bool:
         result = subprocess.run(
@@ -352,6 +391,25 @@ class PtyTerminalBackend:
             snapshot=snapshot,
         )
 
+    def status(self, *, session_id: str) -> TerminalStatus:
+        session = self.sessions.get(session_id)
+        if session is None:
+            return TerminalStatus(started=False, running=False)
+        exit_code = session.process.poll()
+        with session.lock:
+            output_retained_chars = len(session.output)
+            output_base_cursor = session.output_base_cursor
+            output_cursor = output_base_cursor + output_retained_chars
+        return TerminalStatus(
+            started=True,
+            running=exit_code is None,
+            exit_code=exit_code,
+            pid=session.process.pid,
+            output_cursor=output_cursor,
+            output_base_cursor=output_base_cursor,
+            output_retained_chars=output_retained_chars,
+        )
+
     def terminate(self, session_id: str) -> None:
         with self._lock:
             session = self.sessions.pop(session_id, None)
@@ -434,6 +492,8 @@ class TerminalAgentService:
     def __init__(self, control: ControlPlane, backend: TerminalBackend | None = None) -> None:
         self.control = control
         self.backend = backend or FakeTerminalBackend()
+        self._terminal_start_generations: dict[str, int] = {}
+        self._reported_terminal_exits: set[tuple[str, int]] = set()
 
     def start_session(
         self,
@@ -445,6 +505,9 @@ class TerminalAgentService:
         session = self.control.repository.get_session(session_id)
         workspace = self.control.repository.get_workspace(session.workspace_id)
         self.backend.start(session_id=session_id, cwd=workspace.path, command=command)
+        self._terminal_start_generations[session_id] = (
+            self._terminal_start_generations.get(session_id, 0) + 1
+        )
         self.control.emit_event(
             event_type="terminal.started",
             source=SemanticEventSource.TERMINAL_AGENT,
@@ -540,3 +603,43 @@ class TerminalAgentService:
             session_id=session_id,
             after_cursor=after_cursor,
         )
+
+    def status(
+        self,
+        *,
+        session_id: str,
+        trace_id: str = "terminal-status",
+    ) -> TerminalStatus:
+        session = self.control.repository.get_session(session_id)
+        status = self.backend.status(session_id=session_id)
+        self._emit_terminal_exited_once(session=session, status=status, trace_id=trace_id)
+        return status
+
+    def _emit_terminal_exited_once(
+        self,
+        *,
+        session,
+        status: TerminalStatus,
+        trace_id: str,
+    ) -> None:
+        if not status.started or status.running:
+            return
+        generation = self._terminal_start_generations.get(session.id, 0)
+        exit_key = (session.id, generation)
+        if exit_key in self._reported_terminal_exits:
+            return
+        self.control.emit_event(
+            event_type="terminal.exited",
+            source=SemanticEventSource.TERMINAL_AGENT,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session.id,
+            payload={
+                "generation": generation,
+                "exit_code": status.exit_code,
+                "pid": status.pid,
+                "output_cursor": status.output_cursor,
+            },
+            idempotency_key=f"terminal-exited:{session.id}:{generation}",
+        )
+        self._reported_terminal_exits.add(exit_key)

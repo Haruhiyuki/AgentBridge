@@ -244,6 +244,18 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 f"已启动 `{payload.get('command')}`，Workspace：{payload.get('workspace_id')}",
             )
         )
+    elif event.type == "terminal.exited":
+        visibility = RenderVisibility.OPERATORS
+        blocks.append(
+            warning_block(
+                "终端已退出",
+                (
+                    f"exit_code={payload.get('exit_code')}；"
+                    f"pid={payload.get('pid')}；"
+                    f"output_cursor={payload.get('output_cursor')}"
+                ),
+            )
+        )
     else:
         blocks.append(text_block("事件", event.type))
         if payload:

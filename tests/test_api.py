@@ -955,9 +955,28 @@ def test_terminal_websocket_accepts_commands_with_token(monkeypatch, tmp_path):
             }
         )
         snapshot = websocket.receive_json()
+        assert snapshot["type"] == "terminal.result"
+        assert snapshot["data"] == {"snapshot": "hello ws\n"}
 
-    assert snapshot["type"] == "terminal.result"
-    assert snapshot["data"] == {"snapshot": "hello ws\n"}
+        websocket.send_json(
+            {
+                "id": "status",
+                "type": "status",
+                "payload": {"actor": actor, "trace_id": "terminal-ws-status"},
+            }
+        )
+        status = websocket.receive_json()
+
+    assert status["type"] == "terminal.result"
+    assert status["data"] == {
+        "started": True,
+        "running": True,
+        "exit_code": None,
+        "pid": None,
+        "output_cursor": 9,
+        "output_base_cursor": 0,
+        "output_retained_chars": 9,
+    }
 
 
 def test_terminal_websocket_returns_error_frames_for_bad_lease(tmp_path):

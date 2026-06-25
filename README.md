@@ -89,7 +89,7 @@ export AGENTBRIDGE_TERMINAL_SOCKET="$HOME/.agentbridge/terminal-agent.sock"
 uv run agentbridge-terminal-agent
 ```
 
-If `AGENTBRIDGE_LOCAL_TOKEN` is omitted, the daemon prints a generated token at startup. The socket file is created with mode `0600`. The JSONL socket protocol currently supports `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, `snapshot`, cursor-based `read_output`, and multi-frame `stream_output`.
+If `AGENTBRIDGE_LOCAL_TOKEN` is omitted, the daemon prints a generated token at startup. The socket file is created with mode `0600`. The JSONL socket protocol currently supports `health`, `start_session`, `acquire_human_lease`, `release_lease`, `submit_input`, `snapshot`, `status`, cursor-based `read_output`, and multi-frame `stream_output`.
 
 Local clients open a fresh connection per request and wait briefly for the Unix socket to reappear, so short daemon restarts do not immediately fail console operations. With the PTY backend, the daemon owns a local child process and streams PTY output through cursor frames. With the tmux backend, restarting the Agent process reuses an existing `agentbridge_<session-id>` tmux session instead of creating a duplicate.
 
@@ -135,7 +135,7 @@ Request frames are JSON objects with `id`, `type`, and `payload`. The server rep
 {"id":"start","type":"start_session","payload":{"actor":{"id":"usr_1","roles":["maintainer"]},"command":"sh"}}
 ```
 
-Supported actions are `health`, `start_session`, `acquire_lease`, `release_lease`, `submit_input`, and `snapshot`. `submit_input` uses the same writer lease `epoch`, owner type, owner ID, and request-idempotency checks as the REST terminal input endpoint.
+Supported actions are `health`, `start_session`, `acquire_lease`, `release_lease`, `submit_input`, `snapshot`, and `status`. `submit_input` uses the same writer lease `epoch`, owner type, owner ID, and request-idempotency checks as the REST terminal input endpoint. `status` reports whether the terminal backend has started, whether it is still running, process exit metadata when available, and the current output cursor.
 
 ## Bot Gateway Delivery
 

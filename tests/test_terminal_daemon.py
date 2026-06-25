@@ -98,6 +98,18 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
             assert snapshot["ok"] is True
             assert snapshot["data"]["snapshot"] == "hello daemon\n"
 
+            status = await client.request("status", {"session_id": session.id})
+            assert status["ok"] is True
+            assert status["data"] == {
+                "started": True,
+                "running": True,
+                "exit_code": None,
+                "pid": None,
+                "output_cursor": 13,
+                "output_base_cursor": 0,
+                "output_retained_chars": 13,
+            }
+
             output = await client.request(
                 "read_output",
                 {"session_id": session.id, "after_cursor": 6},

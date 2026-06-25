@@ -43,6 +43,22 @@ def test_terminal_rejection_event_renders_operator_warning():
     ]
 
 
+def test_terminal_exited_event_renders_operator_warning():
+    event = make_event(
+        "terminal.exited",
+        {"exit_code": 7, "pid": 1234, "output_cursor": 42},
+    )
+
+    document = document_from_event(event)
+    messages = OneBotV11TextRenderer().render(document)
+
+    assert document.visibility == "operators"
+    assert messages == [
+        "terminal.exited · ses_1\n\n"
+        "终端已退出\nWARNING: exit_code=7；pid=1234；output_cursor=42"
+    ]
+
+
 def test_approval_request_event_renders_approver_actions():
     event = make_event(
         "approval.requested",

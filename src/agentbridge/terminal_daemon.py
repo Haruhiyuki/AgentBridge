@@ -281,6 +281,12 @@ class LocalTerminalAgentServer:
         if action == "snapshot":
             session_id = required_str(payload, "session_id")
             return {"snapshot": self.terminal.snapshot(session_id=session_id)}
+        if action == "status":
+            session_id = required_str(payload, "session_id")
+            return self.terminal.status(
+                session_id=session_id,
+                trace_id=str(payload.get("trace_id") or "local-terminal"),
+            ).to_payload()
         if action == "read_output":
             chunk = self.terminal.read_output(
                 session_id=required_str(payload, "session_id"),
@@ -297,7 +303,7 @@ class LocalTerminalAgentServer:
             f"未知本地 Terminal Agent action：{action}",
             next_step=(
                 "请使用 health、start_session、acquire_human_lease、release_lease、"
-                "submit_input、snapshot、read_output 或 stream_output。"
+                "submit_input、snapshot、status、read_output 或 stream_output。"
             ),
         )
 
