@@ -128,6 +128,8 @@ class CreateWorkspaceRequest(BaseModel):
     path: str
     allowed_root: str
     workspace_type: WorkspaceType = WorkspaceType.SHARED
+    is_writable: bool = True
+    max_write_sessions: int = Field(default=1, ge=0)
     trace_id: str = "api"
 
 
@@ -608,6 +610,8 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             path=payload.path,
             allowed_root=payload.allowed_root,
             workspace_type=payload.workspace_type,
+            is_writable=payload.is_writable,
+            max_write_sessions=payload.max_write_sessions,
             trace_id=payload.trace_id,
         )
         return workspace.model_dump(mode="json")

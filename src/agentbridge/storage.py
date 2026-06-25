@@ -223,6 +223,29 @@ class InMemoryRepository:
                     status_code=403,
                     details={"path": str(resolved_path), "allowed_root": str(resolved_root)},
                 )
+            if max_write_sessions < 0:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "Workspace 写入并发上限不能为负。",
+                    next_step="请将 max_write_sessions 设置为 0 或更大的整数。",
+                    status_code=400,
+                    details={"max_write_sessions": max_write_sessions},
+                )
+            effective_is_writable = is_writable and workspace_type != WorkspaceType.READ_ONLY
+            effective_max_write_sessions = (
+                max_write_sessions if effective_is_writable else 0
+            )
+            if effective_is_writable and effective_max_write_sessions < 1:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "可写 Workspace 至少需要 1 个写入会话名额。",
+                    next_step="请设置 max_write_sessions >= 1，或将 Workspace 标记为不可写。",
+                    status_code=400,
+                    details={
+                        "is_writable": effective_is_writable,
+                        "max_write_sessions": effective_max_write_sessions,
+                    },
+                )
             workspace = Workspace(
                 id=new_id("wsp"),
                 project_id=project_id,
@@ -230,8 +253,8 @@ class InMemoryRepository:
                 path=str(resolved_path),
                 allowed_root=str(resolved_root),
                 type=workspace_type,
-                is_writable=is_writable,
-                max_write_sessions=max_write_sessions,
+                is_writable=effective_is_writable,
+                max_write_sessions=effective_max_write_sessions,
             )
             self.workspaces[workspace.id] = workspace
             return workspace

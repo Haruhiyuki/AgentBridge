@@ -161,6 +161,8 @@ class ControlPlane:
         path: str,
         allowed_root: str,
         workspace_type: WorkspaceType = WorkspaceType.SHARED,
+        is_writable: bool = True,
+        max_write_sessions: int = 1,
         trace_id: str,
         chat_context_id: str | None = None,
     ) -> Workspace:
@@ -173,6 +175,8 @@ class ControlPlane:
                 "operation": "add_workspace",
                 "workspace_type": workspace_type.value,
                 "machine_id": machine_id,
+                "is_writable": is_writable,
+                "max_write_sessions": max_write_sessions,
                 **self._chat_policy_attributes(chat_context_id),
             },
         )
@@ -182,6 +186,8 @@ class ControlPlane:
             path=path,
             allowed_root=allowed_root,
             workspace_type=workspace_type,
+            is_writable=is_writable,
+            max_write_sessions=max_write_sessions,
         )
         self.audit(
             action="project.workspace_added",
@@ -201,6 +207,8 @@ class ControlPlane:
                 "workspace_id": workspace.id,
                 "machine_id": workspace.machine_id,
                 "type": workspace.type.value,
+                "is_writable": workspace.is_writable,
+                "max_write_sessions": workspace.max_write_sessions,
             },
         )
         return workspace

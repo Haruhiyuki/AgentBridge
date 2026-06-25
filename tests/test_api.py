@@ -1522,6 +1522,9 @@ def test_project_session_admin_ui_serves_dashboard():
     assert "async function createProject()" in html
     assert "async function createSession()" in html
     assert "async function closeSession()" in html
+    assert "workspace-writable" in html
+    assert "workspace-max-write-sessions" in html
+    assert "function syncWorkspaceWritePolicy()" in html
 
 
 def test_interaction_admin_ui_serves_dashboard():
@@ -1610,6 +1613,98 @@ def test_audit_events_admin_ui_serves_dashboard():
     assert "function connectEventsLive()" in html
 
 
+def test_workspace_api_configures_read_only_write_policy(tmp_path):
+    client = TestClient(create_app())
+    actor = {"id": "admin-ui", "roles": ["admin"]}
+
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": actor,
+            "name": "Read Only Backend",
+            "trace_id": "test-read-only-workspace-project",
+        },
+    )
+    project = project_response.json()
+    workspace_response = client.post(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        json={
+            "actor": actor,
+            "machine_id": "local",
+            "path": str(tmp_path / "repo"),
+            "allowed_root": str(tmp_path),
+            "workspace_type": "read_only",
+            "is_writable": True,
+            "max_write_sessions": 3,
+            "trace_id": "test-read-only-workspace-add",
+        },
+    )
+
+    assert project_response.status_code == 200
+    assert workspace_response.status_code == 200
+    workspace = workspace_response.json()
+    assert workspace["type"] == "read_only"
+    assert workspace["is_writable"] is False
+    assert workspace["max_write_sessions"] == 0
+
+    session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": actor,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Read Only Session",
+            "trace_id": "test-read-only-workspace-session",
+        },
+    )
+    lease_response = client.post(
+        f"/api/v1/sessions/{session_response.json()['id']}/lease/acquire",
+        json={
+            "actor": actor,
+            "owner_type": "web_admin",
+            "owner_id": "admin-ui",
+            "trace_id": "test-read-only-workspace-lease",
+        },
+    )
+
+    assert session_response.status_code == 200
+    assert lease_response.status_code == 409
+    assert lease_response.json()["error_code"] == "LEASE_CONFLICT"
+    assert lease_response.json()["details"]["workspace_id"] == workspace["id"]
+
+
+def test_workspace_api_rejects_zero_write_capacity_for_writable_workspace(tmp_path):
+    client = TestClient(create_app())
+    actor = {"id": "admin-ui", "roles": ["admin"]}
+
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": actor,
+            "name": "Invalid Workspace Policy",
+            "trace_id": "test-invalid-workspace-policy-project",
+        },
+    )
+    project = project_response.json()
+    workspace_response = client.post(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        json={
+            "actor": actor,
+            "machine_id": "local",
+            "path": str(tmp_path / "repo"),
+            "allowed_root": str(tmp_path),
+            "workspace_type": "shared",
+            "is_writable": True,
+            "max_write_sessions": 0,
+            "trace_id": "test-invalid-workspace-policy-add",
+        },
+    )
+
+    assert project_response.status_code == 200
+    assert workspace_response.status_code == 400
+    assert workspace_response.json()["error_code"] == "COMMAND_ARGUMENT_INVALID"
+
+
 def test_project_session_rest_flow_supports_admin_operations(tmp_path):
     client = TestClient(create_app())
     actor = {"id": "admin-ui", "roles": ["admin"]}
@@ -1639,12 +1734,16 @@ def test_project_session_rest_flow_supports_admin_operations(tmp_path):
             "path": str(workspace_path),
             "allowed_root": str(tmp_path),
             "workspace_type": "shared",
+            "is_writable": True,
+            "max_write_sessions": 2,
             "trace_id": "test-admin-workspace-add",
         },
     )
     assert workspace_response.status_code == 200
     workspace = workspace_response.json()
     assert workspace["project_id"] == project["id"]
+    assert workspace["is_writable"] is True
+    assert workspace["max_write_sessions"] == 2
 
     session_response = client.post(
         "/api/v1/sessions",

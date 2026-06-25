@@ -1161,6 +1161,18 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       font-weight: 650;
     }
     .compact { max-width: 180px; }
+    .checkbox-field {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding-top: 18px;
+    }
+    .checkbox-field input {
+      width: auto;
+      min-height: auto;
+      padding: 0;
+    }
     .status {
       flex: 1;
       min-width: 180px;
@@ -1363,6 +1375,14 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
             <option value="read_only">read_only</option>
           </select>
         </label>
+        <label class="checkbox-field">
+          <input id="workspace-writable" type="checkbox" checked>
+          <span>Writable</span>
+        </label>
+        <label>
+          Max Write Sessions
+          <input id="workspace-max-write-sessions" type="number" min="0" step="1" value="1">
+        </label>
         <button class="primary wide" id="add-workspace" type="button">Add Workspace</button>
       </div>
 
@@ -1374,6 +1394,8 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
               <th>Root</th>
               <th>Machine</th>
               <th>Type</th>
+              <th>Writable</th>
+              <th>Max Write</th>
             </tr>
           </thead>
           <tbody id="workspaces"></tbody>
@@ -1500,6 +1522,8 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
           workspace.allowed_root,
           workspace.machine_id,
           workspace.type,
+          workspace.is_writable ? "writable" : "read-only",
+          workspace.max_write_sessions,
         ]) {
           appendCell(tr, value);
         }
@@ -1544,6 +1568,24 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       if (selectedSessionId && !sessions.some((session) => session.id === selectedSessionId)) {
         selectedSessionId = "";
         $("session-json").textContent = "{}";
+      }
+    }
+
+    function readWorkspaceMaxWriteSessions() {
+      const parsed = Number.parseInt($("workspace-max-write-sessions").value || "0", 10);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function syncWorkspaceWritePolicy() {
+      const readOnly = $("workspace-type").value === "read_only";
+      $("workspace-writable").checked = !readOnly;
+      $("workspace-writable").disabled = readOnly;
+      if (readOnly) {
+        $("workspace-max-write-sessions").value = "0";
+        return;
+      }
+      if (readWorkspaceMaxWriteSessions() < 1) {
+        $("workspace-max-write-sessions").value = "1";
       }
     }
 
@@ -1627,6 +1669,8 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
           path: $("workspace-path").value.trim(),
           allowed_root: $("workspace-root").value.trim(),
           workspace_type: $("workspace-type").value,
+          is_writable: $("workspace-writable").checked,
+          max_write_sessions: readWorkspaceMaxWriteSessions(),
           trace_id: "admin-ui-workspace-add",
         }),
       });
@@ -1685,8 +1729,10 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     $("refresh").addEventListener("click", () => run(loadProjects));
     $("create-project").addEventListener("click", () => run(createProject));
     $("add-workspace").addEventListener("click", () => run(addWorkspace));
+    $("workspace-type").addEventListener("change", syncWorkspaceWritePolicy);
     $("create-session").addEventListener("click", () => run(createSession));
     $("close-session").addEventListener("click", () => run(closeSession));
+    syncWorkspaceWritePolicy();
     loadProjects().catch((error) => {
       $("error").textContent = error.message;
       setStatus(error.message);
