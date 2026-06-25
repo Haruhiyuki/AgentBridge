@@ -4,16 +4,19 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from threading import Event, RLock, Thread, current_thread
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
     AgentBridgeError,
+    BotDeliveryPlatformState,
     BotDeliveryRecord,
+    BotDeliveryResultAction,
     BotDeliveryStatus,
     BotPlatform,
     ChatContext,
+    ErrorCode,
     utc_now,
 )
 from agentbridge.renderer import OneBotV11TextRenderer, RenderDocument, document_from_event
@@ -233,6 +236,76 @@ class BotGatewayService:
     ) -> list[BotDeliveryRecord]:
         return self.control.repository.list_bot_delivery_records(chat_context_id, status=status)
 
+    def record_delivery_result(
+        self,
+        *,
+        idempotency_key: str,
+        action: BotDeliveryResultAction,
+        platform_message_id: str | None = None,
+        text: str | None = None,
+        error: str | None = None,
+        payload: dict[str, Any] | None = None,
+        occurred_at: datetime | None = None,
+    ) -> BotDeliveryRecord:
+        record = self.control.repository.get_bot_delivery_record(idempotency_key)
+        if record is None:
+            raise AgentBridgeError(
+                ErrorCode.NOT_FOUND,
+                "找不到 Bot delivery 记录。",
+                next_step="请使用 Bot render frame 中的 idempotency_key 回报平台结果。",
+                status_code=404,
+                details={"idempotency_key": idempotency_key},
+            )
+
+        now = occurred_at or utc_now()
+        platform_payload = dict(record.platform_payload)
+        if payload:
+            platform_payload.update(payload)
+        update: dict[str, Any] = {
+            "updated_at": now,
+            "platform_payload": platform_payload,
+        }
+        if platform_message_id:
+            update["platform_message_id"] = platform_message_id
+        if error is not None:
+            update["last_error"] = error
+
+        if action == BotDeliveryResultAction.ACKNOWLEDGE:
+            update.update(
+                {
+                    "platform_state": BotDeliveryPlatformState.ACKNOWLEDGED,
+                    "acknowledged_at": now,
+                }
+            )
+        elif action == BotDeliveryResultAction.EDIT:
+            update.update(
+                {
+                    "platform_state": BotDeliveryPlatformState.EDITED,
+                    "edited_at": now,
+                    "edit_revision": record.edit_revision + 1,
+                }
+            )
+            if text is not None:
+                update["text"] = text
+        elif action == BotDeliveryResultAction.DELETE:
+            update.update(
+                {
+                    "platform_state": BotDeliveryPlatformState.DELETED,
+                    "deleted_at": now,
+                }
+            )
+        else:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "未知 Bot delivery result action。",
+                next_step="请使用 acknowledge、edit 或 delete。",
+                details={"action": str(action)},
+            )
+
+        updated = record.model_copy(update=update)
+        self.control.repository.store_bot_delivery_record(updated)
+        return updated
+
     def retry_failed_deliveries(
         self,
         *,
@@ -329,9 +402,15 @@ class BotGatewayService:
                 platform_message_id=platform_message_id,
                 text=text,
                 status=BotDeliveryStatus.SENT,
+                platform_state=BotDeliveryPlatformState.SENT,
                 attempt_count=attempt_count,
                 last_error=None,
                 next_retry_at=None,
+                acknowledged_at=existing.acknowledged_at if existing else None,
+                edited_at=existing.edited_at if existing else None,
+                deleted_at=existing.deleted_at if existing else None,
+                edit_revision=existing.edit_revision if existing else 0,
+                platform_payload=dict(existing.platform_payload) if existing else {},
                 created_at=existing.created_at if existing else now,
                 updated_at=now,
             )
@@ -416,9 +495,17 @@ class BotGatewayService:
             platform_message_id=existing.platform_message_id if existing else None,
             text=text,
             status=BotDeliveryStatus.RETRYING,
+            platform_state=(
+                existing.platform_state if existing else BotDeliveryPlatformState.PENDING
+            ),
             attempt_count=stored_attempt_count,
             last_error=last_error,
             next_retry_at=now + timedelta(seconds=retry_after_seconds),
+            acknowledged_at=existing.acknowledged_at if existing else None,
+            edited_at=existing.edited_at if existing else None,
+            deleted_at=existing.deleted_at if existing else None,
+            edit_revision=existing.edit_revision if existing else 0,
+            platform_payload=dict(existing.platform_payload) if existing else {},
             created_at=existing.created_at if existing else now,
             updated_at=now,
         )
@@ -449,9 +536,17 @@ class BotGatewayService:
             platform_message_id=existing.platform_message_id if existing else None,
             text=text,
             status=BotDeliveryStatus.FAILED,
+            platform_state=(
+                existing.platform_state if existing else BotDeliveryPlatformState.PENDING
+            ),
             attempt_count=attempt_count,
             last_error=error,
             next_retry_at=now + timedelta(seconds=self._retry_delay(attempt_count)),
+            acknowledged_at=existing.acknowledged_at if existing else None,
+            edited_at=existing.edited_at if existing else None,
+            deleted_at=existing.deleted_at if existing else None,
+            edit_revision=existing.edit_revision if existing else 0,
+            platform_payload=dict(existing.platform_payload) if existing else {},
             created_at=existing.created_at if existing else now,
             updated_at=now,
         )

@@ -159,6 +159,20 @@ class BotDeliveryStatus(StrEnum):
     RETRYING = "retrying"
 
 
+class BotDeliveryPlatformState(StrEnum):
+    PENDING = "pending"
+    SENT = "sent"
+    ACKNOWLEDGED = "acknowledged"
+    EDITED = "edited"
+    DELETED = "deleted"
+
+
+class BotDeliveryResultAction(StrEnum):
+    ACKNOWLEDGE = "acknowledge"
+    EDIT = "edit"
+    DELETE = "delete"
+
+
 class PolicyScope(StrEnum):
     PROJECT = "project"
     CHAT_CONTEXT = "chat_context"
@@ -440,8 +454,14 @@ class BotDeliveryRecord(BaseModel):
     platform_message_id: str | None = None
     text: str
     status: BotDeliveryStatus
+    platform_state: BotDeliveryPlatformState = BotDeliveryPlatformState.PENDING
     attempt_count: int = 1
     last_error: str | None = None
     next_retry_at: datetime | None = None
+    acknowledged_at: datetime | None = None
+    edited_at: datetime | None = None
+    deleted_at: datetime | None = None
+    edit_revision: int = 0
+    platform_payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

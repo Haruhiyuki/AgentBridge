@@ -15,7 +15,13 @@ from agentbridge.bot_gateway import (
 )
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, AgentBridgeError, BotPlatform, ErrorCode
+from agentbridge.domain import (
+    Actor,
+    AgentBridgeError,
+    BotDeliveryResultAction,
+    BotPlatform,
+    ErrorCode,
+)
 from agentbridge.persistence import SQLAlchemyRepository
 
 
@@ -318,6 +324,39 @@ def test_failed_delivery_can_be_retried_after_repository_restart(tmp_path):
     assert len(second_transport.sent) == 1
 
 
+def test_bot_delivery_platform_state_survives_repository_restart(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'bot-delivery-state.db'}"
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    first_control = ControlPlane(repository=first_repo)
+    context, session_id = create_session_with_turn(first_control, tmp_path)
+    first_gateway = BotGatewayService(first_control, transport=InMemoryBotTransport())
+
+    delivered = first_gateway.deliver_session_events(
+        session_id=session_id,
+        chat_context_id=context.id,
+        after_seq=1,
+    )
+    updated = first_gateway.record_delivery_result(
+        idempotency_key=delivered[0].idempotency_key,
+        action=BotDeliveryResultAction.EDIT,
+        platform_message_id="msg-edited",
+        text="edited platform text",
+        payload={"platform_revision": 2},
+    )
+
+    second_repo = SQLAlchemyRepository(database_url)
+    second_control = ControlPlane(repository=second_repo)
+    second_gateway = BotGatewayService(second_control, transport=InMemoryBotTransport())
+    records = second_gateway.list_records(context.id)
+
+    assert updated.platform_state == "edited"
+    assert records[0].platform_state == "edited"
+    assert records[0].platform_message_id == "msg-edited"
+    assert records[0].text == "edited platform text"
+    assert records[0].edit_revision == 1
+    assert records[0].platform_payload == {"platform_revision": 2}
+
+
 def test_bot_gateway_api_delivers_and_lists_records(tmp_path):
     client = TestClient(create_app())
     actor = {"id": "usr_1", "roles": ["maintainer"]}
@@ -371,6 +410,81 @@ def test_bot_gateway_api_delivers_and_lists_records(tmp_path):
         "skipped_duplicate"
     ]
     assert len(records_response.json()) == 1
+
+
+def test_bot_gateway_delivery_results_api_tracks_ack_edit_delete(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    client = TestClient(create_app(control))
+    delivered = client.post(
+        "/api/v1/bot-gateway/deliver-session-events",
+        json={
+            "session_id": session_id,
+            "chat_context_id": context.id,
+            "after_seq": 1,
+        },
+    )
+    idempotency_key = delivered.json()[0]["idempotency_key"]
+
+    acknowledged = client.post(
+        "/api/v1/bot-gateway/delivery-results",
+        json={
+            "idempotency_key": idempotency_key,
+            "action": "acknowledge",
+            "platform_message_id": "msg-ack",
+            "payload": {"receipt": "ack-1"},
+        },
+    )
+    edited = client.post(
+        "/api/v1/bot-gateway/delivery-results",
+        json={
+            "idempotency_key": idempotency_key,
+            "action": "edit",
+            "text": "edited bot message",
+            "payload": {"edit_receipt": "edit-1"},
+        },
+    )
+    deleted = client.post(
+        "/api/v1/bot-gateway/delivery-results",
+        json={
+            "idempotency_key": idempotency_key,
+            "action": "delete",
+            "payload": {"delete_receipt": "delete-1"},
+        },
+    )
+    records = client.get(
+        "/api/v1/bot-gateway/deliveries",
+        params={"chat_context_id": context.id},
+    )
+
+    assert acknowledged.status_code == 200
+    assert acknowledged.json()["platform_state"] == "acknowledged"
+    assert acknowledged.json()["acknowledged_at"] is not None
+    assert acknowledged.json()["platform_message_id"] == "msg-ack"
+    assert edited.status_code == 200
+    assert edited.json()["platform_state"] == "edited"
+    assert edited.json()["edit_revision"] == 1
+    assert edited.json()["text"] == "edited bot message"
+    assert deleted.status_code == 200
+    assert deleted.json()["platform_state"] == "deleted"
+    assert deleted.json()["deleted_at"] is not None
+    assert records.json()[0]["platform_payload"] == {
+        "receipt": "ack-1",
+        "edit_receipt": "edit-1",
+        "delete_receipt": "delete-1",
+    }
+
+
+def test_bot_gateway_delivery_results_api_reports_missing_record():
+    client = TestClient(create_app())
+
+    response = client.post(
+        "/api/v1/bot-gateway/delivery-results",
+        json={"idempotency_key": "missing", "action": "acknowledge"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error_code"] == "NOT_FOUND"
 
 
 def test_bot_gateway_websocket_fans_out_rendered_events(tmp_path):

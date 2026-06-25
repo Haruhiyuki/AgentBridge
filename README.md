@@ -149,6 +149,16 @@ wscat -c 'ws://127.0.0.1:8000/api/v1/bot-gateway/session-events/ws?session_id=<s
 
 Each pushed frame uses `type: "bot.render.create"` and includes the semantic event, render document, target chat context, platform, and per-message idempotency keys. Set `AGENTBRIDGE_WS_TOKEN` to protect this subscription endpoint in the same way as the other WebSocket routes.
 
+Platform adapters can report delivery lifecycle results back to AgentBridge:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/delivery-results \
+  -H 'content-type: application/json' \
+  -d '{"idempotency_key":"<message-key>","action":"acknowledge","platform_message_id":"<platform-message-id>"}'
+```
+
+Supported result actions are `acknowledge`, `edit`, and `delete`. These update the delivery record's `platform_state`, timestamps, optional platform payload, edit revision, and latest text without mutating the immutable semantic event.
+
 The background retry worker is disabled by default. Enable it for long-running deployments:
 
 ```bash

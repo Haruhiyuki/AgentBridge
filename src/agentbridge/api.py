@@ -26,6 +26,7 @@ from agentbridge.domain import (
     Actor,
     AgentBridgeError,
     AgentType,
+    BotDeliveryResultAction,
     BotDeliveryStatus,
     ErrorCode,
     InteractionStatus,
@@ -269,6 +270,18 @@ class RetryBotDeliveriesRequest(BaseModel):
 
     chat_context_id: str | None = None
     limit: int = 100
+
+
+class BotDeliveryResultRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str
+    action: BotDeliveryResultAction
+    platform_message_id: str | None = None
+    text: str | None = None
+    error: str | None = None
+    payload: dict[str, object] = Field(default_factory=dict)
+    occurred_at: datetime | None = None
 
 
 class RetryWorkerRunOnceRequest(BaseModel):
@@ -1016,6 +1029,22 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             limit=payload.limit,
         )
         return [record.model_dump(mode="json") for record in records]
+
+    @app.post("/api/v1/bot-gateway/delivery-results")
+    def record_bot_delivery_result(
+        payload: BotDeliveryResultRequest,
+        bot_gateway_service: BotGatewayService = Depends(get_bot_gateway),
+    ):
+        record = bot_gateway_service.record_delivery_result(
+            idempotency_key=payload.idempotency_key,
+            action=payload.action,
+            platform_message_id=payload.platform_message_id,
+            text=payload.text,
+            error=payload.error,
+            payload=payload.payload,
+            occurred_at=payload.occurred_at,
+        )
+        return record.model_dump(mode="json")
 
     @app.get("/api/v1/bot-gateway/deliveries")
     def list_bot_deliveries(
