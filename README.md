@@ -12,6 +12,7 @@ This repository currently contains the first executable backend slice:
 - Shared domain models for projects, workspaces, sessions, turns, interactions, writer leases, chat contexts, and audit events.
 - In-memory repository suitable for contract tests and local MVP prototyping.
 - `/agent` command parser and executor for project/session routing, turn enqueueing, lease control, and idempotent invocation handling.
+- Ordered semantic event streams with replay and idempotent Terminal Agent event ingestion.
 - REST API routes aligned with the design document's service interface.
 
 Terminal Agent, NoneBot integration, persistent PostgreSQL storage, Admin Web, and real PTY/tmux control are planned next milestones.

@@ -140,6 +140,13 @@ class AuditOutcome(StrEnum):
     FAILED = "failed"
 
 
+class SemanticEventSource(StrEnum):
+    CONTROL_PLANE = "control_plane"
+    TERMINAL_AGENT = "terminal_agent"
+    BOT_GATEWAY = "bot_gateway"
+    ADMIN_WEB = "admin_web"
+
+
 class Actor(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -337,3 +344,21 @@ class AuditEvent(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     previous_hash: str | None = None
     entry_hash: str
+
+
+class SemanticEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    stream_id: str
+    seq: int
+    type: str
+    source: SemanticEventSource
+    trace_id: str
+    idempotency_key: str | None = None
+    project_id: str | None = None
+    session_id: str | None = None
+    turn_id: str | None = None
+    interaction_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)

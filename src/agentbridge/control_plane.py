@@ -9,6 +9,8 @@ from agentbridge.domain import (
     ChatContext,
     LeaseOwnerType,
     Project,
+    SemanticEvent,
+    SemanticEventSource,
     Turn,
     Visibility,
     Workspace,
@@ -82,6 +84,13 @@ class ControlPlane:
             chat_context_id=chat_context_id,
             project_id=project.id,
         )
+        self.emit_event(
+            event_type="project.created",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=project.id,
+            payload={"name": project.name, "slug": project.slug},
+        )
         return project
 
     def list_projects(self, actor: Actor) -> list[Project]:
@@ -117,6 +126,17 @@ class ControlPlane:
             project_id=project_id,
             details={"workspace_id": workspace.id},
         )
+        self.emit_event(
+            event_type="project.workspace_added",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=project_id,
+            payload={
+                "workspace_id": workspace.id,
+                "machine_id": workspace.machine_id,
+                "type": workspace.type.value,
+            },
+        )
         return workspace
 
     def bind_project(
@@ -145,6 +165,17 @@ class ControlPlane:
             project_id=project_id,
             details={"binding_id": binding.id, "is_default": is_default},
         )
+        self.emit_event(
+            event_type="project.binding_added",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=project_id,
+            payload={
+                "binding_id": binding.id,
+                "chat_context_id": chat_context_id,
+                "is_default": is_default,
+            },
+        )
 
     def use_project(
         self,
@@ -168,6 +199,16 @@ class ControlPlane:
             chat_context_id=chat_context_id,
             project_id=project.id,
             details={"pointer_version": context.pointer_version},
+        )
+        self.emit_event(
+            event_type="project.context_selected",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=project.id,
+            payload={
+                "chat_context_id": chat_context_id,
+                "pointer_version": context.pointer_version,
+            },
         )
         return context
 
@@ -201,6 +242,19 @@ class ControlPlane:
             project_id=project_id,
             session_id=session.id,
         )
+        self.emit_event(
+            event_type="session.created",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=project_id,
+            session_id=session.id,
+            payload={
+                "short_code": session.short_code,
+                "name": session.name,
+                "workspace_id": session.workspace_id,
+                "agent_type": session.agent_type.value,
+            },
+        )
         return session
 
     def use_session(
@@ -227,6 +281,17 @@ class ControlPlane:
             project_id=session.project_id,
             session_id=session.id,
             details={"pointer_version": updated.pointer_version},
+        )
+        self.emit_event(
+            event_type="session.context_selected",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session.id,
+            payload={
+                "chat_context_id": chat_context_id,
+                "pointer_version": updated.pointer_version,
+            },
         )
         return updated
 
@@ -256,6 +321,15 @@ class ControlPlane:
             session_id=session_id,
             details={"turn_id": turn.id},
         )
+        self.emit_event(
+            event_type="turn.queued",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            turn_id=turn.id,
+            payload={"actor_id": actor.id, "prompt_length": len(turn.prompt)},
+        )
         return turn
 
     def close_session(
@@ -276,6 +350,14 @@ class ControlPlane:
             chat_context_id=chat_context_id,
             project_id=session.project_id,
             session_id=session_id,
+        )
+        self.emit_event(
+            event_type="session.closed",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            payload={"status": session.status.value},
         )
         return session
 
@@ -315,6 +397,19 @@ class ControlPlane:
                 "epoch": lease.epoch,
             },
         )
+        self.emit_event(
+            event_type="lease.acquired",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            payload={
+                "owner_type": owner_type.value,
+                "owner_id": owner_id,
+                "epoch": lease.epoch,
+                "expires_at": lease.expires_at.isoformat(),
+            },
+        )
         return lease
 
     def release_lease(
@@ -338,6 +433,14 @@ class ControlPlane:
             project_id=session.project_id,
             session_id=session_id,
             details={"released_epoch": epoch, "next_epoch": next_epoch},
+        )
+        self.emit_event(
+            event_type="lease.released",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            payload={"released_epoch": epoch, "next_epoch": next_epoch},
         )
         return next_epoch
 
@@ -364,4 +467,29 @@ class ControlPlane:
             session_id=session_id,
             interaction_id=interaction_id,
             details=details,
+        )
+
+    def emit_event(
+        self,
+        *,
+        event_type: str,
+        source: SemanticEventSource,
+        trace_id: str,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        interaction_id: str | None = None,
+        payload: dict[str, object] | None = None,
+        idempotency_key: str | None = None,
+    ) -> SemanticEvent:
+        return self.repository.append_event(
+            event_type=event_type,
+            source=source,
+            trace_id=trace_id,
+            project_id=project_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            interaction_id=interaction_id,
+            payload=payload,
+            idempotency_key=idempotency_key,
         )

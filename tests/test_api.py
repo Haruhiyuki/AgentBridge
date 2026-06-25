@@ -80,3 +80,62 @@ def test_api_returns_product_error_payload_for_permission_denied():
     assert response.status_code == 403
     assert response.json()["error_code"] == "PERMISSION_DENIED"
     assert response.json()["side_effect"] == "未执行副作用。"
+
+
+def test_session_event_api_supports_ingest_replay_and_idempotency(tmp_path):
+    client = TestClient(create_app())
+    chat = {
+        "bot_instance_id": "bot-test",
+        "platform": "onebot.v11",
+        "chat_space_id": "group-events",
+    }
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+
+    client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+            "actor": actor,
+            "chat": chat,
+            "idempotency_key": "event-api-project",
+        },
+    )
+    session_response = client.post(
+        "/api/v1/commands/execute",
+        json={
+            "raw_text": "/agent session new Event API",
+            "actor": actor,
+            "chat": chat,
+            "idempotency_key": "event-api-session",
+        },
+    )
+    session_id = session_response.json()["data"]["session_id"]
+
+    first = client.post(
+        f"/api/v1/sessions/{session_id}/events",
+        json={
+            "type": "assistant.delta",
+            "source": "terminal_agent",
+            "trace_id": "terminal-1",
+            "idempotency_key": "terminal-event-1",
+            "payload": {"text": "hello"},
+        },
+    )
+    duplicate = client.post(
+        f"/api/v1/sessions/{session_id}/events",
+        json={
+            "type": "assistant.delta",
+            "source": "terminal_agent",
+            "trace_id": "terminal-1",
+            "idempotency_key": "terminal-event-1",
+            "payload": {"text": "hello again"},
+        },
+    )
+
+    assert first.status_code == 200
+    assert duplicate.status_code == 200
+    assert duplicate.json()["id"] == first.json()["id"]
+
+    events_response = client.get(f"/api/v1/sessions/{session_id}/events", params={"after_seq": 1})
+    assert events_response.status_code == 200
+    assert [event["type"] for event in events_response.json()] == ["assistant.delta"]

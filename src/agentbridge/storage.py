@@ -24,6 +24,8 @@ from agentbridge.domain import (
     Project,
     ProjectBinding,
     ProjectStatus,
+    SemanticEvent,
+    SemanticEventSource,
     SessionStatus,
     Turn,
     Visibility,
@@ -68,7 +70,10 @@ class InMemoryRepository:
         self.leases: dict[str, WriterLease] = {}
         self.lease_epochs: dict[str, int] = {}
         self.audit_events: list[AuditEvent] = []
+        self.semantic_events: list[SemanticEvent] = []
         self.command_results: dict[str, CommandResult] = {}
+        self.event_idempotency: dict[str, SemanticEvent] = {}
+        self.event_stream_seq: dict[str, int] = {}
         self._short_codes: set[str] = set()
         self._chat_context_index: dict[tuple[str, str, str, str | None, str | None], str] = {}
 
@@ -732,3 +737,64 @@ class InMemoryRepository:
             )
             self.audit_events.append(event)
             return event
+
+    def append_event(
+        self,
+        *,
+        event_type: str,
+        source: SemanticEventSource,
+        trace_id: str,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
+        interaction_id: str | None = None,
+        payload: dict[str, object] | None = None,
+        idempotency_key: str | None = None,
+    ) -> SemanticEvent:
+        with self._lock:
+            if idempotency_key and idempotency_key in self.event_idempotency:
+                return self.event_idempotency[idempotency_key]
+            stream_id = self._event_stream_id(project_id=project_id, session_id=session_id)
+            seq = self.event_stream_seq.get(stream_id, 0) + 1
+            event = SemanticEvent(
+                id=new_id("evt"),
+                stream_id=stream_id,
+                seq=seq,
+                type=event_type,
+                source=source,
+                trace_id=trace_id,
+                idempotency_key=idempotency_key,
+                project_id=project_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                interaction_id=interaction_id,
+                payload=payload or {},
+            )
+            self.event_stream_seq[stream_id] = seq
+            self.semantic_events.append(event)
+            if idempotency_key:
+                self.event_idempotency[idempotency_key] = event
+            return event
+
+    def list_events(
+        self,
+        *,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        after_seq: int | None = None,
+        limit: int = 100,
+    ) -> list[SemanticEvent]:
+        with self._lock:
+            stream_id = self._event_stream_id(project_id=project_id, session_id=session_id)
+            events = [event for event in self.semantic_events if event.stream_id == stream_id]
+            if after_seq is not None:
+                events = [event for event in events if event.seq > after_seq]
+            return events[:limit]
+
+    @staticmethod
+    def _event_stream_id(project_id: str | None, session_id: str | None) -> str:
+        if session_id:
+            return f"session:{session_id}"
+        if project_id:
+            return f"project:{project_id}"
+        return "system"

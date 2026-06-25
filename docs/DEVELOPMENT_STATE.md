@@ -27,6 +27,9 @@ Implemented in this slice:
 - Optimistic locking for active project/session pointers.
 - Writer lease epoch handling with local human preemption over bot control.
 - Audit hash chain for command and domain state changes.
+- Ordered semantic event streams for project/session state changes.
+- REST event replay through `GET /api/v1/sessions/{id}/events`.
+- Idempotent Terminal Agent event ingestion through `POST /api/v1/sessions/{id}/events`.
 - Focused unit/API tests for the above.
 
 Not implemented yet:
@@ -37,11 +40,13 @@ Not implemented yet:
 - Real Claude Code/Codex adapters.
 - Admin Web UI.
 - Full RBAC/ABAC policy editor and multi-person approval flows.
+- WebSocket transport for Terminal Agent and Bot Gateway event delivery.
 
 ## Important Decisions
 
 - The first backend slice uses an in-memory repository to make command, routing, lease, and API semantics testable before introducing persistence.
 - Unknown ASCII-looking `/agent` management commands are rejected instead of being silently treated as prompts. Non-command free text still becomes `ask` to support the documented shortcut pattern.
+- Semantic events are separate from audit records: events drive product state replay and Bot rendering, while audit records preserve security/accountability history.
 - The original design document remains unchanged; this file is the rolling handoff/progress document for future sessions.
 
 ## Verification
@@ -58,6 +63,6 @@ uv run ruff check .
 
 1. Add SQLAlchemy models, repository interface split, and Alembic initial migration.
 2. Implement Terminal Agent MVP using tmux control mode and a fake CLI fixture.
-3. Add event ingestion and replay APIs for Terminal Agent and Bot Gateway.
-4. Add renderer intermediate representation and plain-text/OneBot V11 output.
+3. Add Bot Gateway event subscription and renderer intermediate representation.
+4. Add plain-text/OneBot V11 rendering with golden snapshots.
 5. Expand policy engine to explicit role bindings, approval quorum, and risk levels.

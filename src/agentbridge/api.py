@@ -12,6 +12,7 @@ from agentbridge.domain import (
     AgentBridgeError,
     AgentType,
     LeaseOwnerType,
+    SemanticEventSource,
     Visibility,
     WorkspaceType,
 )
@@ -124,6 +125,18 @@ class ReleaseLeaseRequest(BaseModel):
     actor: ActorPayload = Field(default_factory=ActorPayload)
     epoch: int
     trace_id: str = "api"
+
+
+class IngestSessionEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: str
+    source: SemanticEventSource = SemanticEventSource.TERMINAL_AGENT
+    trace_id: str = "api"
+    idempotency_key: str | None = None
+    turn_id: str | None = None
+    interaction_id: str | None = None
+    payload: dict[str, object] = Field(default_factory=dict)
 
 
 class CommandRequest(BaseModel):
@@ -346,9 +359,39 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         return {"next_epoch": next_epoch}
 
     @app.get("/api/v1/sessions/{session_id}/events")
-    def list_events(session_id: str, control: ControlPlane = Depends(get_control)):
+    def list_events(
+        session_id: str,
+        control: ControlPlane = Depends(get_control),
+        after_seq: int | None = None,
+        limit: int = 100,
+    ):
         control.repository.get_session(session_id)
-        return []
+        events = control.repository.list_events(
+            session_id=session_id,
+            after_seq=after_seq,
+            limit=limit,
+        )
+        return [event.model_dump(mode="json") for event in events]
+
+    @app.post("/api/v1/sessions/{session_id}/events")
+    def ingest_session_event(
+        session_id: str,
+        payload: IngestSessionEventRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        session = control.repository.get_session(session_id)
+        event = control.emit_event(
+            event_type=payload.type,
+            source=payload.source,
+            trace_id=payload.trace_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            turn_id=payload.turn_id,
+            interaction_id=payload.interaction_id,
+            payload=payload.payload,
+            idempotency_key=payload.idempotency_key,
+        )
+        return event.model_dump(mode="json")
 
     @app.post("/api/v1/commands/parse")
     def parse_command(

@@ -4,7 +4,13 @@ import pytest
 
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, LeaseOwnerType
+from agentbridge.domain import (
+    Actor,
+    AgentBridgeError,
+    ErrorCode,
+    LeaseOwnerType,
+    SemanticEventSource,
+)
 
 
 def make_context(control: ControlPlane):
@@ -269,3 +275,65 @@ def test_human_lease_preempts_bot_and_old_epoch_is_rejected(tmp_path):
         )
         == 3
     )
+
+
+def test_session_event_stream_is_ordered_replayable_and_idempotent(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+
+    execute(
+        commands,
+        f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+        maintainer,
+        context.id,
+        "event-project",
+    )
+    session_result = execute(
+        commands,
+        "/agent session new Event Stream",
+        maintainer,
+        context.id,
+        "event-session",
+    )
+    session_id = session_result.data["session_id"]
+    execute(
+        commands,
+        "/agent ask verify event replay",
+        maintainer,
+        context.id,
+        "event-turn",
+    )
+
+    events = control.repository.list_events(session_id=session_id)
+    assert [event.seq for event in events] == [1, 2]
+    assert [event.type for event in events] == ["session.created", "turn.queued"]
+    replayed_events = control.repository.list_events(session_id=session_id, after_seq=1)
+    assert [event.type for event in replayed_events] == ["turn.queued"]
+
+    first = control.emit_event(
+        event_type="assistant.delta",
+        source=SemanticEventSource.TERMINAL_AGENT,
+        trace_id="agent-event",
+        project_id=session_result.data["project_id"],
+        session_id=session_id,
+        payload={"text": "hello"},
+        idempotency_key="agent-event-1",
+    )
+    duplicate = control.emit_event(
+        event_type="assistant.delta",
+        source=SemanticEventSource.TERMINAL_AGENT,
+        trace_id="agent-event",
+        project_id=session_result.data["project_id"],
+        session_id=session_id,
+        payload={"text": "different duplicate"},
+        idempotency_key="agent-event-1",
+    )
+
+    assert duplicate == first
+    assert [event.type for event in control.repository.list_events(session_id=session_id)] == [
+        "session.created",
+        "turn.queued",
+        "assistant.delta",
+    ]
