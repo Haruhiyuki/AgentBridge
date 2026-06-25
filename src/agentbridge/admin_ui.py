@@ -80,6 +80,10 @@ ADMIN_HOME_HTML = """<!doctype html>
       <strong>Access Policy</strong>
       <span>Rules, simulation, save, delete</span>
     </a>
+    <a href="/admin/system">
+      <strong>System Health</strong>
+      <span>Service health, lifecycle monitor, retry worker</span>
+    </a>
     <a href="/admin/projects">
       <strong>Projects & Sessions</strong>
       <span>Project inventory, workspaces, session lifecycle</span>
@@ -105,6 +109,305 @@ ADMIN_HOME_HTML = """<!doctype html>
       <span>Records, retry worker, due retry, rate limits</span>
     </a>
   </main>
+</body>
+</html>
+"""
+
+
+SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentBridge System Health</title>
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --panel-muted: #f0f3f7;
+      --line: #d6dde6;
+      --text: #17202a;
+      --muted: #5b6878;
+      --accent: #0f766e;
+      --danger: #b42318;
+      --ok: #087443;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+    header {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+    nav {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-weight: 650;
+    }
+    nav a:hover { color: var(--accent); }
+    main {
+      display: grid;
+      grid-template-columns: minmax(360px, .8fr) minmax(520px, 1.2fr);
+      min-height: calc(100vh - 56px);
+    }
+    section {
+      min-width: 0;
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+    }
+    section:last-child { border-right: 0; }
+    .toolbar {
+      min-height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-muted);
+      flex-wrap: wrap;
+    }
+    button {
+      min-height: 34px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      cursor: pointer;
+      font: inherit;
+      font-weight: 650;
+    }
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+    .status {
+      flex: 1;
+      min-width: 180px;
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding: 14px;
+    }
+    .metric {
+      min-height: 78px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .metric strong {
+      display: block;
+      margin-top: 6px;
+      font-size: 22px;
+      font-weight: 700;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+    th, td {
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    th {
+      color: var(--muted);
+      background: #f9fafb;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .ok { color: var(--ok); font-weight: 700; }
+    .fail { color: var(--danger); font-weight: 700; }
+    pre {
+      margin: 0;
+      padding: 10px;
+      min-height: 150px;
+      border-bottom: 1px solid var(--line);
+      background: #fbfcfe;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow: auto;
+    }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+      section { border-right: 0; border-bottom: 1px solid var(--line); }
+      header { align-items: flex-start; flex-direction: column; }
+    }
+    @media (max-width: 560px) {
+      .metrics { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AgentBridge System Health</h1>
+    <nav>
+      <a href="/admin">Admin</a>
+      <a href="/admin/system">System Health</a>
+      <a href="/admin/projects">Projects & Sessions</a>
+      <a href="/admin/access-policy">Access Policy</a>
+      <a href="/admin/interactions">Interactions</a>
+      <a href="/admin/audit">Audit & Events</a>
+      <a href="/admin/terminal-lifecycle">Terminal Lifecycle</a>
+      <a href="/admin/device-identities">Device Identities</a>
+      <a href="/admin/bot-delivery">Bot Delivery</a>
+    </nav>
+  </header>
+  <main>
+    <section>
+      <div class="toolbar">
+        <button id="refresh" class="primary" type="button">Refresh</button>
+        <div class="status" id="status">Ready</div>
+      </div>
+      <div class="metrics">
+        <div class="metric"><span>Health</span><strong id="health-status">-</strong></div>
+        <div class="metric"><span>Storage</span><strong id="storage">-</strong></div>
+        <div class="metric"><span>Projects</span><strong id="projects">-</strong></div>
+        <div class="metric"><span>Sessions</span><strong id="sessions">-</strong></div>
+        <div class="metric"><span>Lifecycle Running</span><strong id="lifecycle">-</strong></div>
+        <div class="metric"><span>Tracked Terms</span><strong id="tracked">-</strong></div>
+        <div class="metric"><span>Retry Worker</span><strong id="retry-worker">-</strong></div>
+        <div class="metric"><span>Rate Policies</span><strong id="rate-policies">-</strong></div>
+      </div>
+    </section>
+    <section>
+      <div class="toolbar">
+        <div class="status">Endpoint checks</div>
+      </div>
+      <table aria-label="System endpoint checks">
+        <thead>
+          <tr>
+            <th>Endpoint</th>
+            <th>Status</th>
+            <th>HTTP</th>
+          </tr>
+        </thead>
+        <tbody id="checks"></tbody>
+      </table>
+      <pre id="details">{}</pre>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const checks = [
+      ["Control Health", "/api/v1/health"],
+      ["Terminal Lifecycle", "/api/v1/terminal/lifecycle-monitor"],
+      ["Bot Retry Worker", "/api/v1/bot-gateway/retry-worker"],
+      ["Bot Rate Limits", "/api/v1/bot-gateway/rate-limits"],
+      ["Device Identities", "/api/v1/device-identities?include_revoked=true"],
+    ];
+
+    function setStatus(text) {
+      $("status").textContent = text;
+    }
+
+    function setText(id, value) {
+      $(id).textContent = String(value ?? "-");
+    }
+
+    async function readEndpoint(name, url) {
+      const response = await fetch(url, {headers: {"content-type": "application/json"}});
+      let data = null;
+      try {
+        data = await response.json();
+      } catch {
+        data = {message: response.statusText};
+      }
+      return {name, url, ok: response.ok, status: response.status, data};
+    }
+
+    function renderChecks(results) {
+      const rows = results.map((result) => {
+        const tr = document.createElement("tr");
+        for (const value of [
+          result.name,
+          result.ok ? "ok" : "failed",
+          result.status,
+        ]) {
+          const td = document.createElement("td");
+          td.textContent = String(value);
+          if (value === "ok") td.className = "ok";
+          if (value === "failed") td.className = "fail";
+          tr.appendChild(td);
+        }
+        return tr;
+      });
+      $("checks").replaceChildren(...rows);
+      $("details").textContent = JSON.stringify(results, null, 2);
+    }
+
+    function renderMetrics(results) {
+      const byName = Object.fromEntries(results.map((result) => [result.name, result]));
+      const health = byName["Control Health"]?.data || {};
+      const lifecycle = byName["Terminal Lifecycle"]?.data || {};
+      const worker = byName["Bot Retry Worker"]?.data || {};
+      const rateLimits = byName["Bot Rate Limits"]?.data || {};
+      const policies = rateLimits.policies || [];
+      setText("health-status", health.status);
+      setText("storage", health.storage);
+      setText("projects", health.projects);
+      setText("sessions", health.sessions);
+      setText("lifecycle", lifecycle.running);
+      setText("tracked", lifecycle.tracked_sessions);
+      setText("retry-worker", worker.enabled ? (worker.running ? "running" : "idle") : "off");
+      setText("rate-policies", policies.length);
+    }
+
+    async function refresh() {
+      setStatus("Loading");
+      const results = await Promise.all(
+        checks.map(([name, url]) => readEndpoint(name, url)),
+      );
+      renderChecks(results);
+      renderMetrics(results);
+      const failures = results.filter((result) => !result.ok).length;
+      setStatus(failures ? `${failures} endpoint checks failed` : "All checks passed");
+    }
+
+    $("refresh").addEventListener("click", () => {
+      refresh().catch((error) => setStatus(error.message));
+    });
+    refresh().catch((error) => setStatus(error.message));
+  </script>
 </body>
 </html>
 """
@@ -371,6 +674,7 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
     <h1>AgentBridge Audit & Events</h1>
     <nav>
       <a href="/admin">Admin</a>
+      <a href="/admin/system">System Health</a>
       <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/interactions">Interactions</a>
       <a href="/admin/access-policy">Access Policy</a>
@@ -957,6 +1261,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     <h1>AgentBridge Projects & Sessions</h1>
     <nav>
       <a href="/admin">Admin</a>
+      <a href="/admin/system">System Health</a>
       <a href="/admin/access-policy">Access Policy</a>
       <a href="/admin/interactions">Interactions</a>
       <a href="/admin/audit">Audit & Events</a>
@@ -1593,6 +1898,7 @@ INTERACTION_ADMIN_HTML = """<!doctype html>
     <h1>AgentBridge Interactions</h1>
     <nav>
       <a href="/admin">Admin</a>
+      <a href="/admin/system">System Health</a>
       <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/access-policy">Access Policy</a>
       <a href="/admin/audit">Audit & Events</a>
@@ -2177,6 +2483,7 @@ ACCESS_POLICY_ADMIN_HTML = """<!doctype html>
     <h1>AgentBridge Access Policy</h1>
     <nav>
       <a href="/admin">Admin</a>
+      <a href="/admin/system">System Health</a>
       <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/interactions">Interactions</a>
       <a href="/admin/audit">Audit & Events</a>
@@ -2686,6 +2993,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
     <h1>AgentBridge Terminal Lifecycle</h1>
     <nav>
       <a href="/admin">Admin</a>
+      <a href="/admin/system">System Health</a>
       <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/access-policy">Access Policy</a>
       <a href="/admin/interactions">Interactions</a>
@@ -3029,6 +3337,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
     <h1>AgentBridge Device Identities</h1>
     <nav>
       <a href="/admin">Admin</a>
+      <a href="/admin/system">System Health</a>
       <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/access-policy">Access Policy</a>
       <a href="/admin/interactions">Interactions</a>
@@ -3487,6 +3796,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
     <h1>AgentBridge Bot Delivery</h1>
     <nav>
       <a href="/admin">Admin</a>
+      <a href="/admin/system">System Health</a>
       <a href="/admin/projects">Projects & Sessions</a>
       <a href="/admin/access-policy">Access Policy</a>
       <a href="/admin/interactions">Interactions</a>

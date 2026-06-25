@@ -23,6 +23,7 @@ from agentbridge.admin_ui import (
     DEVICE_IDENTITY_ADMIN_HTML,
     INTERACTION_ADMIN_HTML,
     PROJECT_SESSION_ADMIN_HTML,
+    SYSTEM_HEALTH_ADMIN_HTML,
     TERMINAL_LIFECYCLE_ADMIN_HTML,
 )
 from agentbridge.bot_gateway import (
@@ -507,6 +508,10 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     @app.get("/admin/access-policy", response_class=HTMLResponse)
     def access_policy_admin_ui(request: Request):
         return admin_html_response(request, ACCESS_POLICY_ADMIN_HTML)
+
+    @app.get("/admin/system", response_class=HTMLResponse)
+    def system_health_admin_ui(request: Request):
+        return admin_html_response(request, SYSTEM_HEALTH_ADMIN_HTML)
 
     @app.get("/admin/projects", response_class=HTMLResponse)
     def project_session_admin_ui(request: Request):

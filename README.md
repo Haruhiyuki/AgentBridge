@@ -29,7 +29,7 @@ This repository currently contains the first executable backend slice:
 - Project/chat-context approval quorum overrides through REST and `/agent policy`.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - Persistent access policy allow/deny rules with action/resource/actor/role/attribute matching and a simulation API.
-- Built-in Admin Web pages for project/session operations, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
+- Built-in Admin Web pages for system health, project/session operations, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
 Production PTY supervision, mTLS/device certificate rotation, richer Bot renderers, and real Claude/Codex adapters are planned next milestones.
@@ -408,15 +408,17 @@ Rules are persisted by Alembic migration `0007_access_policy_rules`. The REST an
 
 The built-in admin entrypoint is available at `http://127.0.0.1:8000/admin`.
 It links to the project/session operations dashboard, interaction/approval dashboard,
-audit/event explorer, access policy editor, terminal lifecycle dashboard, device
-identity dashboard, and Bot delivery operations dashboard. The project/session page lists projects, adds
-workspaces, creates sessions, and closes selected sessions through the same REST APIs
-used by external clients. The interaction page lists and filters questions/approvals,
-creates new interactions, answers questions, votes on approvals, and cancels pending
-items. The audit/event page filters audit records, searches semantic events across
-streams, supports `q` text search over audit details and event payloads, replays
-session semantic events, and can live-tail a selected session's event stream over
-WebSocket.
+audit/event explorer, access policy editor, system health dashboard, terminal lifecycle
+dashboard, device identity dashboard, and Bot delivery operations dashboard. The system
+health page summarizes `/api/v1/health`, terminal lifecycle monitor status, Bot retry
+worker status, Bot rate-limit policies, and managed-device endpoint reachability. The
+project/session page lists projects, adds workspaces, creates sessions, and closes
+selected sessions through the same REST APIs used by external clients. The interaction
+page lists and filters questions/approvals, creates new interactions, answers questions,
+votes on approvals, and cancels pending items. The audit/event page filters audit
+records, searches semantic events across streams, supports `q` text search over audit
+details and event payloads, replays session semantic events, and can live-tail a selected
+session's event stream over WebSocket.
 The policy editor lists rules, edits allow/deny match criteria, runs
 `/api/v1/access-policy/simulate`, and saves through the same audited REST APIs.
 The device identities page lists active/revoked managed devices, creates or rotates
