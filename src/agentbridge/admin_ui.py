@@ -90,7 +90,7 @@ ADMIN_HOME_HTML = """<!doctype html>
     </a>
     <a href="/admin/audit">
       <strong>Audit & Events</strong>
-      <span>Audit chain filters and session event replay</span>
+      <span>Audit chain filters, event replay, live tail</span>
     </a>
     <a href="/admin/terminal-lifecycle">
       <strong>Terminal Lifecycle</strong>
@@ -415,6 +415,8 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
     <section>
       <div class="toolbar">
         <button id="event-refresh" type="button">Load Events</button>
+        <button id="event-live-connect" class="primary" type="button">Connect Live</button>
+        <button id="event-live-disconnect" type="button" disabled>Disconnect</button>
         <label class="compact">
           Session ID
           <input id="event-session" autocomplete="off">
@@ -451,6 +453,9 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
     const $ = (id) => document.getElementById(id);
     let selectedAuditId = "";
     let selectedEventId = "";
+    let displayedEvents = [];
+    let eventSocket = null;
+    let latestEventSeq = 0;
 
     function setText(id, value) {
       $(id).textContent = String(value ?? "");
@@ -513,8 +518,19 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
       setText("audit-status", `${records.length} audit records`);
     }
 
-    function renderEvents(events) {
-      const rows = events.map((event) => {
+    function eventLimitValue() {
+      const value = Number.parseInt($("event-limit").value, 10);
+      if (!Number.isFinite(value)) return 100;
+      return Math.max(1, Math.min(value, 500));
+    }
+
+    function requestedAfterSeq() {
+      const value = Number.parseInt($("event-after").value, 10);
+      if (!Number.isFinite(value)) return 0;
+      return Math.max(0, value);
+    }
+
+    function eventRow(event) {
         const tr = document.createElement("tr");
         tr.dataset.eventId = event.id;
         tr.className = event.id === selectedEventId ? "selected" : "";
@@ -535,9 +551,82 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
           });
         });
         return tr;
-      });
+    }
+
+    function renderEventRows() {
+      const rows = displayedEvents.map(eventRow);
       $("events").replaceChildren(...rows);
-      setText("event-status", `${events.length} events`);
+      setText("event-status", `${displayedEvents.length} events`);
+    }
+
+    function renderEvents(events) {
+      displayedEvents = events;
+      latestEventSeq = Math.max(0, ...events.map((event) => Number(event.seq) || 0));
+      renderEventRows();
+    }
+
+    function appendLiveEvent(event) {
+      latestEventSeq = Math.max(latestEventSeq, Number(event.seq) || 0);
+      displayedEvents = [...displayedEvents, event].slice(-eventLimitValue());
+      renderEventRows();
+      const wrap = $("events").parentElement.parentElement;
+      wrap.scrollTop = wrap.scrollHeight;
+    }
+
+    function eventStreamUrl(sessionId) {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const params = new URLSearchParams();
+      params.set("after_seq", String(Math.max(latestEventSeq, requestedAfterSeq())));
+      params.set("limit", String(eventLimitValue()));
+      const path = `/api/v1/sessions/${encodeURIComponent(sessionId)}/events/ws`;
+      return `${protocol}//${window.location.host}${path}?${params.toString()}`;
+    }
+
+    function setLiveControls(connected) {
+      $("event-live-connect").disabled = connected;
+      $("event-live-disconnect").disabled = !connected;
+    }
+
+    function disconnectEventsLive() {
+      if (eventSocket) {
+        const socket = eventSocket;
+        eventSocket = null;
+        socket.close(1000, "admin disconnect");
+      }
+      setLiveControls(false);
+      setText("event-status", `${displayedEvents.length} events`);
+    }
+
+    function connectEventsLive() {
+      const sessionId = $("event-session").value.trim();
+      if (!sessionId) throw new Error("Session ID is required");
+      disconnectEventsLive();
+      const socket = new WebSocket(eventStreamUrl(sessionId));
+      eventSocket = socket;
+      setLiveControls(true);
+      setText("event-status", "Connecting live");
+      socket.addEventListener("open", () => {
+        setText("event-status", `Live from seq ${Math.max(latestEventSeq, requestedAfterSeq())}`);
+      });
+      socket.addEventListener("message", (message) => {
+        const frame = JSON.parse(message.data);
+        if (frame.type === "semantic_event") {
+          appendLiveEvent(frame.event);
+          setText("event-status", `${displayedEvents.length} events, live`);
+        } else if (frame.type === "error") {
+          $("error").textContent = frame.error?.message || "WebSocket error";
+          disconnectEventsLive();
+        } else if (frame.type === "idle_timeout") {
+          setText("event-status", `Live idle at seq ${frame.last_seq}`);
+        }
+      });
+      socket.addEventListener("error", () => {
+        $("error").textContent = "Event WebSocket error";
+      });
+      socket.addEventListener("close", () => {
+        if (eventSocket === socket) eventSocket = null;
+        setLiveControls(false);
+      });
     }
 
     async function refreshAudit() {
@@ -575,6 +664,8 @@ AUDIT_EVENTS_ADMIN_HTML = """<!doctype html>
 
     $("audit-refresh").addEventListener("click", () => run(refreshAudit));
     $("event-refresh").addEventListener("click", () => run(refreshEvents));
+    $("event-live-connect").addEventListener("click", () => run(connectEventsLive));
+    $("event-live-disconnect").addEventListener("click", disconnectEventsLive);
     refreshAudit().catch((error) => {
       $("error").textContent = error.message;
       setText("audit-status", error.message);

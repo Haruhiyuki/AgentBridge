@@ -146,8 +146,11 @@ def test_audit_events_admin_ui_serves_dashboard():
     assert "AgentBridge Audit & Events" in html
     assert "/api/v1/audit" in html
     assert "/api/v1/sessions/${encodeURIComponent(sessionId)}/events" in html
+    assert "/api/v1/sessions/${encodeURIComponent(sessionId)}/events/ws" in html
     assert "async function refreshAudit()" in html
     assert "async function refreshEvents()" in html
+    assert "event-live-connect" in html
+    assert "function connectEventsLive()" in html
 
 
 def test_project_session_rest_flow_supports_admin_operations(tmp_path):
@@ -1104,6 +1107,55 @@ def test_session_events_websocket_requires_token_when_configured(monkeypatch, tm
     assert message["type"] == "semantic_event"
     assert message["event"]["type"] == "session.created"
     assert idle == {"type": "idle_timeout", "last_seq": message["event"]["seq"]}
+
+
+def test_session_events_websocket_accepts_unlocked_admin_cookie(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "ws-secret")
+    monkeypatch.setenv("AGENTBRIDGE_ADMIN_TOKEN", "admin-secret")
+    client = TestClient(create_app())
+
+    unlock_response = client.get("/admin?admin_token=admin-secret")
+    assert unlock_response.status_code == 200
+    assert "AgentBridge Admin" in unlock_response.text
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-events-ws-admin-cookie",
+        prefix="event-ws-admin-cookie",
+        name="Event WS Admin Cookie",
+    )
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/events/ws?idle_timeout_seconds=0"
+    ) as websocket:
+        message = websocket.receive_json()
+        idle = websocket.receive_json()
+
+    assert message["type"] == "semantic_event"
+    assert message["event"]["type"] == "session.created"
+    assert idle == {"type": "idle_timeout", "last_seq": message["event"]["seq"]}
+
+
+def test_terminal_websocket_rejects_admin_cookie_without_ws_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "ws-secret")
+    monkeypatch.setenv("AGENTBRIDGE_ADMIN_TOKEN", "admin-secret")
+    client = TestClient(create_app())
+
+    unlock_response = client.get("/admin?admin_token=admin-secret")
+    assert unlock_response.status_code == 200
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="terminal-ws-admin-cookie",
+        prefix="terminal-ws-admin-cookie",
+        name="Terminal WS Admin Cookie",
+    )
+
+    with client.websocket_connect(f"/api/v1/sessions/{session_id}/terminal/ws") as websocket:
+        denied = websocket.receive_json()
+
+    assert denied["type"] == "error"
+    assert denied["error"]["error_code"] == "PERMISSION_DENIED"
 
 
 def test_terminal_websocket_accepts_commands_with_token(monkeypatch, tmp_path):

@@ -145,7 +145,7 @@ wscat -c 'ws://127.0.0.1:8000/api/v1/sessions/<session-id>/rendered-events/ws?af
 
 Both streams emit replayed events first, then poll for new events. `after_seq`, `limit`, `poll_interval_seconds`, and `idle_timeout_seconds` are accepted as query parameters.
 
-Set `AGENTBRIDGE_WS_TOKEN` to require WebSocket clients to pass either `?token=...` or `Authorization: Bearer ...`. If the variable is unset, WebSocket routes stay open for local MVP development.
+Set `AGENTBRIDGE_WS_TOKEN` to require WebSocket clients to pass either `?token=...` or `Authorization: Bearer ...`. A browser session unlocked through Admin Web can also use its HttpOnly admin cookie for same-origin WebSocket streams. If the variable is unset, WebSocket routes stay open for local MVP development.
 
 Set `AGENTBRIDGE_API_TOKEN` to require REST API clients to pass either
 `Authorization: Bearer <token>` or `X-AgentBridge-API-Token: <token>` for `/api/*`
@@ -373,7 +373,8 @@ delivery operations dashboard. The project/session page lists projects, adds
 workspaces, creates sessions, and closes selected sessions through the same REST APIs
 used by external clients. The interaction page lists and filters questions/approvals,
 creates new interactions, answers questions, votes on approvals, and cancels pending
-items. The audit/event page filters audit records and replays session semantic events.
+items. The audit/event page filters audit records, replays session semantic events, and
+can live-tail a selected session's event stream over WebSocket.
 The policy editor lists rules, edits allow/deny match criteria, runs
 `/api/v1/access-policy/simulate`, and saves through the same audited REST APIs.
 
@@ -390,7 +391,7 @@ or pass `Authorization: Bearer <token>` / `X-AgentBridge-Admin-Token: <token>` f
 scripted admin page access. `AGENTBRIDGE_ADMIN_COOKIE_MAX_AGE_SECONDS` controls cookie
 lifetime, and `AGENTBRIDGE_ADMIN_COOKIE_SECURE` can force Secure cookie behavior when
 AgentBridge is deployed behind TLS. The unlocked Admin Web cookie is also accepted by
-the optional REST API token gate. These MVP gates do not replace the planned
+the optional REST API token gate and same-origin WebSocket event streams. These MVP gates do not replace the planned
 mTLS/device-key authentication model.
 
 ## Console Client

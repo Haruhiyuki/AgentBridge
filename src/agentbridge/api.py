@@ -2072,10 +2072,12 @@ async def accept_authenticated_websocket(
     presented_token = websocket_presented_token(websocket, token)
     if presented_token and hmac.compare_digest(presented_token, expected_token):
         return True
+    if websocket_admin_cookie_authorized(websocket):
+        return True
     error = AgentBridgeError(
         ErrorCode.PERMISSION_DENIED,
         "WebSocket token 无效。",
-        next_step="请使用当前 AGENTBRIDGE_WS_TOKEN 重新连接。",
+        next_step="请使用当前 AGENTBRIDGE_WS_TOKEN 重新连接，或先解锁 Admin Web。",
         status_code=403,
     )
     await websocket.send_json({"type": "error", "error": error.to_payload()})
@@ -2093,6 +2095,22 @@ def websocket_presented_token(websocket: WebSocket, token: str | None) -> str | 
     if authorization.startswith(prefix):
         return authorization[len(prefix) :].strip()
     return authorization.strip()
+
+
+def websocket_admin_cookie_authorized(websocket: WebSocket) -> bool:
+    path = websocket.url.path
+    if not (
+        path.endswith("/events/ws")
+        or path.endswith("/rendered-events/ws")
+        or path == "/api/v1/bot-gateway/session-events/ws"
+    ):
+        return False
+    return bool(
+        matching_token(
+            websocket.cookies.get(ADMIN_AUTH_COOKIE_NAME),
+            admin_expected_tokens(),
+        )
+    )
 
 
 def clamp_stream_limit(limit: int) -> int:
