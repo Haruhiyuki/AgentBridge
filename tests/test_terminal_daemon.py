@@ -193,6 +193,177 @@ def test_desktop_terminal_launcher_passes_token_in_environment(monkeypatch, tmp_
     assert env["AGENTBRIDGE_TERMINAL_SOCKET"] == str(socket_path)
 
 
+def test_desktop_terminal_launcher_uses_named_preset(monkeypatch, tmp_path):
+    calls: list[dict[str, object]] = []
+
+    class FakeProcess:
+        pid = 97531
+
+    def fake_popen(argv, **kwargs):
+        calls.append({"argv": argv, **kwargs})
+        return FakeProcess()
+
+    def fake_which(executable: str):
+        if executable == "gnome-terminal":
+            return "/usr/bin/gnome-terminal"
+        return None
+
+    socket_path = tmp_path / "terminal-agent.sock"
+    monkeypatch.setattr(terminal_daemon.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(terminal_daemon.shutil, "which", fake_which)
+    launcher = DesktopTerminalLauncher(
+        enabled=True,
+        open_preset="gnome-terminal",
+        socket_path=socket_path,
+        auth_token="secret-token",
+    )
+
+    result = launcher.launch(session_id="ses_1")
+
+    assert result.to_payload() == {"launched": True, "pid": 97531, "error": None}
+    assert calls[0]["argv"] == [
+        "/usr/bin/gnome-terminal",
+        "--",
+        "agentbridge-console",
+        "ses_1",
+        "--socket",
+        str(socket_path),
+        "--raw",
+    ]
+    assert "secret-token" not in " ".join(calls[0]["argv"])
+    env = calls[0]["env"]
+    assert env["AGENTBRIDGE_LOCAL_TOKEN"] == "secret-token"
+    assert env["AGENTBRIDGE_TERMINAL_SOCKET"] == str(socket_path)
+
+
+def test_desktop_terminal_launcher_auto_selects_available_preset(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        pid = 86420
+
+    def fake_popen(argv, **kwargs):
+        calls.append(argv)
+        return FakeProcess()
+
+    def fake_which(executable: str):
+        if executable == "xterm":
+            return "/usr/bin/xterm"
+        return None
+
+    monkeypatch.setattr(terminal_daemon.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(terminal_daemon.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(terminal_daemon.shutil, "which", fake_which)
+    socket_path = tmp_path / "terminal-agent.sock"
+    launcher = DesktopTerminalLauncher(
+        enabled=True,
+        open_preset="auto",
+        socket_path=socket_path,
+        auth_token="secret-token",
+    )
+
+    result = launcher.launch(session_id="ses_auto")
+
+    assert result.to_payload() == {"launched": True, "pid": 86420, "error": None}
+    assert calls == [
+        [
+            "/usr/bin/xterm",
+            "-e",
+            "agentbridge-console",
+            "ses_auto",
+            "--socket",
+            str(socket_path),
+            "--raw",
+        ]
+    ]
+
+
+def test_desktop_terminal_launcher_reports_missing_preset_executable(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+
+    def fake_popen(argv, **kwargs):
+        calls.append(argv)
+        raise AssertionError("Popen should not be called")
+
+    monkeypatch.setattr(terminal_daemon.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(terminal_daemon.shutil, "which", lambda executable: None)
+    launcher = DesktopTerminalLauncher(
+        enabled=True,
+        open_preset="xterm",
+        socket_path=tmp_path / "terminal-agent.sock",
+        auth_token="secret-token",
+    )
+
+    result = launcher.launch(session_id="ses_1")
+
+    assert result.launched is False
+    assert result.pid is None
+    assert result.error == "desktop terminal open preset 'xterm' requires 'xterm' in PATH"
+    assert calls == []
+
+
+def test_desktop_terminal_launcher_macos_preset_keeps_token_out_of_argv(monkeypatch, tmp_path):
+    calls: list[dict[str, object]] = []
+
+    class FakeProcess:
+        pid = 12345
+
+    def fake_popen(argv, **kwargs):
+        calls.append({"argv": argv, **kwargs})
+        return FakeProcess()
+
+    def fake_which(executable: str):
+        if executable == "osascript":
+            return "/usr/bin/osascript"
+        return None
+
+    socket_path = tmp_path / "terminal-agent.sock"
+    launcher_script_dir = tmp_path / "launchers"
+    monkeypatch.setattr(terminal_daemon.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(terminal_daemon.shutil, "which", fake_which)
+    launcher = DesktopTerminalLauncher(
+        enabled=True,
+        open_preset="macos-terminal",
+        socket_path=socket_path,
+        auth_token="secret-token",
+        launcher_script_dir=launcher_script_dir,
+    )
+
+    result = launcher.launch(session_id="ses_1")
+
+    assert result.to_payload() == {"launched": True, "pid": 12345, "error": None}
+    argv = calls[0]["argv"]
+    assert argv[:3] == ["/usr/bin/osascript", "-e", terminal_daemon.MACOS_TERMINAL_APPLESCRIPT]
+    assert "secret-token" not in " ".join(argv)
+    script_path = Path(argv[3])
+    assert script_path.parent == launcher_script_dir
+    assert script_path.stat().st_mode & 0o777 == 0o700
+    script = script_path.read_text(encoding="utf-8")
+    assert "AGENTBRIDGE_LOCAL_TOKEN=secret-token" in script
+    assert f"AGENTBRIDGE_TERMINAL_SOCKET={socket_path}" in script
+    assert "agentbridge-console ses_1 --socket" in script
+    assert 'rm -f "$0"' in script
+
+
+def test_terminal_daemon_config_reads_desktop_open_preset(monkeypatch, tmp_path):
+    socket_path = tmp_path / "terminal-agent.sock"
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_SOCKET", str(socket_path))
+    monkeypatch.setenv("AGENTBRIDGE_LOCAL_TOKEN", "secret-token")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_AUTO_OPEN", "true")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_OPEN_PRESET", "auto")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_OPEN_COMMAND", "custom {session_id}")
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_LIFECYCLE_POLL_INTERVAL_SECONDS", "2.5")
+
+    config = terminal_daemon.config_from_env()
+
+    assert config.socket_path == socket_path
+    assert config.auth_token == "secret-token"
+    assert config.lifecycle_poll_interval_seconds == 2.5
+    assert config.desktop_auto_open_enabled is True
+    assert config.desktop_open_preset == "auto"
+    assert config.desktop_open_command == "custom {session_id}"
+
+
 def test_local_terminal_daemon_auto_opens_desktop_terminal(monkeypatch, tmp_path):
     calls: list[list[str]] = []
 

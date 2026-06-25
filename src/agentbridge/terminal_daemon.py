@@ -5,9 +5,12 @@ import contextlib
 import hmac
 import json
 import os
+import platform
 import secrets
 import shlex
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +33,7 @@ class LocalTerminalAgentConfig:
     lifecycle_poll_interval_seconds: float = 1.0
     desktop_auto_open_enabled: bool = False
     desktop_open_command: str | None = None
+    desktop_open_preset: str | None = None
 
 
 @dataclass(frozen=True)
@@ -42,42 +46,154 @@ class DesktopTerminalLaunchResult:
         return {"launched": self.launched, "pid": self.pid, "error": self.error}
 
 
+@dataclass(frozen=True)
+class DesktopTerminalOpenPreset:
+    name: str
+    executable: str
+    argv_template: tuple[str, ...]
+    macos_launcher_script: bool = False
+
+
+MACOS_TERMINAL_APPLESCRIPT = (
+    "on run argv\n"
+    '  tell application "Terminal"\n'
+    "    activate\n"
+    "    do script quoted form of (item 1 of argv)\n"
+    "  end tell\n"
+    "end run"
+)
+
+DESKTOP_TERMINAL_OPEN_PRESETS: dict[str, DesktopTerminalOpenPreset] = {
+    "macos-terminal": DesktopTerminalOpenPreset(
+        name="macos-terminal",
+        executable="osascript",
+        argv_template=(
+            "{terminal_executable}",
+            "-e",
+            MACOS_TERMINAL_APPLESCRIPT,
+            "{launcher_script}",
+        ),
+        macos_launcher_script=True,
+    ),
+    "gnome-terminal": DesktopTerminalOpenPreset(
+        name="gnome-terminal",
+        executable="gnome-terminal",
+        argv_template=(
+            "{terminal_executable}",
+            "--",
+            "{console_command}",
+            "{session_id}",
+            "--socket",
+            "{socket_path}",
+            "--raw",
+        ),
+    ),
+    "konsole": DesktopTerminalOpenPreset(
+        name="konsole",
+        executable="konsole",
+        argv_template=(
+            "{terminal_executable}",
+            "-e",
+            "{console_command}",
+            "{session_id}",
+            "--socket",
+            "{socket_path}",
+            "--raw",
+        ),
+    ),
+    "wezterm": DesktopTerminalOpenPreset(
+        name="wezterm",
+        executable="wezterm",
+        argv_template=(
+            "{terminal_executable}",
+            "start",
+            "--",
+            "{console_command}",
+            "{session_id}",
+            "--socket",
+            "{socket_path}",
+            "--raw",
+        ),
+    ),
+    "alacritty": DesktopTerminalOpenPreset(
+        name="alacritty",
+        executable="alacritty",
+        argv_template=(
+            "{terminal_executable}",
+            "-e",
+            "{console_command}",
+            "{session_id}",
+            "--socket",
+            "{socket_path}",
+            "--raw",
+        ),
+    ),
+    "kitty": DesktopTerminalOpenPreset(
+        name="kitty",
+        executable="kitty",
+        argv_template=(
+            "{terminal_executable}",
+            "{console_command}",
+            "{session_id}",
+            "--socket",
+            "{socket_path}",
+            "--raw",
+        ),
+    ),
+    "xterm": DesktopTerminalOpenPreset(
+        name="xterm",
+        executable="xterm",
+        argv_template=(
+            "{terminal_executable}",
+            "-e",
+            "{console_command}",
+            "{session_id}",
+            "--socket",
+            "{socket_path}",
+            "--raw",
+        ),
+    ),
+}
+
+AUTO_DESKTOP_TERMINAL_PRESETS: dict[str, tuple[str, ...]] = {
+    "darwin": ("macos-terminal",),
+    "linux": ("gnome-terminal", "konsole", "wezterm", "alacritty", "kitty", "xterm"),
+}
+
+
 class DesktopTerminalLauncher:
     def __init__(
         self,
         *,
         enabled: bool = False,
         command_template: str | None = None,
+        open_preset: str | None = None,
         socket_path: Path | None = None,
         auth_token: str,
+        launcher_script_dir: Path | None = None,
     ) -> None:
         self.enabled = enabled
         self.command_template = command_template
+        self.open_preset = open_preset
         self.socket_path = socket_path
         self.auth_token = auth_token
+        self.launcher_script_dir = launcher_script_dir
 
     def launch(self, *, session_id: str) -> DesktopTerminalLaunchResult:
         if not self.enabled:
             return DesktopTerminalLaunchResult(launched=False)
-        if not self.command_template:
-            return DesktopTerminalLaunchResult(
-                launched=False,
-                error="AGENTBRIDGE_TERMINAL_OPEN_COMMAND is required when auto-open is enabled",
-            )
         if self.socket_path is None:
             return DesktopTerminalLaunchResult(
                 launched=False,
                 error="Terminal Agent socket path is not available",
             )
+
         try:
-            command = self.command_template.format(
-                session_id=session_id,
-                socket_path=str(self.socket_path),
-                console_command="agentbridge-console",
-            )
-            argv = shlex.split(command)
-        except (KeyError, ValueError) as exc:
+            argv, launcher_script, error = self._build_argv(session_id=session_id)
+        except OSError as exc:
             return DesktopTerminalLaunchResult(launched=False, error=str(exc))
+        if error is not None:
+            return DesktopTerminalLaunchResult(launched=False, error=error)
         if not argv:
             return DesktopTerminalLaunchResult(launched=False, error="open command is empty")
 
@@ -95,8 +211,145 @@ class DesktopTerminalLauncher:
                 env=env,
             )
         except OSError as exc:
+            if launcher_script is not None:
+                with contextlib.suppress(OSError):
+                    launcher_script.unlink()
             return DesktopTerminalLaunchResult(launched=False, error=str(exc))
         return DesktopTerminalLaunchResult(launched=True, pid=process.pid)
+
+    def _build_argv(self, *, session_id: str) -> tuple[list[str], Path | None, str | None]:
+        if self.command_template:
+            try:
+                command = self.command_template.format(
+                    session_id=session_id,
+                    socket_path=str(self.socket_path),
+                    console_command="agentbridge-console",
+                )
+                return shlex.split(command), None, None
+            except (KeyError, ValueError) as exc:
+                return [], None, str(exc)
+
+        preset_name = (self.open_preset or "custom").strip().lower()
+        if preset_name in {"", "custom"}:
+            return (
+                [],
+                None,
+                "AGENTBRIDGE_TERMINAL_OPEN_COMMAND or AGENTBRIDGE_TERMINAL_OPEN_PRESET "
+                "is required when auto-open is enabled",
+            )
+        if preset_name == "auto":
+            return self._build_auto_preset_argv(session_id=session_id)
+        return self._build_named_preset_argv(preset_name, session_id=session_id)
+
+    def _build_auto_preset_argv(
+        self,
+        *,
+        session_id: str,
+    ) -> tuple[list[str], Path | None, str | None]:
+        platform_name = platform.system().lower()
+        preset_names = AUTO_DESKTOP_TERMINAL_PRESETS.get(platform_name, ())
+        for preset_name in preset_names:
+            argv, launcher_script, error = self._build_named_preset_argv(
+                preset_name,
+                session_id=session_id,
+                missing_executable_is_error=False,
+            )
+            if error is None:
+                return argv, launcher_script, None
+        expected = ", ".join(preset_names or sorted(DESKTOP_TERMINAL_OPEN_PRESETS))
+        return [], None, f"no supported desktop terminal preset found; expected one of: {expected}"
+
+    def _build_named_preset_argv(
+        self,
+        preset_name: str,
+        *,
+        session_id: str,
+        missing_executable_is_error: bool = True,
+    ) -> tuple[list[str], Path | None, str | None]:
+        preset = DESKTOP_TERMINAL_OPEN_PRESETS.get(preset_name)
+        if preset is None:
+            return [], None, f"unknown desktop terminal open preset: {preset_name}"
+
+        executable_path = shutil.which(preset.executable)
+        if executable_path is None:
+            if not missing_executable_is_error:
+                return [], None, f"{preset.executable} not found"
+            error = (
+                f"desktop terminal open preset {preset.name!r} "
+                f"requires {preset.executable!r} in PATH"
+            )
+            return (
+                [],
+                None,
+                error,
+            )
+
+        launcher_script = None
+        if preset.macos_launcher_script:
+            launcher_script = self._write_macos_terminal_launcher_script(session_id=session_id)
+
+        values = {
+            "terminal_executable": executable_path,
+            "console_command": "agentbridge-console",
+            "session_id": session_id,
+            "socket_path": str(self.socket_path),
+            "launcher_script": str(launcher_script) if launcher_script else "",
+        }
+        try:
+            argv = [argument.format(**values) for argument in preset.argv_template]
+        except KeyError as exc:
+            if launcher_script is not None:
+                with contextlib.suppress(OSError):
+                    launcher_script.unlink()
+            return [], None, str(exc)
+        return argv, launcher_script, None
+
+    def _write_macos_terminal_launcher_script(self, *, session_id: str) -> Path:
+        if self.socket_path is None:
+            raise RuntimeError("Terminal Agent socket path is not available")
+        script_dir = (
+            self.launcher_script_dir
+            if self.launcher_script_dir is not None
+            else Path.home() / ".agentbridge" / "terminal-launchers"
+        )
+        script_dir = script_dir.expanduser()
+        script_dir.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            script_dir.chmod(0o700)
+
+        fd, raw_path = tempfile.mkstemp(
+            prefix="agentbridge-console-",
+            suffix=".sh",
+            dir=script_dir,
+            text=True,
+        )
+        script_path = Path(raw_path)
+        console_command = " ".join(
+            shlex.quote(argument)
+            for argument in (
+                "agentbridge-console",
+                session_id,
+                "--socket",
+                str(self.socket_path),
+                "--raw",
+            )
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as file:
+                file.write(
+                    "#!/bin/sh\n"
+                    "set -eu\n"
+                    f"export AGENTBRIDGE_LOCAL_TOKEN={shlex.quote(self.auth_token)}\n"
+                    f"export AGENTBRIDGE_TERMINAL_SOCKET={shlex.quote(str(self.socket_path))}\n"
+                    'rm -f "$0"\n'
+                    f"exec {console_command}\n"
+                )
+            script_path.chmod(0o700)
+        except Exception:
+            with contextlib.suppress(OSError):
+                script_path.unlink()
+            raise
+        return script_path
 
 
 class LocalTerminalAgentServer:
@@ -138,8 +391,10 @@ class LocalTerminalAgentServer:
             self.desktop_launcher = DesktopTerminalLauncher(
                 enabled=self.desktop_launcher.enabled,
                 command_template=self.desktop_launcher.command_template,
+                open_preset=self.desktop_launcher.open_preset,
                 socket_path=socket_path,
                 auth_token=self.auth_token,
+                launcher_script_dir=self.desktop_launcher.launcher_script_dir,
             )
         if self.lifecycle_monitor_enabled:
             self.terminal.start_lifecycle_monitor(
@@ -509,6 +764,7 @@ def config_from_env() -> LocalTerminalAgentConfig:
         ),
         desktop_auto_open_enabled=env_bool("AGENTBRIDGE_TERMINAL_AUTO_OPEN", default=False),
         desktop_open_command=os.environ.get("AGENTBRIDGE_TERMINAL_OPEN_COMMAND"),
+        desktop_open_preset=os.environ.get("AGENTBRIDGE_TERMINAL_OPEN_PRESET"),
     )
 
 
@@ -525,6 +781,7 @@ async def async_main() -> None:
         desktop_launcher=DesktopTerminalLauncher(
             enabled=config.desktop_auto_open_enabled,
             command_template=config.desktop_open_command,
+            open_preset=config.desktop_open_preset,
             socket_path=config.socket_path,
             auth_token=config.auth_token,
         ),
