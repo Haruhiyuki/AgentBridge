@@ -420,6 +420,15 @@ class RevokeDeviceIdentityRequest(BaseModel):
     trace_id: str = "device-identity-api"
 
 
+class RotateDeviceCertificateFingerprintsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    add_fingerprints: set[str] = Field(default_factory=set)
+    remove_fingerprints: set[str] = Field(default_factory=set)
+    trace_id: str = "device-certificate-rotation-api"
+
+
 class GroupRoleChangeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -932,6 +941,21 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         identity = control.revoke_device_identity(
             actor=payload.actor.to_actor(),
             device_id=device_id,
+            trace_id=payload.trace_id,
+        )
+        return device_identity_public_payload(identity)
+
+    @app.post("/api/v1/device-identities/{device_id}/certificate-fingerprints/rotate")
+    def rotate_device_certificate_fingerprints(
+        device_id: str,
+        payload: RotateDeviceCertificateFingerprintsRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        identity = control.rotate_device_identity_certificate_fingerprints(
+            actor=payload.actor.to_actor(),
+            device_id=device_id,
+            add_fingerprints=payload.add_fingerprints,
+            remove_fingerprints=payload.remove_fingerprints,
             trace_id=payload.trace_id,
         )
         return device_identity_public_payload(identity)

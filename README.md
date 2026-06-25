@@ -261,6 +261,12 @@ list/revoke responses never include raw keys, hashes, or salts. Once any managed
 identity exists, REST and WebSocket routes stay gated even if all managed devices are
 later revoked; use an admin/API token or global client-certificate fingerprint to create
 a new active device key and regain device-key access.
+Managed certificate fingerprints can be rotated without replacing the full device
+identity through
+`POST /api/v1/device-identities/{device_id}/certificate-fingerprints/rotate` with
+`add_fingerprints` and/or `remove_fingerprints`. The rotation preserves the device key,
+allowed scopes, and resource allowlist, audits the added/removed fingerprints, and
+rejects removing the last credential from a certificate-only device.
 
 For deployments behind a TLS-terminating reverse proxy that verifies client
 certificates, set `AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS` or

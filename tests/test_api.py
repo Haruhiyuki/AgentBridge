@@ -627,6 +627,103 @@ def test_managed_device_identity_can_be_certificate_only():
     assert revoked_certificate_response.status_code == 403
 
 
+def test_managed_device_identity_rotates_certificate_fingerprints():
+    control = ControlPlane()
+    client = TestClient(create_app(control))
+    actor = {"id": "security-admin", "roles": ["admin"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": actor,
+            "device_id": "rotating-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "device_manage"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "managed-device-rotation-create",
+        },
+    )
+    rotate_response = client.post(
+        "/api/v1/device-identities/rotating-device/certificate-fingerprints/rotate",
+        json={
+            "actor": actor,
+            "add_fingerprints": ["SHA256:DD:EE:FF"],
+            "remove_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "managed-device-certificate-rotate",
+        },
+        headers={
+            "x-agentbridge-device-id": "rotating-device",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+    old_certificate_response = client.get(
+        "/api/v1/commands",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+    new_certificate_response = client.get(
+        "/api/v1/commands",
+        headers={"x-agentbridge-client-cert-fingerprint": "dd:ee:ff"},
+    )
+    key_response = client.get(
+        "/api/v1/commands",
+        headers={
+            "x-agentbridge-device-id": "rotating-device",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+    audit_events = control.repository.list_audit_events(
+        action="device_identity.certificate_fingerprints_rotated"
+    )
+
+    assert create_response.status_code == 200
+    assert rotate_response.status_code == 200
+    rotated = rotate_response.json()
+    assert rotated["device_id"] == "rotating-device"
+    assert rotated["allowed_scopes"] == ["device_manage", "http_api"]
+    assert rotated["certificate_fingerprints"] == ["ddeeff"]
+    assert old_certificate_response.status_code == 403
+    assert new_certificate_response.status_code == 200
+    assert key_response.status_code == 200
+    assert len(audit_events) == 1
+    assert audit_events[0].details["added_fingerprints"] == ["ddeeff"]
+    assert audit_events[0].details["removed_fingerprints"] == ["aabbcc"]
+
+
+def test_managed_device_identity_rejects_removing_last_certificate_only_fingerprint():
+    client = TestClient(create_app())
+    actor = {"id": "security-admin", "roles": ["admin"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": actor,
+            "device_id": "cert-only-rotation",
+            "allowed_scopes": ["http_api", "device_manage"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "managed-device-cert-only-rotation-create",
+        },
+    )
+    rotate_response = client.post(
+        "/api/v1/device-identities/cert-only-rotation/certificate-fingerprints/rotate",
+        json={
+            "actor": actor,
+            "remove_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "managed-device-cert-only-rotation-remove-last",
+        },
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+    still_authorized_response = client.get(
+        "/api/v1/commands",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert create_response.status_code == 200
+    assert "device_key" not in create_response.json()
+    assert rotate_response.status_code == 400
+    assert rotate_response.json()["error_code"] == "COMMAND_ARGUMENT_INVALID"
+    assert still_authorized_response.status_code == 200
+
+
 def test_managed_device_identity_requires_device_manage_scope_for_device_api():
     client = TestClient(create_app())
     actor = {"id": "security-admin", "roles": ["admin"]}
@@ -1934,6 +2031,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "/api/v1/device-identities" in html
     assert "async function loadDevices()" in html
     assert "async function upsertDevice()" in html
+    assert "async function rotateDeviceCertificates()" in html
     assert "async function revokeDevice()" in html
     assert "auth-device-key" in html
     assert "allowed-scopes" in html
@@ -1961,6 +2059,9 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "terminal_read" in html
     assert "terminal_control" in html
     assert "certificate-fingerprints" in html
+    assert "certificate-fingerprints-add" in html
+    assert "certificate-fingerprints-remove" in html
+    assert "/certificate-fingerprints/rotate" in html
     assert "allowed_resource_ids" in html
     assert "generated-key" in html
 

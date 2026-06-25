@@ -22,6 +22,7 @@ from agentbridge.domain import (
     ChatContext,
     DeviceIdentity,
     DeviceIdentityScope,
+    DeviceIdentityStatus,
     ErrorCode,
     GroupRoleBinding,
     Interaction,
@@ -1935,6 +1936,103 @@ class ControlPlane:
             },
         )
         return identity, secret
+
+    def rotate_device_identity_certificate_fingerprints(
+        self,
+        *,
+        actor: Actor,
+        device_id: str,
+        add_fingerprints: set[str] | None = None,
+        remove_fingerprints: set[str] | None = None,
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> DeviceIdentity:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        normalized_device_id = self._validated_device_id(device_id)
+        fingerprints_to_add = (
+            self._validated_certificate_fingerprints(add_fingerprints) or set()
+        )
+        fingerprints_to_remove = (
+            self._validated_certificate_fingerprints(remove_fingerprints) or set()
+        )
+        if not fingerprints_to_add and not fingerprints_to_remove:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "证书指纹轮换至少需要添加或移除一个指纹。",
+                next_step=(
+                    "请提供 add_fingerprints 或 remove_fingerprints，"
+                    "或使用普通设备身份更新接口编辑完整指纹列表。"
+                ),
+            )
+        self.require_collection_permission(
+            effective_actor,
+            Permission.DEVICE_MANAGE,
+            resource_type="device_identity",
+            resource_id=normalized_device_id,
+            attributes={
+                "operation": "rotate_device_identity_certificate_fingerprints",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
+        existing_identity = self.repository.get_device_identity(normalized_device_id)
+        if existing_identity.status != DeviceIdentityStatus.ACTIVE:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "已撤销的设备身份不能轮换证书指纹。",
+                next_step="请创建新的设备身份，或使用仍处于 active 状态的设备身份。",
+            )
+        current_fingerprints = set(existing_identity.certificate_fingerprints)
+        next_fingerprints = (
+            current_fingerprints.union(fingerprints_to_add).difference(
+                fingerprints_to_remove
+            )
+        )
+        if not next_fingerprints and not existing_identity.key_hash:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "证书-only 设备身份不能移除最后一个证书指纹。",
+                next_step=(
+                    "请先为设备身份配置 device_key，或在同一次轮换中添加新的证书指纹。"
+                ),
+            )
+        identity = self.repository.upsert_device_identity(
+            device_id=existing_identity.device_id,
+            display_name=existing_identity.display_name,
+            allowed_scopes=set(existing_identity.allowed_scopes),
+            allowed_resource_ids=set(existing_identity.allowed_resource_ids),
+            certificate_fingerprints=next_fingerprints,
+            updated_by=effective_actor.id,
+        )
+        added_values = sorted(next_fingerprints.difference(current_fingerprints))
+        removed_values = sorted(current_fingerprints.difference(next_fingerprints))
+        self.audit(
+            action="device_identity.certificate_fingerprints_rotated",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            details={
+                "device_identity_id": identity.id,
+                "device_id": identity.device_id,
+                "added_fingerprints": added_values,
+                "removed_fingerprints": removed_values,
+                "certificate_fingerprint_count": len(identity.certificate_fingerprints),
+            },
+        )
+        self.emit_event(
+            event_type="device_identity.certificate_fingerprints_rotated",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            payload={
+                "device_identity_id": identity.id,
+                "device_id": identity.device_id,
+                "added_fingerprint_count": len(added_values),
+                "removed_fingerprint_count": len(removed_values),
+                "certificate_fingerprint_count": len(identity.certificate_fingerprints),
+                "updated_by": effective_actor.id,
+            },
+        )
+        return identity
 
     def revoke_device_identity(
         self,

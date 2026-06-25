@@ -3739,6 +3739,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       <div class="toolbar">
         <button id="new-device" type="button">New</button>
         <button id="save-device" class="primary" type="button">Save / Rotate Key</button>
+        <button id="rotate-certificates" type="button">Rotate Certificates</button>
         <button id="revoke-device" class="danger" type="button">Revoke</button>
       </div>
       <div class="field-grid">
@@ -3780,6 +3781,14 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
         <label class="full">
           Certificate Fingerprints
           <input id="certificate-fingerprints" placeholder="sha256 fingerprint allowlist">
+        </label>
+        <label class="full">
+          Certificate Fingerprints To Add
+          <input id="certificate-fingerprints-add" placeholder="new fingerprint(s)">
+        </label>
+        <label class="full">
+          Certificate Fingerprints To Remove
+          <input id="certificate-fingerprints-remove" placeholder="old fingerprint(s)">
         </label>
         <label class="full">
           New Device Key
@@ -3915,6 +3924,8 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       $("certificate-fingerprints").value = (
         device.certificate_fingerprints || []
       ).join(",");
+      $("certificate-fingerprints-add").value = "";
+      $("certificate-fingerprints-remove").value = "";
       $("device-key").value = "";
       $("selected").textContent = JSON.stringify(device, null, 2);
       document.querySelectorAll("#devices tr").forEach((row) => {
@@ -3929,6 +3940,8 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       $("allowed-scopes").value = defaultScopes;
       $("allowed-resource-ids").value = "";
       $("certificate-fingerprints").value = "";
+      $("certificate-fingerprints-add").value = "";
+      $("certificate-fingerprints-remove").value = "";
       $("device-key").value = "";
       $("selected").textContent = "{}";
       $("generated-key").textContent = "{}";
@@ -3973,6 +3986,33 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       setStatus(`Saved ${saved.device_id}`);
     }
 
+    async function rotateDeviceCertificates() {
+      const deviceId = $("device-id").value.trim();
+      if (!deviceId) throw new Error("Device ID is required");
+      const payload = {
+        actor: actor(),
+        add_fingerprints: csv($("certificate-fingerprints-add").value),
+        remove_fingerprints: csv($("certificate-fingerprints-remove").value),
+        trace_id: "admin-ui-device-cert-rotate",
+      };
+      const rotated = await requestJson(
+        `/api/v1/device-identities/${encodeURIComponent(deviceId)}` +
+          "/certificate-fingerprints/rotate",
+        {
+          method: "POST",
+          body: JSON.stringify(payload),
+        },
+      );
+      $("certificate-fingerprints").value = (
+        rotated.certificate_fingerprints || []
+      ).join(",");
+      $("certificate-fingerprints-add").value = "";
+      $("certificate-fingerprints-remove").value = "";
+      selectedDeviceId = rotated.device_id;
+      await loadDevices();
+      setStatus(`Rotated certificates for ${rotated.device_id}`);
+    }
+
     async function revokeDevice() {
       const deviceId = $("device-id").value.trim();
       if (!deviceId) throw new Error("Device ID is required");
@@ -4003,6 +4043,10 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
     $("include-revoked").addEventListener("change", () => run(loadDevices));
     $("new-device").addEventListener("click", newDevice);
     $("save-device").addEventListener("click", () => run(upsertDevice));
+    $("rotate-certificates").addEventListener(
+      "click",
+      () => run(rotateDeviceCertificates),
+    );
     $("revoke-device").addEventListener("click", () => run(revokeDevice));
     $("allowed-scopes").value = defaultScopes;
     loadDevices().catch((error) => {
