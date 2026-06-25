@@ -502,6 +502,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "device_manage" in html
     assert "policy_manage" in html
     assert "group_role_manage" in html
+    assert "terminal_control" in html
     assert "certificate-fingerprints" in html
     assert "generated-key" in html
 
@@ -2181,6 +2182,138 @@ def test_terminal_lifecycle_monitor_status_and_run_once_api(tmp_path):
         "output_base_cursor": 0,
         "output_retained_chars": 0,
     }
+
+
+def test_managed_device_identity_requires_terminal_control_scope_for_terminal_http_apis(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-terminal-control-scope",
+        prefix="terminal-control-scope",
+        name="Terminal Control Scope",
+    )
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "terminal-control-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    regular_http_response = client.get("/api/v1/projects", headers=key_headers)
+    lifecycle_status_response = client.get(
+        "/api/v1/terminal/lifecycle-monitor",
+        headers=key_headers,
+    )
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/terminal/start",
+        json={
+            "actor": actor,
+            "command": "fake-cli",
+            "trace_id": "terminal-control-denied-start",
+        },
+        headers=key_headers,
+    )
+    run_once_response = client.post(
+        "/api/v1/terminal/lifecycle-monitor/run-once",
+        json={"actor": actor, "trace_id": "terminal-control-denied-run-once"},
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert create_response.status_code == 200
+    assert regular_http_response.status_code == 200
+    assert lifecycle_status_response.status_code == 200
+    assert start_response.status_code == 403
+    assert run_once_response.status_code == 403
+
+
+def test_managed_device_identity_terminal_control_scope_allows_terminal_http_apis(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-terminal-control-manager-scope",
+        prefix="terminal-control-manager-scope",
+        name="Terminal Control Manager Scope",
+    )
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "terminal-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "terminal_control"],
+            "trace_id": "terminal-control-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "terminal-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/terminal/start",
+        json={
+            "actor": actor,
+            "command": "fake-cli",
+            "trace_id": "terminal-control-manager-start",
+        },
+        headers=headers,
+    )
+    lease_response = client.post(
+        f"/api/v1/sessions/{session_id}/lease/acquire",
+        json={
+            "actor": actor,
+            "owner_type": "web_admin",
+            "owner_id": "usr_1",
+            "trace_id": "terminal-control-manager-lease",
+        },
+        headers=headers,
+    )
+    input_response = client.post(
+        f"/api/v1/sessions/{session_id}/terminal/input",
+        json={
+            "actor": actor,
+            "epoch": lease_response.json().get("epoch"),
+            "owner_type": "web_admin",
+            "owner_id": "usr_1",
+            "type": "text",
+            "data": "hello terminal control\n",
+            "request_id": "terminal-control-manager-input",
+            "trace_id": "terminal-control-manager-input",
+        },
+        headers=headers,
+    )
+    run_once_response = client.post(
+        "/api/v1/terminal/lifecycle-monitor/run-once",
+        json={"actor": actor, "trace_id": "terminal-control-manager-run-once"},
+        headers=headers,
+    )
+
+    assert create_response.status_code == 200
+    assert start_response.status_code == 200
+    assert lease_response.status_code == 200
+    assert input_response.status_code == 200
+    assert input_response.json() == {"request_id": "terminal-control-manager-input"}
+    assert run_once_response.status_code == 200
+    assert run_once_response.json()["monitor"]["run_count"] == 1
 
 
 def test_terminal_restart_api_uses_last_started_command_after_backend_state_loss(tmp_path):

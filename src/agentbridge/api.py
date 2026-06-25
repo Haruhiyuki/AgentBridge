@@ -2183,6 +2183,15 @@ def http_api_request_authorized(
 def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
     path = request.url.path.rstrip("/")
     path_segments = path.split("/")
+    if path == "/api/v1/terminal/lifecycle-monitor/run-once":
+        return DeviceIdentityScope.TERMINAL_CONTROL
+    if (
+        len(path_segments) >= 7
+        and path_segments[:4] == ["", "api", "v1", "sessions"]
+        and path_segments[5] == "terminal"
+        and path_segments[6] in {"start", "restart", "input"}
+    ):
+        return DeviceIdentityScope.TERMINAL_CONTROL
     if path == "/api/v1/access-policy" or path.startswith("/api/v1/access-policy/"):
         return DeviceIdentityScope.POLICY_MANAGE
     if path.endswith("/approval-policy"):

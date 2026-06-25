@@ -408,6 +408,7 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
             DeviceIdentityScope.HTTP_API,
             DeviceIdentityScope.POLICY_MANAGE,
             DeviceIdentityScope.SESSION_EVENTS_WS,
+            DeviceIdentityScope.TERMINAL_CONTROL,
         },
         certificate_fingerprints={"SHA256:AA:BB:CC"},
         trace_id="device-identity-create",
@@ -444,6 +445,7 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
         DeviceIdentityScope.HTTP_API,
         DeviceIdentityScope.POLICY_MANAGE,
         DeviceIdentityScope.SESSION_EVENTS_WS,
+        DeviceIdentityScope.TERMINAL_CONTROL,
     }
     assert restored_identity.certificate_fingerprints == {"aabbcc"}
     restored_cert_only = restored_identities["cert-only"]
