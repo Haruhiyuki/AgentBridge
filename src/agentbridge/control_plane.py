@@ -1837,6 +1837,7 @@ class ControlPlane:
         display_name: str | None = None,
         device_key: str | None = None,
         allowed_scopes: set[DeviceIdentityScope] | None = None,
+        allowed_resource_ids: set[str] | None = None,
         certificate_fingerprints: set[str] | None = None,
         trace_id: str,
         chat_context_id: str | None = None,
@@ -1844,6 +1845,9 @@ class ControlPlane:
         effective_actor = self.effective_actor(actor, chat_context_id)
         normalized_device_id = self._validated_device_id(device_id)
         normalized_scopes = self._validated_device_scopes(allowed_scopes)
+        normalized_resource_ids = self._validated_device_resource_ids(
+            allowed_resource_ids
+        )
         normalized_fingerprints = self._validated_certificate_fingerprints(
             certificate_fingerprints
         )
@@ -1892,10 +1896,12 @@ class ControlPlane:
             key_salt=salt,
             key_iterations=DEFAULT_DEVICE_KEY_ITERATIONS,
             allowed_scopes=normalized_scopes,
+            allowed_resource_ids=normalized_resource_ids,
             certificate_fingerprints=normalized_fingerprints,
             updated_by=effective_actor.id,
         )
         allowed_scope_values = sorted(scope.value for scope in identity.allowed_scopes)
+        allowed_resource_id_values = sorted(identity.allowed_resource_ids)
         certificate_fingerprint_count = len(identity.certificate_fingerprints)
         self.audit(
             action="device_identity.upserted",
@@ -1909,6 +1915,7 @@ class ControlPlane:
                 "display_name": identity.display_name,
                 "status": identity.status.value,
                 "allowed_scopes": allowed_scope_values,
+                "allowed_resource_ids": allowed_resource_id_values,
                 "certificate_fingerprint_count": certificate_fingerprint_count,
             },
         )
@@ -1922,6 +1929,7 @@ class ControlPlane:
                 "display_name": identity.display_name,
                 "status": identity.status.value,
                 "allowed_scopes": allowed_scope_values,
+                "allowed_resource_ids": allowed_resource_id_values,
                 "certificate_fingerprint_count": certificate_fingerprint_count,
                 "updated_by": effective_actor.id,
             },
@@ -2237,6 +2245,14 @@ class ControlPlane:
                 },
             )
         return normalized
+
+    def _validated_device_resource_ids(
+        self,
+        resource_ids: set[str] | None,
+    ) -> set[str] | None:
+        if resource_ids is None:
+            return None
+        return {resource_id for value in resource_ids if (resource_id := value.strip())}
 
     def _validated_certificate_fingerprints(
         self,

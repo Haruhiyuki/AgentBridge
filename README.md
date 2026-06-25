@@ -215,6 +215,13 @@ certificate fingerprint to one or more scopes: `http_api`, `audit_read`,
 `session_events_ws`, `rendered_events_ws`, `terminal_ws`, and
 `bot_gateway_ws`;
 omitting it grants all current scopes.
+`allowed_resource_ids` can further restrict a managed device key or managed
+certificate fingerprint to specific project, session, interaction, chat-context, or
+device-identity IDs when those IDs are visible in the REST path/query string or the
+WebSocket route. Omit it or pass an empty list for all resources; pass `"*"` for an
+explicit wildcard. If the allowlist is non-empty and a request has no visible resource
+ID, the managed credential is rejected. This first resource guard intentionally does
+not parse request bodies before authentication.
 Managed device credentials need `audit_read` to call audit, audit export, and event history HTTP read APIs,
 `bot_gateway_read` to call Bot Gateway HTTP read APIs, `bot_gateway_manage` to call
 Bot Gateway HTTP mutation APIs,
@@ -528,8 +535,8 @@ trigger a bounded run-once scan.
 The policy editor lists rules, edits allow/deny match criteria, runs
 `/api/v1/access-policy/simulate`, and saves through the same audited REST APIs.
 The device identities page lists active/revoked managed devices, creates or rotates
-device keys, edits allowed scopes and certificate fingerprints, shows last-used
-timestamps, shows the generated key once, and revokes selected devices.
+device keys, edits allowed scopes, allowed resource IDs, and certificate fingerprints,
+shows last-used timestamps, shows the generated key once, and revokes selected devices.
 
 Set `AGENTBRIDGE_ADMIN_TOKEN` or `AGENTBRIDGE_ADMIN_TOKEN_FILE` to require a browser
 token before serving `/admin` pages. When `AGENTBRIDGE_API_TOKEN` or

@@ -576,6 +576,7 @@ class InMemoryRepository:
         key_salt: str | None = None,
         key_iterations: int = 210000,
         allowed_scopes: set[DeviceIdentityScope] | None = None,
+        allowed_resource_ids: set[str] | None = None,
         certificate_fingerprints: set[str] | None = None,
     ) -> DeviceIdentity:
         normalized_device_id = device_id.strip()
@@ -606,6 +607,11 @@ class InMemoryRepository:
                     else set()
                 )
             )
+            identity_resource_ids = (
+                set(allowed_resource_ids)
+                if allowed_resource_ids is not None
+                else (set(existing.allowed_resource_ids) if existing else set())
+            )
             identity_key_hash = key_hash if key_hash is not None else (
                 existing.key_hash if existing else None
             )
@@ -634,6 +640,7 @@ class InMemoryRepository:
                 key_iterations=identity_key_iterations,
                 status=DeviceIdentityStatus.ACTIVE,
                 allowed_scopes=identity_scopes,
+                allowed_resource_ids=identity_resource_ids,
                 certificate_fingerprints=identity_certificate_fingerprints,
                 created_by=existing.created_by if existing else updated_by,
                 created_at=existing.created_at if existing else now,

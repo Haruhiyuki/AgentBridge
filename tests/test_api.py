@@ -337,6 +337,7 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
     assert created["display_name"] == "Maintainer laptop"
     assert created["status"] == "active"
     assert created["allowed_scopes"] == ["device_manage", "http_api"]
+    assert created["allowed_resource_ids"] == []
     assert created["certificate_fingerprints"] == ["aabbcc"]
     assert created["device_key"] == "managed-secret"
     assert "key_hash" not in created
@@ -350,6 +351,7 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
     listed = list_response.json()[0]
     assert listed["device_id"] == "laptop"
     assert listed["allowed_scopes"] == ["device_manage", "http_api"]
+    assert listed["allowed_resource_ids"] == []
     assert listed["certificate_fingerprints"] == ["aabbcc"]
     assert listed["last_used_at"] is not None
     assert "device_key" not in listed
@@ -358,6 +360,119 @@ def test_managed_device_identity_gates_rest_api_and_can_be_revoked():
     assert revoked_key_response.status_code == 403
     assert revoked_certificate_response.status_code == 403
     assert still_gated_response.status_code == 403
+
+
+def test_managed_device_identity_resource_ids_limit_rest_api(tmp_path):
+    control = ControlPlane()
+    admin = Actor(id="security-admin", roles={"admin"})
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    allowed_project = control.create_project(
+        actor=maintainer,
+        name="Allowed Device Project",
+        trace_id="device-resource-allowed-project",
+    )
+    denied_project = control.create_project(
+        actor=maintainer,
+        name="Denied Device Project",
+        trace_id="device-resource-denied-project",
+    )
+    allowed_workspace = control.add_workspace(
+        actor=maintainer,
+        project_id=allowed_project.id,
+        machine_id="local",
+        path=str(tmp_path / "allowed"),
+        allowed_root=str(tmp_path),
+        trace_id="device-resource-allowed-workspace",
+    )
+    denied_workspace = control.add_workspace(
+        actor=maintainer,
+        project_id=denied_project.id,
+        machine_id="local",
+        path=str(tmp_path / "denied"),
+        allowed_root=str(tmp_path),
+        trace_id="device-resource-denied-workspace",
+    )
+    allowed_session = control.create_session(
+        actor=maintainer,
+        project_id=allowed_project.id,
+        workspace_id=allowed_workspace.id,
+        name="Allowed Device Session",
+        agent_type=allowed_project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="device-resource-allowed-session",
+    )
+    denied_session = control.create_session(
+        actor=maintainer,
+        project_id=denied_project.id,
+        workspace_id=denied_workspace.id,
+        name="Denied Device Session",
+        agent_type=denied_project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="device-resource-denied-session",
+    )
+    identity, _device_key = control.upsert_device_identity(
+        actor=admin,
+        device_id="scoped-laptop",
+        device_key="managed-secret",
+        allowed_scopes={
+            DeviceIdentityScope.AUDIT_READ,
+            DeviceIdentityScope.SESSION_READ,
+        },
+        allowed_resource_ids={allowed_project.id, allowed_session.id},
+        certificate_fingerprints={"SHA256:AA:BB:CC"},
+        trace_id="device-resource-create",
+    )
+    client = TestClient(create_app(control))
+    key_headers = {
+        "x-agentbridge-device-id": "scoped-laptop",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    certificate_headers = {"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"}
+
+    allowed_queue_response = client.get(
+        f"/api/v1/sessions/{allowed_session.id}/queue",
+        headers=key_headers,
+    )
+    denied_queue_response = client.get(
+        f"/api/v1/sessions/{denied_session.id}/queue",
+        headers=key_headers,
+    )
+    allowed_query_response = client.get(
+        f"/api/v1/events?session_id={allowed_session.id}",
+        headers=certificate_headers,
+    )
+    denied_query_response = client.get(
+        f"/api/v1/events?session_id={denied_session.id}",
+        headers=certificate_headers,
+    )
+    allowed_project_query_response = client.get(
+        f"/api/v1/sessions?project_id={allowed_project.id}",
+        headers=key_headers,
+    )
+    denied_project_query_response = client.get(
+        f"/api/v1/sessions?project_id={denied_project.id}",
+        headers=key_headers,
+    )
+    unscoped_collection_response = client.get(
+        "/api/v1/sessions",
+        headers=key_headers,
+    )
+    public_payload_response = client.get(
+        f"/api/v1/events?session_id={allowed_session.id}",
+        headers=key_headers,
+    )
+
+    assert identity.allowed_resource_ids == {allowed_project.id, allowed_session.id}
+    assert allowed_queue_response.status_code == 200
+    assert denied_queue_response.status_code == 403
+    assert allowed_query_response.status_code == 200
+    assert denied_query_response.status_code == 403
+    assert allowed_project_query_response.status_code == 200
+    assert denied_project_query_response.status_code == 403
+    assert unscoped_collection_response.status_code == 403
+    assert public_payload_response.status_code == 200
+    used_identity = control.repository.get_device_identity("scoped-laptop")
+    assert used_identity.last_used_at is not None
 
 
 def test_managed_device_identity_can_be_certificate_only():
@@ -1717,6 +1832,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "async function revokeDevice()" in html
     assert "auth-device-key" in html
     assert "allowed-scopes" in html
+    assert "allowed-resource-ids" in html
     assert "audit_read" in html
     assert "bot_gateway_read" in html
     assert "bot_gateway_manage" in html
@@ -1740,6 +1856,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "terminal_read" in html
     assert "terminal_control" in html
     assert "certificate-fingerprints" in html
+    assert "allowed_resource_ids" in html
     assert "generated-key" in html
 
 
@@ -4632,6 +4749,78 @@ def test_session_events_websocket_accepts_managed_device_key(tmp_path):
         "type": "idle_timeout",
         "last_seq": certificate_message["event"]["seq"],
     }
+
+
+def test_managed_device_identity_resource_ids_limit_websocket(tmp_path):
+    control = ControlPlane()
+    admin = Actor(id="security-admin", roles={"admin"})
+    actor = Actor(id="usr_1", roles={"maintainer"})
+    project = control.create_project(
+        actor=actor,
+        name="Managed Device Resource Backend",
+        trace_id="managed-device-resource-project",
+    )
+    workspace = control.add_workspace(
+        actor=actor,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="managed-device-resource-workspace",
+    )
+    allowed_session = control.create_session(
+        actor=actor,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Allowed Managed Device Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="managed-device-resource-allowed-session",
+    )
+    denied_session = control.create_session(
+        actor=actor,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Denied Managed Device Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="managed-device-resource-denied-session",
+    )
+    control.upsert_device_identity(
+        actor=admin,
+        device_id="scoped-laptop",
+        device_key="managed-secret",
+        allowed_scopes={DeviceIdentityScope.SESSION_EVENTS_WS},
+        allowed_resource_ids={allowed_session.id},
+        certificate_fingerprints={"AA:BB:CC"},
+        trace_id="managed-device-resource-ws-create",
+    )
+    client = TestClient(create_app(control))
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{allowed_session.id}/events/ws"
+        "?device_id=scoped-laptop&device_key=managed-secret&idle_timeout_seconds=0"
+    ) as websocket:
+        message = websocket.receive_json()
+        idle = websocket.receive_json()
+    with client.websocket_connect(
+        f"/api/v1/sessions/{denied_session.id}/events/ws"
+        "?device_id=scoped-laptop&device_key=managed-secret&idle_timeout_seconds=0"
+    ) as websocket:
+        key_denied = websocket.receive_json()
+    with client.websocket_connect(
+        f"/api/v1/sessions/{denied_session.id}/events/ws?idle_timeout_seconds=0",
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    ) as websocket:
+        certificate_denied = websocket.receive_json()
+
+    assert message["type"] == "semantic_event"
+    assert message["event"]["type"] == "session.created"
+    assert idle == {"type": "idle_timeout", "last_seq": message["event"]["seq"]}
+    assert key_denied["type"] == "error"
+    assert key_denied["error"]["error_code"] == "PERMISSION_DENIED"
+    assert certificate_denied["type"] == "error"
+    assert certificate_denied["error"]["error_code"] == "PERMISSION_DENIED"
 
 
 def test_managed_device_identity_scope_limits_websocket(tmp_path):

@@ -381,6 +381,7 @@ class DeviceIdentity(BaseModel):
     allowed_scopes: set[DeviceIdentityScope] = Field(
         default_factory=lambda: set(DeviceIdentityScope)
     )
+    allowed_resource_ids: set[str] = Field(default_factory=set)
     certificate_fingerprints: set[str] = Field(default_factory=set)
     created_by: str
     created_at: datetime = Field(default_factory=utc_now)

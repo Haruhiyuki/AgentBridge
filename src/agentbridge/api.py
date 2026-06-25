@@ -408,6 +408,7 @@ class DeviceIdentityRequest(BaseModel):
     display_name: str | None = None
     device_key: str | None = None
     allowed_scopes: set[DeviceIdentityScope] | None = None
+    allowed_resource_ids: set[str] | None = None
     certificate_fingerprints: set[str] | None = None
     trace_id: str = "device-identity-api"
 
@@ -913,6 +914,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             display_name=payload.display_name,
             device_key=payload.device_key,
             allowed_scopes=payload.allowed_scopes,
+            allowed_resource_ids=payload.allowed_resource_ids,
             certificate_fingerprints=payload.certificate_fingerprints,
             trace_id=payload.trace_id,
         )
@@ -1994,6 +1996,7 @@ def device_identity_public_payload(identity: DeviceIdentity) -> dict[str, object
         "display_name": identity.display_name,
         "status": identity.status.value,
         "allowed_scopes": sorted(scope.value for scope in identity.allowed_scopes),
+        "allowed_resource_ids": sorted(identity.allowed_resource_ids),
         "certificate_fingerprints": sorted(identity.certificate_fingerprints),
         "created_by": identity.created_by,
         "created_at": identity.created_at.isoformat(),
@@ -2026,6 +2029,7 @@ async def stream_session_events(
         token=token,
         control=control,
         required_scope=required_scope,
+        resource_ids={session_id},
     ):
         return
     try:
@@ -2103,6 +2107,7 @@ async def stream_bot_gateway_events(
         token=token,
         control=control,
         required_scope=DeviceIdentityScope.BOT_GATEWAY_WS,
+        resource_ids={session_id, chat_context_id},
     ):
         return
     try:
@@ -2213,6 +2218,7 @@ async def stream_terminal_commands(
         token=token,
         control=control,
         required_scope=DeviceIdentityScope.TERMINAL_WS,
+        resource_ids={session_id},
     ):
         return
     try:
@@ -2540,24 +2546,57 @@ def http_api_request_authorized(
     ):
         return True
     required_scope = http_api_required_device_scope(request)
+    resource_ids = http_api_resource_ids(request)
     presented_tokens = http_api_presented_tokens(request)
     return (
         client_certificate_authorized(
             request.headers,
             control=control,
             required_scope=required_scope,
+            resource_ids=resource_ids,
         )
         or http_device_key_authorized(
             request,
             device_keys,
             control=control,
             required_scope=required_scope,
+            resource_ids=resource_ids,
         )
         or any(
             matching_token(presented_token, expected_tokens)
             for presented_token in presented_tokens
         )
     )
+
+
+def http_api_resource_ids(request: Request) -> set[str]:
+    path_segments = request.url.path.rstrip("/").split("/")
+    resource_ids: set[str] = set()
+    resource_collections = {
+        "chat-contexts",
+        "device-identities",
+        "interactions",
+        "projects",
+        "sessions",
+    }
+    if (
+        len(path_segments) >= 5
+        and path_segments[:3] == ["", "api", "v1"]
+        and path_segments[3] in resource_collections
+        and path_segments[4]
+    ):
+        resource_ids.add(path_segments[4])
+    for param_name in (
+        "chat_context_id",
+        "device_id",
+        "interaction_id",
+        "project_id",
+        "session_id",
+    ):
+        value = request.query_params.get(param_name)
+        if value and value.strip():
+            resource_ids.add(value.strip())
+    return resource_ids
 
 
 def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
@@ -2793,6 +2832,7 @@ def http_device_key_authorized(
     *,
     control: ControlPlane | None = None,
     required_scope: DeviceIdentityScope,
+    resource_ids: set[str] | None = None,
 ) -> bool:
     device_id = request.headers.get("x-agentbridge-device-id")
     presented_key = request.headers.get("x-agentbridge-device-key")
@@ -2814,6 +2854,7 @@ def http_device_key_authorized(
         presented_key,
         control,
         required_scope=required_scope,
+        resource_ids=resource_ids,
     )
 
 
@@ -2856,6 +2897,7 @@ async def accept_authenticated_websocket(
     token: str | None,
     control: ControlPlane | None = None,
     required_scope: DeviceIdentityScope,
+    resource_ids: set[str] | None = None,
 ) -> bool:
     await websocket.accept()
     expected_tokens, token_configured = websocket_expected_token_config()
@@ -2874,6 +2916,7 @@ async def accept_authenticated_websocket(
         websocket.headers,
         control=control,
         required_scope=required_scope,
+        resource_ids=resource_ids,
     ):
         return True
     if websocket_device_key_authorized(
@@ -2881,6 +2924,7 @@ async def accept_authenticated_websocket(
         device_keys,
         control=control,
         required_scope=required_scope,
+        resource_ids=resource_ids,
     ):
         return True
     if websocket_admin_cookie_authorized(websocket):
@@ -2952,6 +2996,7 @@ def websocket_device_key_authorized(
     *,
     control: ControlPlane | None = None,
     required_scope: DeviceIdentityScope,
+    resource_ids: set[str] | None = None,
 ) -> bool:
     device_id = websocket.query_params.get("device_id")
     presented_key = websocket.query_params.get("device_key")
@@ -2964,6 +3009,7 @@ def websocket_device_key_authorized(
         presented_key,
         control,
         required_scope=required_scope,
+        resource_ids=resource_ids,
     )
 
 
@@ -3039,6 +3085,7 @@ def client_certificate_authorized(
     *,
     control: ControlPlane | None = None,
     required_scope: DeviceIdentityScope | None = None,
+    resource_ids: set[str] | None = None,
 ) -> bool:
     global_fingerprints = configured_client_certificate_fingerprints()
     if not global_fingerprints and (control is None or required_scope is None):
@@ -3057,6 +3104,7 @@ def client_certificate_authorized(
         normalized_fingerprint,
         control,
         required_scope=required_scope,
+        resource_ids=resource_ids,
     )
 
 
@@ -3109,6 +3157,7 @@ def matching_managed_device_key(
     control: ControlPlane | None,
     *,
     required_scope: DeviceIdentityScope,
+    resource_ids: set[str] | None = None,
 ) -> bool:
     if control is None or not device_id or not presented_key:
         return False
@@ -3119,6 +3168,8 @@ def matching_managed_device_key(
     if identity.status != DeviceIdentityStatus.ACTIVE:
         return False
     if required_scope not in identity.allowed_scopes:
+        return False
+    if not device_identity_resource_allowed(identity, resource_ids):
         return False
     if not identity.key_hash or not identity.key_salt:
         return False
@@ -3142,11 +3193,14 @@ def matching_managed_device_certificate_fingerprint(
     control: ControlPlane,
     *,
     required_scope: DeviceIdentityScope,
+    resource_ids: set[str] | None = None,
 ) -> bool:
     for identity in control.repository.list_device_identities():
         if identity.status != DeviceIdentityStatus.ACTIVE:
             continue
         if required_scope not in identity.allowed_scopes:
+            continue
+        if not device_identity_resource_allowed(identity, resource_ids):
             continue
         fingerprints = {
             fingerprint
@@ -3157,6 +3211,25 @@ def matching_managed_device_certificate_fingerprint(
             control.repository.mark_device_identity_used(identity.device_id)
             return True
     return False
+
+
+def device_identity_resource_allowed(
+    identity: DeviceIdentity,
+    resource_ids: set[str] | None,
+) -> bool:
+    allowed_resource_ids = {
+        resource_id
+        for value in identity.allowed_resource_ids
+        if (resource_id := value.strip())
+    }
+    if not allowed_resource_ids or "*" in allowed_resource_ids:
+        return True
+    requested_resource_ids = {
+        resource_id for value in (resource_ids or set()) if (resource_id := value.strip())
+    }
+    if not requested_resource_ids:
+        return False
+    return requested_resource_ids <= allowed_resource_ids
 
 
 def clamp_stream_limit(limit: int) -> int:

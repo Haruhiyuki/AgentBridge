@@ -3725,6 +3725,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
               <th>Name</th>
               <th>Status</th>
               <th>Scopes</th>
+              <th>Resources</th>
               <th>Certs</th>
               <th>Created</th>
               <th>Last Used</th>
@@ -3768,6 +3769,13 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
         <label class="full">
           Allowed Scopes
           <input id="allowed-scopes">
+        </label>
+        <label class="full">
+          Allowed Resource IDs
+          <input
+            id="allowed-resource-ids"
+            placeholder="project/session/interaction IDs, empty for all"
+          >
         </label>
         <label class="full">
           Certificate Fingerprints
@@ -3879,6 +3887,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
           device.display_name || "",
           device.status,
           (device.allowed_scopes || []).join(","),
+          (device.allowed_resource_ids || []).join(",") || "all",
           (device.certificate_fingerprints || []).length,
           device.created_at || "",
           device.last_used_at || "",
@@ -3900,6 +3909,9 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       $("device-id").value = device.device_id;
       $("display-name").value = device.display_name || "";
       $("allowed-scopes").value = (device.allowed_scopes || []).join(",");
+      $("allowed-resource-ids").value = (
+        device.allowed_resource_ids || []
+      ).join(",");
       $("certificate-fingerprints").value = (
         device.certificate_fingerprints || []
       ).join(",");
@@ -3915,6 +3927,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       $("device-id").value = "";
       $("display-name").value = "";
       $("allowed-scopes").value = defaultScopes;
+      $("allowed-resource-ids").value = "";
       $("certificate-fingerprints").value = "";
       $("device-key").value = "";
       $("selected").textContent = "{}";
@@ -3938,6 +3951,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
         display_name: $("display-name").value.trim() || null,
         device_key: $("device-key").value.trim() || null,
         allowed_scopes: csv($("allowed-scopes").value),
+        allowed_resource_ids: csv($("allowed-resource-ids").value),
         certificate_fingerprints: csv($("certificate-fingerprints").value),
         trace_id: "admin-ui-device-upsert",
       };
