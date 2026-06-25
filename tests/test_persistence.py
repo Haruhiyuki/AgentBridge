@@ -407,6 +407,7 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
             DeviceIdentityScope.GROUP_ROLE_MANAGE,
             DeviceIdentityScope.HTTP_API,
             DeviceIdentityScope.POLICY_MANAGE,
+            DeviceIdentityScope.PROJECT_MANAGE,
             DeviceIdentityScope.SESSION_EVENTS_WS,
             DeviceIdentityScope.TERMINAL_CONTROL,
         },
@@ -444,6 +445,7 @@ def test_sqlalchemy_repository_persists_device_identities(tmp_path):
         DeviceIdentityScope.GROUP_ROLE_MANAGE,
         DeviceIdentityScope.HTTP_API,
         DeviceIdentityScope.POLICY_MANAGE,
+        DeviceIdentityScope.PROJECT_MANAGE,
         DeviceIdentityScope.SESSION_EVENTS_WS,
         DeviceIdentityScope.TERMINAL_CONTROL,
     }

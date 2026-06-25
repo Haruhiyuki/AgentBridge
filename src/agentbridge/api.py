@@ -2183,6 +2183,23 @@ def http_api_request_authorized(
 def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
     path = request.url.path.rstrip("/")
     path_segments = path.split("/")
+    method = request.method.upper()
+    if method == "POST" and path == "/api/v1/projects":
+        return DeviceIdentityScope.PROJECT_MANAGE
+    if (
+        method == "POST"
+        and len(path_segments) >= 6
+        and path_segments[:4] == ["", "api", "v1", "projects"]
+        and path_segments[5] == "workspaces"
+    ):
+        return DeviceIdentityScope.PROJECT_MANAGE
+    if (
+        method == "POST"
+        and len(path_segments) >= 6
+        and path_segments[:4] == ["", "api", "v1", "chat-spaces"]
+        and path_segments[5] == "project-bindings"
+    ):
+        return DeviceIdentityScope.PROJECT_MANAGE
     if path == "/api/v1/terminal/lifecycle-monitor/run-once":
         return DeviceIdentityScope.TERMINAL_CONTROL
     if (

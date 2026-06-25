@@ -193,6 +193,7 @@ class DeviceIdentityScope(StrEnum):
     DEVICE_MANAGE = "device_manage"
     POLICY_MANAGE = "policy_manage"
     GROUP_ROLE_MANAGE = "group_role_manage"
+    PROJECT_MANAGE = "project_manage"
     TERMINAL_CONTROL = "terminal_control"
     SESSION_EVENTS_WS = "session_events_ws"
     RENDERED_EVENTS_WS = "rendered_events_ws"

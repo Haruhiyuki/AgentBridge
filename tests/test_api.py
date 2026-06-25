@@ -449,6 +449,136 @@ def test_managed_device_identity_requires_device_manage_scope_for_device_api():
     assert cert_device_api_response.status_code == 403
 
 
+def test_managed_device_identity_requires_project_manage_scope_for_project_writes():
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+
+    create_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api"],
+            "certificate_fingerprints": ["SHA256:AA:BB:CC"],
+            "trace_id": "project-device-create",
+        },
+    )
+    key_headers = {
+        "x-agentbridge-device-id": "readonly-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    list_response = client.get("/api/v1/projects", headers=key_headers)
+    create_project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": maintainer,
+            "name": "Readonly Device Project",
+            "trace_id": "project-device-create-project",
+        },
+        headers=key_headers,
+    )
+    workspace_response = client.post(
+        "/api/v1/projects/project-missing/workspaces",
+        json={
+            "actor": maintainer,
+            "machine_id": "local",
+            "path": "/tmp/repo",
+            "allowed_root": "/tmp",
+            "trace_id": "project-device-workspace",
+        },
+        headers=key_headers,
+    )
+    bind_response = client.post(
+        "/api/v1/chat-spaces/context-missing/project-bindings",
+        json={
+            "actor": maintainer,
+            "project_id": "project-missing",
+            "trace_id": "project-device-bind",
+        },
+        headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
+    )
+
+    assert create_response.status_code == 200
+    assert list_response.status_code == 200
+    assert create_project_response.status_code == 403
+    assert workspace_response.status_code == 403
+    assert bind_response.status_code == 403
+
+
+def test_managed_device_identity_project_manage_scope_allows_project_write_apis(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+
+    create_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "project-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "project_manage"],
+            "trace_id": "project-manager-device-create",
+        },
+    )
+    headers = {
+        "x-agentbridge-device-id": "project-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    create_project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": maintainer,
+            "name": "Managed Device Project",
+            "trace_id": "project-manager-create-project",
+        },
+        headers=headers,
+    )
+    project_id = create_project_response.json().get("id")
+    workspace_response = client.post(
+        f"/api/v1/projects/{project_id}/workspaces",
+        json={
+            "actor": maintainer,
+            "machine_id": "local",
+            "path": str(tmp_path),
+            "allowed_root": str(tmp_path),
+            "trace_id": "project-manager-workspace",
+        },
+        headers=headers,
+    )
+    context_response = client.post(
+        "/api/v1/chat-contexts",
+        json={
+            "bot_instance_id": "bot-test",
+            "platform": "onebot.v11",
+            "chat_space_id": "project-manager-scope",
+        },
+        headers=headers,
+    )
+    bind_response = client.post(
+        f"/api/v1/chat-spaces/{context_response.json()['id']}/project-bindings",
+        json={
+            "actor": maintainer,
+            "project_id": project_id,
+            "alias_in_chat": "managed-device",
+            "trace_id": "project-manager-bind",
+        },
+        headers=headers,
+    )
+
+    assert create_identity_response.status_code == 200
+    assert create_project_response.status_code == 200
+    assert create_project_response.json()["name"] == "Managed Device Project"
+    assert workspace_response.status_code == 200
+    assert workspace_response.json()["project_id"] == project_id
+    assert context_response.status_code == 200
+    assert bind_response.status_code == 200
+    assert bind_response.json() == {"status": "ok"}
+
+
 def test_project_session_admin_ui_serves_dashboard():
     client = TestClient(create_app())
 
@@ -502,6 +632,7 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "device_manage" in html
     assert "policy_manage" in html
     assert "group_role_manage" in html
+    assert "project_manage" in html
     assert "terminal_control" in html
     assert "certificate-fingerprints" in html
     assert "generated-key" in html
