@@ -101,6 +101,10 @@ def created_at_in_range(
     return True
 
 
+def utc_datetime_key(value: datetime) -> str:
+    return aware_utc(value).isoformat(timespec="microseconds")
+
+
 def aware_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)

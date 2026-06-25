@@ -40,8 +40,8 @@ from agentbridge.domain import (
 )
 from agentbridge.storage import (
     InMemoryRepository,
-    created_at_in_range,
     payload_contains_query,
+    utc_datetime_key,
 )
 
 metadata = MetaData()
@@ -195,6 +195,7 @@ audit_events_table = Table(
     Column("position", Integer, nullable=False, unique=True),
     Column("action", String(255), nullable=False, index=True),
     Column("actor_id", String(255), nullable=False, index=True),
+    Column("created_at", String(64), nullable=False, index=True),
     Column("entry_hash", String(128), nullable=False, unique=True),
     Column("payload", JSON, nullable=False),
 )
@@ -213,6 +214,7 @@ semantic_events_table = Table(
     Column("session_id", String(64), nullable=True, index=True),
     Column("turn_id", String(64), nullable=True, index=True),
     Column("interaction_id", String(64), nullable=True, index=True),
+    Column("created_at", String(64), nullable=False, index=True),
     Column("idempotency_key", String(512), nullable=True, unique=True),
     Column("payload", JSON, nullable=False),
     UniqueConstraint("stream_id", "seq", name="uq_semantic_events_stream_seq"),
@@ -440,6 +442,14 @@ class SQLAlchemyRepository(InMemoryRepository):
             stmt = stmt.where(audit_events_table.c.action == action)
         if actor_id is not None:
             stmt = stmt.where(audit_events_table.c.actor_id == actor_id)
+        if created_from is not None:
+            stmt = stmt.where(
+                audit_events_table.c.created_at >= utc_datetime_key(created_from)
+            )
+        if created_to is not None:
+            stmt = stmt.where(
+                audit_events_table.c.created_at <= utc_datetime_key(created_to)
+            )
 
         events: list[AuditEvent] = []
         with self._lock, self.engine.connect() as connection:
@@ -451,11 +461,6 @@ class SQLAlchemyRepository(InMemoryRepository):
                     and (interaction_id is None or event.interaction_id == interaction_id)
                     and (trace_id is None or event.trace_id == trace_id)
                     and payload_contains_query(event.details, payload_query)
-                    and created_at_in_range(
-                        event.created_at,
-                        created_from=created_from,
-                        created_to=created_to,
-                    )
                 ):
                     events.append(event)
                     if len(events) >= max_results:
@@ -495,6 +500,14 @@ class SQLAlchemyRepository(InMemoryRepository):
             stmt = stmt.where(semantic_events_table.c.source == source.value)
         if trace_id is not None:
             stmt = stmt.where(semantic_events_table.c.trace_id == trace_id)
+        if created_from is not None:
+            stmt = stmt.where(
+                semantic_events_table.c.created_at >= utc_datetime_key(created_from)
+            )
+        if created_to is not None:
+            stmt = stmt.where(
+                semantic_events_table.c.created_at <= utc_datetime_key(created_to)
+            )
 
         events: list[SemanticEvent] = []
         with self._lock, self.engine.connect() as connection:
@@ -503,10 +516,6 @@ class SQLAlchemyRepository(InMemoryRepository):
                 if payload_contains_query(
                     event.payload,
                     payload_query,
-                ) and created_at_in_range(
-                    event.created_at,
-                    created_from=created_from,
-                    created_to=created_to,
                 ):
                     events.append(event)
                     if len(events) >= max_results:
@@ -731,6 +740,7 @@ class SQLAlchemyRepository(InMemoryRepository):
                         "position": position,
                         "action": event.action,
                         "actor_id": event.actor_id,
+                        "created_at": utc_datetime_key(event.created_at),
                         "entry_hash": event.entry_hash,
                         "payload": event.model_dump(mode="json"),
                     }
@@ -753,6 +763,7 @@ class SQLAlchemyRepository(InMemoryRepository):
                         "session_id": event.session_id,
                         "turn_id": event.turn_id,
                         "interaction_id": event.interaction_id,
+                        "created_at": utc_datetime_key(event.created_at),
                         "idempotency_key": event.idempotency_key,
                         "payload": event.model_dump(mode="json"),
                     }

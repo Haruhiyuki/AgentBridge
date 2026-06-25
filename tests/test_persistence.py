@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import UTC, timedelta
 from pathlib import Path
 
 from alembic.config import Config
@@ -29,7 +29,7 @@ from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService
 from alembic import command
 
 
-def test_semantic_event_query_column_migration_backfills_payload(tmp_path):
+def test_event_query_column_migrations_backfill_payload(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'migration-backfill.db'}"
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", database_url)
@@ -52,7 +52,40 @@ def test_semantic_event_query_column_migration_backfills_payload(tmp_path):
         "payload": {"text": "legacy"},
         "created_at": "2026-06-25T00:00:00+00:00",
     }
+    legacy_audit_payload = {
+        "id": "aud_legacy",
+        "action": "session.created",
+        "actor_id": "usr_legacy",
+        "outcome": "success",
+        "trace_id": "legacy-audit",
+        "chat_context_id": None,
+        "project_id": "prj_legacy",
+        "session_id": "sess_legacy",
+        "interaction_id": None,
+        "details": {"session_id": "sess_legacy"},
+        "created_at": "2026-06-25T00:01:00Z",
+        "previous_hash": None,
+        "entry_hash": "legacy-entry-hash",
+    }
     with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO audit_events
+                  (id, position, action, actor_id, entry_hash, payload)
+                VALUES
+                  (:id, :position, :action, :actor_id, :entry_hash, :payload)
+                """
+            ),
+            {
+                "id": "aud_legacy",
+                "position": 1,
+                "action": "session.created",
+                "actor_id": "usr_legacy",
+                "entry_hash": "legacy-entry-hash",
+                "payload": json.dumps(legacy_audit_payload),
+            },
+        )
         connection.execute(
             text(
                 """
@@ -79,12 +112,24 @@ def test_semantic_event_query_column_migration_backfills_payload(tmp_path):
         row = connection.execute(
             text(
                 """
-                SELECT source, trace_id, project_id, session_id, turn_id, interaction_id
+                SELECT
+                  source, trace_id, project_id, session_id, turn_id, interaction_id,
+                  created_at
                 FROM semantic_events
                 WHERE id = :id
                 """
             ),
             {"id": "evt_legacy"},
+        ).one()
+        audit_row = connection.execute(
+            text(
+                """
+                SELECT created_at
+                FROM audit_events
+                WHERE id = :id
+                """
+            ),
+            {"id": "aud_legacy"},
         ).one()
 
     assert row.source == "terminal_agent"
@@ -93,6 +138,8 @@ def test_semantic_event_query_column_migration_backfills_payload(tmp_path):
     assert row.session_id == "sess_legacy"
     assert row.turn_id == "turn_legacy"
     assert row.interaction_id == "int_legacy"
+    assert row.created_at == "2026-06-25T00:00:00.000000+00:00"
+    assert audit_row.created_at == "2026-06-25T00:01:00.000000+00:00"
 
 
 def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
@@ -271,6 +318,15 @@ def test_sqlalchemy_repository_lists_filtered_audit_events(tmp_path):
     assert len(newest) == 1
     assert newest[0].session_id == second_session.id
     assert newest[0].trace_id == "audit-session-two"
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        stored_created_at = connection.execute(
+            text("SELECT created_at FROM audit_events WHERE id = :id"),
+            {"id": newest[0].id},
+        ).scalar_one()
+    assert stored_created_at == newest[0].created_at.astimezone(UTC).isoformat(
+        timespec="microseconds"
+    )
 
     windowed = restored.list_audit_events(
         action="session.created",
@@ -397,6 +453,15 @@ def test_sqlalchemy_repository_lists_filtered_semantic_events(tmp_path):
         payload_query="second",
     )
     assert [event.id for event in payload_filtered] == [second_event.id]
+    engine = create_engine(database_url)
+    with engine.connect() as connection:
+        stored_created_at = connection.execute(
+            text("SELECT created_at FROM semantic_events WHERE id = :id"),
+            {"id": second_event.id},
+        ).scalar_one()
+    assert stored_created_at == second_event.created_at.astimezone(UTC).isoformat(
+        timespec="microseconds"
+    )
     windowed = restored.list_semantic_events(
         session_id=second_session.id,
         event_type="assistant.delta",
