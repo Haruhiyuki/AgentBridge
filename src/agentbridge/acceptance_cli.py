@@ -5,6 +5,7 @@ import hashlib
 import json
 import shutil
 import sys
+import zipfile
 from pathlib import Path
 from typing import Literal
 
@@ -12,15 +13,18 @@ from agentbridge.acceptance_evidence import (
     ACCEPTANCE_EVIDENCE_SCHEMA_VERSION,
     ACCEPTANCE_SECTION_STATUSES,
     ACCEPTANCE_SECTIONS,
+    acceptance_artifact_reference,
     acceptance_evidence_summary,
     empty_acceptance_manifest,
     load_acceptance_manifest,
     read_acceptance_evidence,
+    verify_acceptance_artifact,
     write_acceptance_manifest,
 )
 
 ACCEPTANCE_EXIT_INCOMPLETE = 2
 ACCEPTANCE_EXIT_INVALID = 3
+ACCEPTANCE_BUNDLE_SCHEMA_VERSION = "agentbridge.acceptance_bundle.v1"
 AcceptanceOutputFormat = Literal["json", "summary"]
 
 
@@ -94,6 +98,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Exit non-zero only for invalid or failed acceptance evidence",
     )
+
+    bundle_parser = subparsers.add_parser(
+        "bundle",
+        help="Create a portable release-candidate acceptance evidence bundle",
+    )
+    bundle_parser.add_argument("path", type=Path)
+    bundle_parser.add_argument("output", type=Path)
+    bundle_parser.add_argument("--artifact-root", type=Path)
+    bundle_parser.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="Allow bundling not-ready evidence when all referenced artifacts verify",
+    )
+    bundle_parser.add_argument("--force", action="store_true")
     return parser
 
 
@@ -368,6 +386,161 @@ def summarize_manifest(args: argparse.Namespace) -> int:
     )
 
 
+def bundle_manifest(args: argparse.Namespace) -> int:
+    manifest_path = args.path.expanduser()
+    output_path = args.output.expanduser()
+    artifact_root = acceptance_artifact_root(manifest_path, args.artifact_root)
+    if output_path.exists() and not args.force:
+        print(
+            f"acceptance bundle failed: output already exists: {output_path}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        payload = load_acceptance_manifest(manifest_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"acceptance bundle failed: {exc}", file=sys.stderr)
+        return ACCEPTANCE_EXIT_INVALID
+    evidence = read_acceptance_evidence(
+        manifest_path,
+        artifact_root=artifact_root,
+        verify_artifacts=True,
+    )
+    summary = acceptance_evidence_summary(evidence)
+    if not evidence.get("valid"):
+        print(f"acceptance bundle failed: {evidence.get('error')}", file=sys.stderr)
+        return ACCEPTANCE_EXIT_INVALID
+    if int(summary.get("artifact_error_count") or 0) > 0:
+        print("acceptance bundle failed: fix artifact verification errors", file=sys.stderr)
+        return ACCEPTANCE_EXIT_INVALID
+    if not summary.get("ready") and not args.allow_incomplete:
+        print(
+            "acceptance bundle failed: evidence is not ready "
+            "(use --allow-incomplete for a draft bundle)",
+            file=sys.stderr,
+        )
+        return ACCEPTANCE_EXIT_INCOMPLETE
+    try:
+        artifacts = collect_acceptance_bundle_artifacts(payload, artifact_root=artifact_root)
+    except ValueError as exc:
+        print(f"acceptance bundle failed: {exc}", file=sys.stderr)
+        return ACCEPTANCE_EXIT_INVALID
+    manifest_bytes = acceptance_json_bytes(payload)
+    bundle_payload = {
+        "schema_version": ACCEPTANCE_BUNDLE_SCHEMA_VERSION,
+        "manifest": "acceptance-evidence.json",
+        "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "artifact_root": str(artifact_root),
+        "summary": summary,
+        "artifacts": [
+            {
+                "section": artifact["section"],
+                "path": artifact["path"],
+                "archive_path": artifact["archive_path"],
+                "sha256": artifact["sha256"],
+            }
+            for artifact in artifacts
+        ],
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        write_acceptance_bundle_entry(archive, "acceptance-evidence.json", manifest_bytes)
+        write_acceptance_bundle_entry(
+            archive,
+            "acceptance-bundle.json",
+            acceptance_json_bytes(bundle_payload),
+        )
+        for artifact in artifacts:
+            write_acceptance_bundle_entry(
+                archive,
+                str(artifact["archive_path"]),
+                Path(str(artifact["resolved_path"])).read_bytes(),
+            )
+    print(
+        f"created {output_path} ready={str(bool(summary.get('ready'))).lower()} "
+        f"artifacts={len(artifacts)}"
+    )
+    return 0
+
+
+def acceptance_artifact_root(manifest_path: Path, artifact_root: Path | None) -> Path:
+    if artifact_root is not None and str(artifact_root).strip():
+        return artifact_root.expanduser().resolve(strict=False)
+    return manifest_path.expanduser().parent.resolve(strict=False)
+
+
+def collect_acceptance_bundle_artifacts(
+    payload: dict[str, object],
+    *,
+    artifact_root: Path,
+) -> list[dict[str, object]]:
+    sections = payload.get("sections")
+    if not isinstance(sections, dict):
+        raise ValueError("sections must be a JSON object")
+    artifacts_by_archive_path: dict[str, dict[str, object]] = {}
+    for section_id in ACCEPTANCE_SECTIONS:
+        section = sections.get(section_id)
+        if not isinstance(section, dict):
+            continue
+        raw_artifacts = section.get("artifacts")
+        if not isinstance(raw_artifacts, list):
+            continue
+        for raw_artifact in raw_artifacts:
+            reference = acceptance_artifact_reference(raw_artifact)
+            if reference is None:
+                raise ValueError(f"section {section_id} has an invalid artifact reference")
+            verification = verify_acceptance_artifact(
+                str(reference["path"]),
+                expected_sha256=reference.get("sha256"),
+                artifact_root=artifact_root,
+            )
+            if verification.get("status") != "verified":
+                raise ValueError(
+                    f"section {section_id} artifact {reference['path']} "
+                    f"status={verification.get('status')}"
+                )
+            resolved_path = Path(str(verification["resolved_path"]))
+            archive_path = "artifacts/" + resolved_path.relative_to(artifact_root).as_posix()
+            sha256 = str(verification["actual_sha256"])
+            existing = artifacts_by_archive_path.get(archive_path)
+            if existing is not None:
+                if existing.get("sha256") != sha256:
+                    raise ValueError(f"artifact archive path collision: {archive_path}")
+                continue
+            artifacts_by_archive_path[archive_path] = {
+                "section": section_id,
+                "path": str(reference["path"]),
+                "resolved_path": str(resolved_path),
+                "archive_path": archive_path,
+                "sha256": sha256,
+            }
+    return list(artifacts_by_archive_path.values())
+
+
+def acceptance_json_bytes(payload: object) -> bytes:
+    return (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def write_acceptance_bundle_entry(
+    archive: zipfile.ZipFile,
+    archive_path: str,
+    content: bytes,
+) -> None:
+    info = zipfile.ZipInfo(archive_path)
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.date_time = (1980, 1, 1, 0, 0, 0)
+    info.external_attr = 0o644 << 16
+    archive.writestr(info, content)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -379,6 +552,8 @@ def main(argv: list[str] | None = None) -> int:
         return attach_artifact(args)
     if args.command == "summary":
         return summarize_manifest(args)
+    if args.command == "bundle":
+        return bundle_manifest(args)
     parser.error(f"unknown command {args.command}")
     return 1
 

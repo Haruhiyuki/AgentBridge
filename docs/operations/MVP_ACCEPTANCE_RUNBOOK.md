@@ -55,7 +55,9 @@ When `AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS=true`, artifact paths are resolved
 root escapes, non-files, or sha256 mismatches fail the relevant section. Prefer
 `agentbridge-acceptance attach-artifact` for release-candidate evidence because it copies
 the source file into the artifact root, computes the sha256 digest, and writes the
-digest-backed manifest reference in one step.
+digest-backed manifest reference in one step. After all sections are signed off,
+`agentbridge-acceptance bundle` packages the manifest, a bundle index, and verified
+artifact files into a portable ZIP for release review.
 
 ```bash
 uv run agentbridge-acceptance init "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
@@ -67,6 +69,9 @@ uv run agentbridge-acceptance attach-artifact "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_
 uv run agentbridge-acceptance summary "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
   --verify-artifacts --artifact-root "$AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT" \
   --fail-on-warn
+uv run agentbridge-acceptance bundle "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
+  ./agentbridge-mvp-acceptance-bundle.zip \
+  --artifact-root "$AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT"
 ```
 
 ## Acceptance Evidence Matrix
@@ -97,6 +102,8 @@ Collect these artifacts for a release candidate:
   fallback text, and any native platform actions.
 - Terminal lifecycle evidence showing start, takeover, release, restart/recovery, and
   event-outbox flush behavior.
+- The `agentbridge-acceptance bundle` ZIP containing the signed-off manifest, bundle
+  index, and verified artifact files.
 
 ## Current Boundary
 

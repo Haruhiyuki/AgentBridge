@@ -1,7 +1,9 @@
 import hashlib
 import json
+import zipfile
 
 from agentbridge.acceptance_cli import (
+    ACCEPTANCE_BUNDLE_SCHEMA_VERSION,
     ACCEPTANCE_EXIT_INCOMPLETE,
     ACCEPTANCE_EXIT_INVALID,
     main,
@@ -310,6 +312,175 @@ def test_acceptance_cli_summary_verifies_artifact_hashes(tmp_path, capsys):
     assert result == 0
     assert "ready=true passed=8 failed=0 blocked=0 not_run=0 missing=0 invalid=0" in output
     assert "artifact_errors=0" in output
+
+
+def test_acceptance_cli_bundle_creates_portable_verified_zip(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    bundle_path = tmp_path / "acceptance-bundle.zip"
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+    sections = ("34.1", "34.2", "34.3", "34.4", "34.5", "34.6", "34.7", "34.8")
+    for section in sections:
+        source = tmp_path / f"{section}.json"
+        source.write_text(f'{{"section":"{section}"}}', encoding="utf-8")
+        assert (
+            main(
+                [
+                    "attach-artifact",
+                    str(manifest),
+                    section,
+                    str(source),
+                    "--artifact-root",
+                    str(artifact_root),
+                    "--status",
+                    "passed",
+                ]
+            )
+            == 0
+        )
+    capsys.readouterr()
+
+    result = main(
+        [
+            "bundle",
+            str(manifest),
+            str(bundle_path),
+            "--artifact-root",
+            str(artifact_root),
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "ready=true artifacts=8" in output
+    with zipfile.ZipFile(bundle_path) as bundle:
+        names = set(bundle.namelist())
+        assert "acceptance-evidence.json" in names
+        assert "acceptance-bundle.json" in names
+        assert "artifacts/native_session/34.1.json" in names
+        bundle_index = json.loads(bundle.read("acceptance-bundle.json"))
+        manifest_payload = json.loads(bundle.read("acceptance-evidence.json"))
+        bundled_native = bundle.read("artifacts/native_session/34.1.json")
+
+    assert bundle_index["schema_version"] == ACCEPTANCE_BUNDLE_SCHEMA_VERSION
+    assert bundle_index["summary"]["ready"] is True
+    assert len(bundle_index["artifacts"]) == 8
+    assert manifest_payload["sections"]["34.1"]["status"] == "passed"
+    assert bundled_native == b'{"section":"34.1"}'
+
+
+def test_acceptance_cli_bundle_refuses_incomplete_evidence_by_default(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    bundle_path = tmp_path / "acceptance-bundle.zip"
+    source = tmp_path / "native-session-run.json"
+    source.write_text("{}", encoding="utf-8")
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "attach-artifact",
+                str(manifest),
+                "34.1",
+                str(source),
+                "--artifact-root",
+                str(artifact_root),
+                "--status",
+                "passed",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    result = main(
+        [
+            "bundle",
+            str(manifest),
+            str(bundle_path),
+            "--artifact-root",
+            str(artifact_root),
+        ]
+    )
+
+    assert result == ACCEPTANCE_EXIT_INCOMPLETE
+    assert "evidence is not ready" in capsys.readouterr().err
+    assert not bundle_path.exists()
+
+
+def test_acceptance_cli_bundle_allows_draft_incomplete_evidence(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    bundle_path = tmp_path / "acceptance-draft.zip"
+    source = tmp_path / "native-session-run.json"
+    source.write_text("{}", encoding="utf-8")
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "attach-artifact",
+                str(manifest),
+                "34.1",
+                str(source),
+                "--artifact-root",
+                str(artifact_root),
+                "--status",
+                "passed",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    result = main(
+        [
+            "bundle",
+            str(manifest),
+            str(bundle_path),
+            "--artifact-root",
+            str(artifact_root),
+            "--allow-incomplete",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "ready=false artifacts=1" in output
+    with zipfile.ZipFile(bundle_path) as bundle:
+        bundle_index = json.loads(bundle.read("acceptance-bundle.json"))
+    assert bundle_index["summary"]["ready"] is False
+    assert len(bundle_index["artifacts"]) == 1
+
+
+def test_acceptance_cli_bundle_fails_for_missing_artifact(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    bundle_path = tmp_path / "acceptance-bundle.zip"
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "set-section",
+                str(manifest),
+                "34.1",
+                "--status",
+                "passed",
+                "--artifact",
+                "missing.json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    result = main(["bundle", str(manifest), str(bundle_path), "--allow-incomplete"])
+
+    assert result == ACCEPTANCE_EXIT_INVALID
+    assert "fix artifact verification errors" in capsys.readouterr().err
+    assert not bundle_path.exists()
 
 
 def test_acceptance_cli_summary_fails_for_missing_verified_artifact(tmp_path, capsys):
