@@ -15,6 +15,7 @@ from agentbridge.acceptance_evidence import (
     ACCEPTANCE_SECTIONS,
     acceptance_artifact_reference,
     acceptance_evidence_summary,
+    acceptance_section_checklist_manifest,
     empty_acceptance_manifest,
     load_acceptance_manifest,
     read_acceptance_evidence,
@@ -74,6 +75,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     set_parser.add_argument("--notes")
     set_parser.add_argument("--replace-artifacts", action="store_true")
+
+    checklist_parser = subparsers.add_parser(
+        "set-checklist",
+        help="Update a manual acceptance checklist item in a manifest",
+    )
+    checklist_parser.add_argument("path", type=Path)
+    checklist_parser.add_argument("section", choices=sorted(ACCEPTANCE_SECTIONS))
+    checklist_parser.add_argument(
+        "item",
+        help="Checklist item id for the section, or 'all' to update every item",
+    )
+    checklist_parser.add_argument(
+        "--status",
+        choices=sorted(ACCEPTANCE_SECTION_STATUSES),
+        required=True,
+    )
+    checklist_parser.add_argument("--notes")
 
     attach_parser = subparsers.add_parser(
         "attach-artifact",
@@ -234,6 +252,25 @@ def set_section(args: argparse.Namespace) -> int:
     return 0
 
 
+def set_checklist(args: argparse.Namespace) -> int:
+    path = args.path.expanduser()
+    try:
+        payload = load_acceptance_manifest(path)
+        updated_items = update_acceptance_manifest_checklist(
+            payload,
+            section=args.section,
+            item=args.item,
+            status=args.status,
+            notes=args.notes,
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"acceptance checklist update failed: {exc}", file=sys.stderr)
+        return 1
+    write_acceptance_manifest(path, payload)
+    print(f"updated {len(updated_items)} checklist item(s) in {args.section} in {path}")
+    return 0
+
+
 def attach_artifact(args: argparse.Namespace) -> int:
     manifest_path = args.path.expanduser()
     source_path = args.source.expanduser()
@@ -370,6 +407,81 @@ def update_acceptance_manifest_section(
     sections[section] = section_payload
 
 
+def update_acceptance_manifest_checklist(
+    payload: dict[str, object],
+    *,
+    section: str,
+    item: str,
+    status: str,
+    notes: str | None,
+) -> list[str]:
+    sections = payload.setdefault("sections", {})
+    if not isinstance(sections, dict):
+        raise ValueError("sections must be a JSON object")
+    current_section = sections.get(section)
+    section_payload = current_section if isinstance(current_section, dict) else {}
+    checklist = merge_acceptance_checklist(section, section_payload.get("checklist"))
+    expected_ids = {str(entry["id"]) for entry in checklist}
+    requested_item = item.strip()
+    if requested_item == "all":
+        selected_ids = expected_ids
+    elif requested_item in expected_ids:
+        selected_ids = {requested_item}
+    else:
+        raise ValueError(
+            f"unknown checklist item for section {section}: {requested_item or '<empty>'}"
+        )
+    for entry in checklist:
+        if str(entry["id"]) not in selected_ids:
+            continue
+        entry["status"] = status
+        if notes is not None:
+            entry["notes"] = notes
+    section_payload = {
+        **section_payload,
+        "checklist": checklist,
+    }
+    sections[section] = section_payload
+    return sorted(selected_ids)
+
+
+def merge_acceptance_checklist(
+    section: str,
+    raw_checklist: object,
+) -> list[dict[str, str]]:
+    defaults = acceptance_section_checklist_manifest(section)
+    existing_by_id: dict[str, dict[str, object]] = {}
+    if isinstance(raw_checklist, list):
+        for raw_item in raw_checklist:
+            if not isinstance(raw_item, dict):
+                continue
+            raw_id = raw_item.get("id")
+            if isinstance(raw_id, str) and raw_id.strip():
+                existing_by_id[raw_id.strip()] = raw_item
+    merged: list[dict[str, str]] = []
+    for default_item in defaults:
+        item_id = default_item["id"]
+        existing = existing_by_id.get(item_id, {})
+        raw_status = existing.get("status")
+        raw_notes = existing.get("notes")
+        merged.append(
+            {
+                **default_item,
+                "status": (
+                    raw_status.strip().lower()
+                    if isinstance(raw_status, str) and raw_status.strip()
+                    else default_item["status"]
+                ),
+                "notes": (
+                    raw_notes
+                    if isinstance(raw_notes, str)
+                    else default_item["notes"]
+                ),
+            }
+        )
+    return merged
+
+
 def read_acceptance_admin_export_schema(source_path: Path) -> str:
     try:
         payload = json.loads(source_path.read_text(encoding="utf-8"))
@@ -491,9 +603,14 @@ def acceptance_summary_text(evidence: dict[str, object]) -> str:
             status = section_payload.get("status", "missing")
             artifacts = section_payload.get("artifact_count", 0)
             artifact_errors = section_payload.get("artifact_error_count", 0)
+            checklist_passed = section_payload.get("checklist_passed_count", 0)
+            checklist_total = section_payload.get("checklist_total", 0)
+            checklist_errors = section_payload.get("checklist_error_count", 0)
             lines.append(
                 f"{section_id} status={status} artifacts={artifacts} "
-                f"artifact_errors={artifact_errors}"
+                f"artifact_errors={artifact_errors} "
+                f"checklist={checklist_passed}/{checklist_total} "
+                f"checklist_errors={checklist_errors}"
             )
     return "\n".join(lines)
 
@@ -937,12 +1054,68 @@ def verify_acceptance_bundle_manifest(
                 artifact_count += 1
         elif raw_artifacts is not None:
             errors.append(f"section_{section_id}_artifacts_must_be_list")
-        if raw_status != "passed" or artifact_count <= 0:
+        checklist_ready = verify_acceptance_bundle_section_checklist(
+            section_id,
+            section.get("checklist"),
+            errors=errors,
+        )
+        if raw_status != "passed" or artifact_count <= 0 or not checklist_ready:
             ready = False
     for artifact_path in artifact_index:
         if artifact_path not in referenced_paths:
             errors.append(f"bundle_artifact_unreferenced:{artifact_path}")
     return ready
+
+
+def verify_acceptance_bundle_section_checklist(
+    section_id: str,
+    raw_checklist: object,
+    *,
+    errors: list[str],
+) -> bool:
+    expected_ids = {
+        str(item["id"])
+        for item in ACCEPTANCE_SECTIONS[section_id]["checklist"]
+    }
+    if not isinstance(raw_checklist, list):
+        return False
+    seen_ids: set[str] = set()
+    passed_ids: set[str] = set()
+    checklist_ready = True
+    for raw_item in raw_checklist:
+        if not isinstance(raw_item, dict):
+            errors.append(f"section_{section_id}_checklist_item_invalid")
+            checklist_ready = False
+            continue
+        raw_id = raw_item.get("id")
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            errors.append(f"section_{section_id}_checklist_item_id_missing")
+            checklist_ready = False
+            continue
+        item_id = raw_id.strip()
+        if item_id not in expected_ids:
+            errors.append(f"section_{section_id}_checklist_item_unknown:{item_id}")
+            checklist_ready = False
+            continue
+        if item_id in seen_ids:
+            errors.append(f"section_{section_id}_checklist_item_duplicate:{item_id}")
+            checklist_ready = False
+            continue
+        seen_ids.add(item_id)
+        raw_status = raw_item.get("status")
+        if not isinstance(raw_status, str):
+            checklist_ready = False
+            continue
+        status = raw_status.strip().lower()
+        if status not in ACCEPTANCE_SECTION_STATUSES:
+            errors.append(f"section_{section_id}_checklist_item_status_invalid:{item_id}")
+            checklist_ready = False
+            continue
+        if status == "passed":
+            passed_ids.add(item_id)
+        else:
+            checklist_ready = False
+    return checklist_ready and passed_ids == expected_ids
 
 
 def acceptance_bundle_relative_path(raw_path: str) -> bool:
@@ -994,6 +1167,8 @@ def main(argv: list[str] | None = None) -> int:
         return init_manifest(args)
     if args.command == "set-section":
         return set_section(args)
+    if args.command == "set-checklist":
+        return set_checklist(args)
     if args.command == "attach-artifact":
         return attach_artifact(args)
     if args.command == "attach-admin-export":

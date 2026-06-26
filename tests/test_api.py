@@ -15,6 +15,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from fastapi.testclient import TestClient
 
 from agentbridge.acceptance_cli import main as acceptance_main
+from agentbridge.acceptance_evidence import acceptance_section_checklist_manifest
 from agentbridge.api import ACCEPTANCE_EVIDENCE_SCHEMA_VERSION, create_app
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
@@ -176,6 +177,19 @@ def create_acceptance_bundle_fixture(
             )
             == 0
         )
+        assert (
+            acceptance_main(
+                [
+                    "set-checklist",
+                    str(manifest),
+                    section,
+                    "all",
+                    "--status",
+                    "passed",
+                ]
+            )
+            == 0
+        )
     bundle_args = [
         "bundle",
         str(manifest),
@@ -187,6 +201,70 @@ def create_acceptance_bundle_fixture(
         bundle_args.append("--allow-incomplete")
     assert acceptance_main(bundle_args) == 0
     return manifest, bundle
+
+
+def passed_acceptance_checklist(section: str) -> list[dict[str, str]]:
+    checklist = acceptance_section_checklist_manifest(section)
+    for item in checklist:
+        item["status"] = "passed"
+    return checklist
+
+
+def test_acceptance_cli_updates_checklist_evidence(tmp_path):
+    manifest = tmp_path / "acceptance-evidence.json"
+    assert (
+        acceptance_main(
+            [
+                "init",
+                str(manifest),
+                "--checked-at",
+                "2026-06-27T00:00:00Z",
+            ]
+        )
+        == 0
+    )
+
+    assert (
+        acceptance_main(
+            [
+                "set-checklist",
+                str(manifest),
+                "34.1",
+                "real_pty_claude",
+                "--status",
+                "passed",
+                "--notes",
+                "Verified against local macOS Terminal.",
+            ]
+        )
+        == 0
+    )
+    assert (
+        acceptance_main(
+            [
+                "set-checklist",
+                str(manifest),
+                "34.2",
+                "all",
+                "--status",
+                "passed",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    native_checklist = {
+        item["id"]: item for item in payload["sections"]["34.1"]["checklist"]
+    }
+    takeover_checklist = payload["sections"]["34.2"]["checklist"]
+    assert native_checklist["real_pty_claude"]["status"] == "passed"
+    assert (
+        native_checklist["real_pty_claude"]["notes"]
+        == "Verified against local macOS Terminal."
+    )
+    assert native_checklist["bot_restart_same_cli"]["status"] == "not_run"
+    assert {item["status"] for item in takeover_checklist} == {"passed"}
 
 
 def test_acceptance_cli_attaches_admin_export_evidence(tmp_path):
@@ -506,6 +584,7 @@ def test_readiness_endpoint_reports_acceptance_evidence_manifest(monkeypatch, tm
         section: {
             "status": "passed",
             "artifacts": [f"artifacts/{section.replace('.', '_')}.json"],
+            "checklist": passed_acceptance_checklist(section),
             "notes": f"Section {section} passed in staging.",
         }
         for section in (
@@ -544,6 +623,47 @@ def test_readiness_endpoint_reports_acceptance_evidence_manifest(monkeypatch, tm
         payload["sources"]["acceptance_evidence"]["sections"]["34.1"]["artifact_count"]
         == 1
     )
+    assert (
+        payload["sources"]["acceptance_evidence"]["sections"]["34.1"][
+            "checklist_passed_count"
+        ]
+        == 3
+    )
+
+
+def test_readiness_endpoint_warns_for_incomplete_acceptance_checklist(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_file = tmp_path / "acceptance-evidence.json"
+    evidence_file.write_text(
+        json.dumps(
+            {
+                "schema_version": ACCEPTANCE_EVIDENCE_SCHEMA_VERSION,
+                "sections": {
+                    "34.1": {
+                        "status": "passed",
+                        "artifacts": ["artifacts/native-session.json"],
+                        "checklist": acceptance_section_checklist_manifest("34.1"),
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", str(evidence_file))
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    assert payload["status"] == "degraded"
+    assert checks["acceptance.evidence_manifest"]["status"] == "pass"
+    assert checks["acceptance.native_session"]["status"] == "warn"
+    assert checks["acceptance.native_session"]["evidence"]["checklist_passed_count"] == 0
+    assert "checklist item passed" in checks["acceptance.native_session"]["next_step"]
 
 
 def test_readiness_endpoint_fails_for_invalid_acceptance_evidence_manifest(
@@ -578,6 +698,7 @@ def test_readiness_endpoint_flags_incomplete_acceptance_section(monkeypatch, tmp
                     "34.1": {
                         "status": "passed",
                         "artifacts": ["artifacts/native-session.json"],
+                        "checklist": passed_acceptance_checklist("34.1"),
                     },
                     "34.8": {"status": "failed", "artifacts": ["artifacts/recovery.json"]},
                 },
@@ -611,6 +732,7 @@ def test_readiness_endpoint_fails_for_missing_verified_acceptance_artifact(
         section: {
             "status": "passed",
             "artifacts": [f"{section.replace('.', '_')}.json"],
+            "checklist": passed_acceptance_checklist(section),
         }
         for section in (
             "34.1",

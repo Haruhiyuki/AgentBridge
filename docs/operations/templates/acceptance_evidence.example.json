@@ -1,47 +1,207 @@
 {
-  "schema_version": "agentbridge.acceptance_evidence.v1",
   "checked_at": "2026-06-27T00:00:00Z",
   "environment": "staging",
+  "schema_version": "agentbridge.acceptance_evidence.v1",
   "sections": {
     "34.1": {
-      "status": "not_run",
       "artifacts": [],
-      "notes": "Native Claude Code PTY, no claude -p, Bot restart, and 20-turn Session run."
+      "checklist": [
+        {
+          "id": "real_pty_claude",
+          "label": "Start Claude Code in a real PTY without claude -p.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "bot_restart_same_cli",
+          "label": "Keep the same CLI alive across a Bot restart.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "twenty_turn_session",
+          "label": "Complete 20 consecutive turns in one Session.",
+          "notes": "",
+          "status": "not_run"
+        }
+      ],
+      "notes": "Native Claude Code PTY, no claude -p, Bot restart, and 20-turn Session run.",
+      "status": "not_run"
     },
     "34.2": {
-      "status": "not_run",
       "artifacts": [],
-      "notes": "Visible terminal, human lease takeover, Bot input blocking, release, and no crossed input."
+      "checklist": [
+        {
+          "id": "visible_terminal_window",
+          "label": "Open a local terminal window on the target OS with native TUI visible.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "human_takeover_blocks_bot",
+          "label": "Confirm first local key acquires the human lease and Bot input queues.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "release_no_crossed_input",
+          "label": "Release control back to Bot and confirm no crossed input.",
+          "notes": "",
+          "status": "not_run"
+        }
+      ],
+      "notes": "Visible terminal, human lease takeover, Bot input blocking, release, and no crossed input.",
+      "status": "not_run"
     },
     "34.3": {
-      "status": "not_run",
       "artifacts": [],
-      "notes": "OneBot group create/bind, incremental answers, tool progress, questions, approvals, fallback text, and long code."
+      "checklist": [
+        {
+          "id": "onebot_group_binding",
+          "label": "Create and bind a Session in a real OneBot V11 group.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "incremental_answer_tool_progress",
+          "label": "Observe incremental answers and tool progress on the Bot platform.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "interactions_and_long_code",
+          "label": "Answer questions, approve or deny requests, and confirm long code formatting.",
+          "notes": "",
+          "status": "not_run"
+        }
+      ],
+      "notes": "OneBot group create/bind, incremental answers, tool progress, questions, approvals, fallback text, and long code.",
+      "status": "not_run"
     },
     "34.4": {
-      "status": "not_run",
       "artifacts": [],
-      "notes": "Group role auth, callback re-authorization, Admin review, approval audit, and workdir restrictions."
+      "checklist": [
+        {
+          "id": "group_role_mapping",
+          "label": "Validate real group member role mappings.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "callback_reauthorization",
+          "label": "Confirm button callback re-authorization with platform user IDs.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "admin_audit_workdir",
+          "label": "Review approvals in Admin and verify workdir restrictions.",
+          "notes": "",
+          "status": "not_run"
+        }
+      ],
+      "notes": "Group role auth, callback re-authorization, Admin review, approval audit, and workdir restrictions.",
+      "status": "not_run"
     },
     "34.5": {
-      "status": "not_run",
       "artifacts": [],
-      "notes": "Three projects in one group, default project, project commands, allowed roots, quotas, and Admin view."
+      "checklist": [
+        {
+          "id": "three_projects_bound",
+          "label": "Bind at least three projects in one Bot chat.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "unique_default_project",
+          "label": "Set one unique default project.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "project_commands",
+          "label": "Verify /agent project list/use/info with names, aliases, and short IDs.",
+          "notes": "",
+          "status": "not_run"
+        }
+      ],
+      "notes": "Three projects in one group, default project, project commands, allowed roots, quotas, and Admin view.",
+      "status": "not_run"
     },
     "34.6": {
-      "status": "not_run",
       "artifacts": [],
-      "notes": "Three independent Sessions, session commands, unsafe ambiguity handling, queues, restart recovery, and no cross-write."
+      "checklist": [
+        {
+          "id": "three_concurrent_sessions",
+          "label": "Run at least three concurrent Sessions under one project.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "restart_switching",
+          "label": "Restart Bot or control clients and verify session switching.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "no_cross_write",
+          "label": "Confirm switching never closes or cross-writes other Sessions.",
+          "notes": "",
+          "status": "not_run"
+        }
+      ],
+      "notes": "Three independent Sessions, session commands, unsafe ambiguity handling, queues, restart recovery, and no cross-write.",
+      "status": "not_run"
     },
     "34.7": {
-      "status": "not_run",
       "artifacts": [],
-      "notes": "OneBot /agent commands, unified invocations, auth, idempotency, interaction fallback, trace IDs, and unknown commands."
+      "checklist": [
+        {
+          "id": "onebot_text_commands",
+          "label": "Confirm OneBot text /agent commands in the deployed adapter.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "action_callbacks",
+          "label": "Confirm action callbacks route through the deployed adapter.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "missing_argument_recovery",
+          "label": "Verify missing-argument recovery paths.",
+          "notes": "",
+          "status": "not_run"
+        }
+      ],
+      "notes": "OneBot /agent commands, unified invocations, auth, idempotency, interaction fallback, trace IDs, and unknown commands.",
+      "status": "not_run"
     },
     "34.8": {
-      "status": "not_run",
       "artifacts": [],
-      "notes": "Control Plane disconnect, event replay, old epoch rejection, interaction expiry, and Bot retry/degradation."
+      "checklist": [
+        {
+          "id": "control_plane_disconnect_reconnect",
+          "label": "Disconnect and reconnect the Control Plane from a running local CLI.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "event_replay",
+          "label": "Replay missed events after reconnect.",
+          "notes": "",
+          "status": "not_run"
+        },
+        {
+          "id": "os_terminal_recovery",
+          "label": "Validate the OS-specific terminal backend recovery path used in production.",
+          "notes": "",
+          "status": "not_run"
+        }
+      ],
+      "notes": "Control Plane disconnect, event replay, old epoch rejection, interaction expiry, and Bot retry/degradation.",
+      "status": "not_run"
     }
   }
 }

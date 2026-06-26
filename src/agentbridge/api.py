@@ -1261,26 +1261,48 @@ def readiness_acceptance_checks(
         section_evidence = section if isinstance(section, dict) else {}
         section_status = str(section_evidence.get("status") or "missing")
         artifact_count = int(section_evidence.get("artifact_count") or 0)
-        if section_status == "passed" and artifact_count > 0:
-            if int(section_evidence.get("artifact_error_count") or 0) > 0:
-                status = "fail"
-                next_step = (
-                    f"Fix missing, invalid, or hash-mismatched artifacts for "
-                    f"design-document section {section_id}."
-                )
-            else:
-                status = "pass"
-                next_step = None
+        artifact_error_count = int(section_evidence.get("artifact_error_count") or 0)
+        checklist_total = int(section_evidence.get("checklist_total") or 0)
+        checklist_passed = int(section_evidence.get("checklist_passed_count") or 0)
+        checklist_error_count = int(section_evidence.get("checklist_error_count") or 0)
+        checklist_complete = checklist_total > 0 and checklist_passed == checklist_total
+        if (
+            section_status == "passed"
+            and artifact_count > 0
+            and artifact_error_count <= 0
+            and checklist_complete
+            and checklist_error_count <= 0
+        ):
+            status = "pass"
+            next_step = None
         elif section_status == "failed":
             status = "fail"
             next_step = (
                 f"Resolve the failed design-document section {section_id} acceptance "
                 "run and update the evidence manifest."
             )
+        elif artifact_error_count > 0:
+            status = "fail"
+            next_step = (
+                f"Fix missing, invalid, or hash-mismatched artifacts for "
+                f"design-document section {section_id}."
+            )
+        elif checklist_error_count > 0:
+            status = "fail"
+            next_step = (
+                f"Fix malformed checklist entries for design-document section "
+                f"{section_id}."
+            )
         elif not bool(section_evidence.get("status_valid", True)):
             status = "fail"
             next_step = (
                 f"Use one of passed, failed, blocked, or not_run for section {section_id}."
+            )
+        elif not checklist_complete:
+            status = "warn"
+            next_step = (
+                f"Mark every checklist item passed for design-document section "
+                f"{section_id}."
             )
         else:
             status = "warn"

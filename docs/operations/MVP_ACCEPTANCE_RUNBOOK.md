@@ -48,9 +48,11 @@ devices, or fingerprint sources that do not yield a usable credential are failur
 
 Manual acceptance evidence uses the `agentbridge.acceptance_evidence.v1` manifest
 schema. Start from `docs/operations/templates/acceptance_evidence.example.json`, set
-each design-document section `34.1` through `34.8` to `passed`, and attach at least one
-artifact reference per section. Readiness treats a missing manifest as a warning, an
-unreadable or malformed manifest as a failure, and any failed section as a failure.
+each design-document section `34.1` through `34.8` to `passed`, mark every section
+checklist item `passed`, and attach at least one artifact reference per section.
+Readiness treats a missing manifest as a warning, an unreadable or malformed manifest as
+a failure, any failed section as a failure, and incomplete checklist items as warnings
+until they are signed off.
 When `AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS=true`, artifact paths are resolved under
 `AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT` or the manifest directory, and missing files,
 root escapes, non-files, or sha256 mismatches fail the relevant section. Prefer
@@ -92,6 +94,9 @@ uv run agentbridge-acceptance attach-admin-export "$AGENTBRIDGE_ACCEPTANCE_EVIDE
   34.3 ./acceptance/admin-bot-delivery.json \
   --artifact-root "$AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT" \
   --status passed --notes "Bot Delivery Admin export captured."
+uv run agentbridge-acceptance set-checklist "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
+  34.3 onebot_group_binding \
+  --status passed --notes "Bound the staging OneBot V11 group."
 uv run agentbridge-acceptance summary "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
   --verify-artifacts --artifact-root "$AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT" \
   --fail-on-warn
@@ -121,7 +126,8 @@ Collect these artifacts for a release candidate:
 - `agentbridge-readiness --format json` output and `--format actions --fail-on-warn`
   exit status.
 - `AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE` manifest with every design-document section
-  from `34.1` through `34.8` marked `passed` and backed by artifact references.
+  from `34.1` through `34.8` marked `passed`, every section checklist item marked
+  `passed`, and each section backed by artifact references.
 - Admin screenshots or exports for System Health, Project/Session, Interaction,
   Terminal Lifecycle, Audit/Event, Device Identity, and Bot Delivery pages.
   The System Health page's `Export JSON` action captures the current endpoint checks,

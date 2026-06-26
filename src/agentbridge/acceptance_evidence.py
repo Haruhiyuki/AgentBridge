@@ -11,12 +11,40 @@ ACCEPTANCE_SECTIONS = {
     "34.1": {
         "slug": "native_session",
         "notes": "Native Claude Code PTY, no claude -p, Bot restart, and 20-turn Session run.",
+        "checklist": (
+            {
+                "id": "real_pty_claude",
+                "label": "Start Claude Code in a real PTY without claude -p.",
+            },
+            {
+                "id": "bot_restart_same_cli",
+                "label": "Keep the same CLI alive across a Bot restart.",
+            },
+            {
+                "id": "twenty_turn_session",
+                "label": "Complete 20 consecutive turns in one Session.",
+            },
+        ),
     },
     "34.2": {
         "slug": "visible_terminal_takeover",
         "notes": (
             "Visible terminal, human lease takeover, Bot input blocking, release, "
             "and no crossed input."
+        ),
+        "checklist": (
+            {
+                "id": "visible_terminal_window",
+                "label": "Open a local terminal window on the target OS with native TUI visible.",
+            },
+            {
+                "id": "human_takeover_blocks_bot",
+                "label": "Confirm first local key acquires the human lease and Bot input queues.",
+            },
+            {
+                "id": "release_no_crossed_input",
+                "label": "Release control back to Bot and confirm no crossed input.",
+            },
         ),
     },
     "34.3": {
@@ -25,12 +53,43 @@ ACCEPTANCE_SECTIONS = {
             "OneBot group create/bind, incremental answers, tool progress, questions, "
             "approvals, fallback text, and long code."
         ),
+        "checklist": (
+            {
+                "id": "onebot_group_binding",
+                "label": "Create and bind a Session in a real OneBot V11 group.",
+            },
+            {
+                "id": "incremental_answer_tool_progress",
+                "label": "Observe incremental answers and tool progress on the Bot platform.",
+            },
+            {
+                "id": "interactions_and_long_code",
+                "label": (
+                    "Answer questions, approve or deny requests, and confirm long "
+                    "code formatting."
+                ),
+            },
+        ),
     },
     "34.4": {
         "slug": "permissions_management",
         "notes": (
             "Group role auth, callback re-authorization, Admin review, approval audit, "
             "and workdir restrictions."
+        ),
+        "checklist": (
+            {
+                "id": "group_role_mapping",
+                "label": "Validate real group member role mappings.",
+            },
+            {
+                "id": "callback_reauthorization",
+                "label": "Confirm button callback re-authorization with platform user IDs.",
+            },
+            {
+                "id": "admin_audit_workdir",
+                "label": "Review approvals in Admin and verify workdir restrictions.",
+            },
         ),
     },
     "34.5": {
@@ -39,12 +98,40 @@ ACCEPTANCE_SECTIONS = {
             "Three projects in one group, default project, project commands, allowed "
             "roots, quotas, and Admin view."
         ),
+        "checklist": (
+            {
+                "id": "three_projects_bound",
+                "label": "Bind at least three projects in one Bot chat.",
+            },
+            {
+                "id": "unique_default_project",
+                "label": "Set one unique default project.",
+            },
+            {
+                "id": "project_commands",
+                "label": "Verify /agent project list/use/info with names, aliases, and short IDs.",
+            },
+        ),
     },
     "34.6": {
         "slug": "multi_session_management",
         "notes": (
             "Three independent Sessions, session commands, unsafe ambiguity handling, "
             "queues, restart recovery, and no cross-write."
+        ),
+        "checklist": (
+            {
+                "id": "three_concurrent_sessions",
+                "label": "Run at least three concurrent Sessions under one project.",
+            },
+            {
+                "id": "restart_switching",
+                "label": "Restart Bot or control clients and verify session switching.",
+            },
+            {
+                "id": "no_cross_write",
+                "label": "Confirm switching never closes or cross-writes other Sessions.",
+            },
         ),
     },
     "34.7": {
@@ -53,6 +140,20 @@ ACCEPTANCE_SECTIONS = {
             "OneBot /agent commands, unified invocations, auth, idempotency, interaction "
             "fallback, trace IDs, and unknown commands."
         ),
+        "checklist": (
+            {
+                "id": "onebot_text_commands",
+                "label": "Confirm OneBot text /agent commands in the deployed adapter.",
+            },
+            {
+                "id": "action_callbacks",
+                "label": "Confirm action callbacks route through the deployed adapter.",
+            },
+            {
+                "id": "missing_argument_recovery",
+                "label": "Verify missing-argument recovery paths.",
+            },
+        ),
     },
     "34.8": {
         "slug": "recovery",
@@ -60,8 +161,37 @@ ACCEPTANCE_SECTIONS = {
             "Control Plane disconnect, event replay, old epoch rejection, interaction "
             "expiry, and Bot retry/degradation."
         ),
+        "checklist": (
+            {
+                "id": "control_plane_disconnect_reconnect",
+                "label": "Disconnect and reconnect the Control Plane from a running local CLI.",
+            },
+            {
+                "id": "event_replay",
+                "label": "Replay missed events after reconnect.",
+            },
+            {
+                "id": "os_terminal_recovery",
+                "label": (
+                    "Validate the OS-specific terminal backend recovery path used "
+                    "in production."
+                ),
+            },
+        ),
     },
 }
+
+
+def acceptance_section_checklist_manifest(section_id: str) -> list[dict[str, str]]:
+    return [
+        {
+            "id": str(item["id"]),
+            "label": str(item["label"]),
+            "status": "not_run",
+            "notes": "",
+        }
+        for item in ACCEPTANCE_SECTIONS[section_id]["checklist"]
+    ]
 
 
 def empty_acceptance_manifest(
@@ -77,6 +207,7 @@ def empty_acceptance_manifest(
             section_id: {
                 "status": "not_run",
                 "artifacts": [],
+                "checklist": acceptance_section_checklist_manifest(section_id),
                 "notes": section["notes"],
             }
             for section_id, section in ACCEPTANCE_SECTIONS.items()
@@ -211,6 +342,24 @@ def acceptance_section_evidence(
         for artifact in artifact_payloads
         if artifact.get("status") not in {"referenced", "verified"}
     ]
+    checklist_payloads = acceptance_checklist_payloads(
+        section_id,
+        raw_section.get("checklist"),
+    )
+    expected_checklist_payloads = [
+        item for item in checklist_payloads if bool(item.get("expected", False))
+    ]
+    checklist_errors = [
+        item
+        for item in checklist_payloads
+        if not bool(item.get("expected", False))
+        or not bool(item.get("status_valid", True))
+    ]
+    checklist_passed_count = sum(
+        1
+        for item in expected_checklist_payloads
+        if item.get("status") == "passed" and bool(item.get("status_valid", True))
+    )
     notes = raw_section.get("notes")
     return {
         "section": section_id,
@@ -224,8 +373,121 @@ def acceptance_section_evidence(
         "artifact_error_count": len(artifact_errors),
         "artifact_verification_enabled": verify_artifacts,
         "artifact_errors": artifact_errors,
+        "checklist": checklist_payloads,
+        "checklist_present": isinstance(raw_section.get("checklist"), list),
+        "checklist_total": len(expected_checklist_payloads),
+        "checklist_passed_count": checklist_passed_count,
+        "checklist_failed_count": sum(
+            1 for item in expected_checklist_payloads if item.get("status") == "failed"
+        ),
+        "checklist_blocked_count": sum(
+            1 for item in expected_checklist_payloads if item.get("status") == "blocked"
+        ),
+        "checklist_not_run_count": sum(
+            1 for item in expected_checklist_payloads if item.get("status") == "not_run"
+        ),
+        "checklist_missing_count": sum(
+            1 for item in expected_checklist_payloads if item.get("status") == "missing"
+        ),
+        "checklist_error_count": len(checklist_errors),
         "notes_present": bool(isinstance(notes, str) and notes.strip()),
     }
+
+
+def acceptance_checklist_payloads(
+    section_id: str,
+    raw_checklist: object,
+) -> list[dict[str, object]]:
+    expected_items = [
+        {"id": str(item["id"]), "label": str(item["label"])}
+        for item in ACCEPTANCE_SECTIONS[section_id]["checklist"]
+    ]
+    raw_items_by_id: dict[str, dict[str, object]] = {}
+    duplicate_ids: set[str] = set()
+    unknown_items: list[dict[str, object]] = []
+    if isinstance(raw_checklist, list):
+        expected_ids = {item["id"] for item in expected_items}
+        for raw_item in raw_checklist:
+            if not isinstance(raw_item, dict):
+                unknown_items.append(
+                    {
+                        "id": None,
+                        "label": None,
+                        "status": "invalid_item",
+                        "status_valid": False,
+                        "expected": False,
+                        "notes_present": False,
+                    }
+                )
+                continue
+            raw_id = raw_item.get("id")
+            if not isinstance(raw_id, str) or not raw_id.strip():
+                raw_label = raw_item.get("label")
+                unknown_items.append(
+                    {
+                        "id": None,
+                        "label": raw_label if isinstance(raw_label, str) else None,
+                        "status": "missing_id",
+                        "status_valid": False,
+                        "expected": False,
+                        "notes_present": False,
+                    }
+                )
+                continue
+            item_id = raw_id.strip()
+            if item_id not in expected_ids:
+                raw_label = raw_item.get("label")
+                unknown_items.append(
+                    {
+                        "id": item_id,
+                        "label": raw_label if isinstance(raw_label, str) else None,
+                        "status": "unknown",
+                        "status_valid": False,
+                        "expected": False,
+                        "notes_present": bool(
+                            isinstance(raw_item.get("notes"), str)
+                            and raw_item.get("notes", "").strip()
+                        ),
+                    }
+                )
+                continue
+            if item_id in raw_items_by_id:
+                duplicate_ids.add(item_id)
+                continue
+            raw_items_by_id[item_id] = raw_item
+    payloads: list[dict[str, object]] = []
+    for expected_item in expected_items:
+        item_id = expected_item["id"]
+        raw_item = raw_items_by_id.get(item_id)
+        if raw_item is None:
+            payloads.append(
+                {
+                    **expected_item,
+                    "status": "missing",
+                    "status_valid": True,
+                    "expected": True,
+                    "notes_present": False,
+                }
+            )
+            continue
+        raw_status = str(raw_item.get("status") or "").strip().lower()
+        status = raw_status or "missing"
+        payloads.append(
+            {
+                **expected_item,
+                "status": status,
+                "status_valid": (
+                    status in ACCEPTANCE_SECTION_STATUSES and item_id not in duplicate_ids
+                ),
+                "expected": True,
+                "notes_present": bool(
+                    isinstance(raw_item.get("notes"), str)
+                    and raw_item.get("notes", "").strip()
+                ),
+            }
+        )
+    payloads.extend(unknown_items)
+    return payloads
 
 
 def acceptance_artifact_payloads(
@@ -332,6 +594,8 @@ def acceptance_evidence_summary(evidence: dict[str, object]) -> dict[str, object
         "invalid": 0,
     }
     artifact_error_count = 0
+    checklist_error_count = 0
+    checklist_incomplete_count = 0
     if not evidence.get("valid"):
         return {
             "ready": False,
@@ -339,6 +603,8 @@ def acceptance_evidence_summary(evidence: dict[str, object]) -> dict[str, object
             "total": len(ACCEPTANCE_SECTIONS),
             "error": evidence.get("error"),
             "artifact_error_count": artifact_error_count,
+            "checklist_error_count": checklist_error_count,
+            "checklist_incomplete_count": checklist_incomplete_count,
         }
     sections = evidence.get("sections")
     if not isinstance(sections, dict):
@@ -349,6 +615,8 @@ def acceptance_evidence_summary(evidence: dict[str, object]) -> dict[str, object
             "total": len(ACCEPTANCE_SECTIONS),
             "error": "sections_missing",
             "artifact_error_count": artifact_error_count,
+            "checklist_error_count": checklist_error_count,
+            "checklist_incomplete_count": checklist_incomplete_count,
         }
     ready = True
     for section_id in ACCEPTANCE_SECTIONS:
@@ -358,11 +626,19 @@ def acceptance_evidence_summary(evidence: dict[str, object]) -> dict[str, object
         if not bool(section_payload.get("status_valid", True)):
             status = "invalid"
         artifact_error_count += int(section_payload.get("artifact_error_count") or 0)
+        section_checklist_total = int(section_payload.get("checklist_total") or 0)
+        section_checklist_passed = int(section_payload.get("checklist_passed_count") or 0)
+        section_checklist_errors = int(section_payload.get("checklist_error_count") or 0)
+        checklist_error_count += section_checklist_errors
+        if section_checklist_passed < section_checklist_total:
+            checklist_incomplete_count += section_checklist_total - section_checklist_passed
         counts[status] = counts.get(status, 0) + 1
         if (
             status != "passed"
             or int(section_payload.get("artifact_count") or 0) <= 0
             or int(section_payload.get("artifact_error_count") or 0) > 0
+            or section_checklist_passed < section_checklist_total
+            or section_checklist_errors > 0
         ):
             ready = False
     return {
@@ -371,6 +647,8 @@ def acceptance_evidence_summary(evidence: dict[str, object]) -> dict[str, object
         "total": len(ACCEPTANCE_SECTIONS),
         "error": None,
         "artifact_error_count": artifact_error_count,
+        "checklist_error_count": checklist_error_count,
+        "checklist_incomplete_count": checklist_incomplete_count,
     }
 
 

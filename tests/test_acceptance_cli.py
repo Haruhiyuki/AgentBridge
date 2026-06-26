@@ -10,6 +10,24 @@ from agentbridge.acceptance_cli import (
 )
 from agentbridge.acceptance_evidence import ACCEPTANCE_EVIDENCE_SCHEMA_VERSION
 
+ACCEPTANCE_TEST_SECTIONS = ("34.1", "34.2", "34.3", "34.4", "34.5", "34.6", "34.7", "34.8")
+
+
+def mark_section_checklist_passed(manifest, section: str) -> None:
+    assert (
+        main(
+            [
+                "set-checklist",
+                str(manifest),
+                section,
+                "all",
+                "--status",
+                "passed",
+            ]
+        )
+        == 0
+    )
+
 
 def test_acceptance_cli_init_creates_manifest(tmp_path, capsys):
     manifest = tmp_path / "acceptance-evidence.json"
@@ -41,6 +59,8 @@ def test_acceptance_cli_init_creates_manifest(tmp_path, capsys):
         "34.7",
         "34.8",
     ]
+    assert payload["sections"]["34.1"]["checklist"][0]["id"] == "real_pty_claude"
+    assert payload["sections"]["34.1"]["checklist"][0]["status"] == "not_run"
 
 
 def test_acceptance_cli_init_refuses_to_overwrite_without_force(tmp_path, capsys):
@@ -74,11 +94,12 @@ def test_acceptance_cli_set_section_and_summary(tmp_path, capsys):
     payload = json.loads(manifest.read_text(encoding="utf-8"))
 
     assert result == 0
-    assert payload["sections"]["34.1"] == {
-        "status": "passed",
-        "artifacts": ["artifacts/native-session.json"],
-        "notes": "Native PTY acceptance passed.",
-    }
+    assert payload["sections"]["34.1"]["status"] == "passed"
+    assert payload["sections"]["34.1"]["artifacts"] == [
+        "artifacts/native-session.json"
+    ]
+    assert payload["sections"]["34.1"]["notes"] == "Native PTY acceptance passed."
+    assert payload["sections"]["34.1"]["checklist"][0]["status"] == "not_run"
 
     summary_result = main(["summary", str(manifest), "--fail-on-warn"])
     output = capsys.readouterr().out
@@ -86,6 +107,7 @@ def test_acceptance_cli_set_section_and_summary(tmp_path, capsys):
     assert summary_result == ACCEPTANCE_EXIT_INCOMPLETE
     assert "ready=false passed=1 failed=0 blocked=0 not_run=7 missing=0 invalid=0" in output
     assert "34.1 status=passed artifacts=1" in output
+    assert "checklist=0/3" in output
     assert "34.8 status=not_run artifacts=0" in output
 
 
@@ -93,7 +115,7 @@ def test_acceptance_cli_summary_json_for_complete_manifest(tmp_path, capsys):
     manifest = tmp_path / "acceptance-evidence.json"
     main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
     capsys.readouterr()
-    for section in ("34.1", "34.2", "34.3", "34.4", "34.5", "34.6", "34.7", "34.8"):
+    for section in ACCEPTANCE_TEST_SECTIONS:
         assert (
             main(
                 [
@@ -109,6 +131,7 @@ def test_acceptance_cli_summary_json_for_complete_manifest(tmp_path, capsys):
             )
             == 0
         )
+        mark_section_checklist_passed(manifest, section)
     capsys.readouterr()
 
     result = main(["summary", str(manifest), "--format", "json", "--fail-on-warn"])
@@ -150,16 +173,15 @@ def test_acceptance_cli_attach_artifact_copies_and_hashes_file(tmp_path, capsys)
     assert "attached native_session/native-session-run.json to 34.1" in output
     assert f"sha256={digest}" in output
     assert target.read_text(encoding="utf-8") == '{"result":"passed"}'
-    assert payload["sections"]["34.1"] == {
-        "status": "passed",
-        "artifacts": [
-            {
-                "path": "native_session/native-session-run.json",
-                "sha256": digest,
-            }
-        ],
-        "notes": "Native PTY acceptance passed.",
-    }
+    assert payload["sections"]["34.1"]["status"] == "passed"
+    assert payload["sections"]["34.1"]["artifacts"] == [
+        {
+            "path": "native_session/native-session-run.json",
+            "sha256": digest,
+        }
+    ]
+    assert payload["sections"]["34.1"]["notes"] == "Native PTY acceptance passed."
+    assert payload["sections"]["34.1"]["checklist"][0]["status"] == "not_run"
 
     summary_result = main(
         [
@@ -276,7 +298,7 @@ def test_acceptance_cli_summary_verifies_artifact_hashes(tmp_path, capsys):
     artifact_root.mkdir()
     main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
     capsys.readouterr()
-    for section in ("34.1", "34.2", "34.3", "34.4", "34.5", "34.6", "34.7", "34.8"):
+    for section in ACCEPTANCE_TEST_SECTIONS:
         artifact_path = artifact_root / f"{section.replace('.', '_')}.json"
         artifact_path.write_text(f'{{"section":"{section}"}}', encoding="utf-8")
         digest = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
@@ -295,6 +317,7 @@ def test_acceptance_cli_summary_verifies_artifact_hashes(tmp_path, capsys):
             )
             == 0
         )
+        mark_section_checklist_passed(manifest, section)
     capsys.readouterr()
 
     result = main(
@@ -320,8 +343,7 @@ def test_acceptance_cli_bundle_creates_portable_verified_zip(tmp_path, capsys):
     bundle_path = tmp_path / "acceptance-bundle.zip"
     main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
     capsys.readouterr()
-    sections = ("34.1", "34.2", "34.3", "34.4", "34.5", "34.6", "34.7", "34.8")
-    for section in sections:
+    for section in ACCEPTANCE_TEST_SECTIONS:
         source = tmp_path / f"{section}.json"
         source.write_text(f'{{"section":"{section}"}}', encoding="utf-8")
         assert (
@@ -339,6 +361,7 @@ def test_acceptance_cli_bundle_creates_portable_verified_zip(tmp_path, capsys):
             )
             == 0
         )
+        mark_section_checklist_passed(manifest, section)
     capsys.readouterr()
 
     result = main(
@@ -478,7 +501,7 @@ def test_acceptance_cli_verify_bundle_fails_for_tampered_artifact(tmp_path, caps
     tampered_bundle_path = tmp_path / "acceptance-bundle-tampered.zip"
     main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
     capsys.readouterr()
-    for section in ("34.1", "34.2", "34.3", "34.4", "34.5", "34.6", "34.7", "34.8"):
+    for section in ACCEPTANCE_TEST_SECTIONS:
         source = tmp_path / f"{section}.json"
         source.write_text(f'{{"section":"{section}"}}', encoding="utf-8")
         assert (
@@ -496,6 +519,7 @@ def test_acceptance_cli_verify_bundle_fails_for_tampered_artifact(tmp_path, caps
             )
             == 0
         )
+        mark_section_checklist_passed(manifest, section)
     assert (
         main(
             [
