@@ -435,6 +435,10 @@ def test_cli_parser_accepts_codex_app_server_proxy_command():
             "0.05",
             "--restart-min-uptime-seconds",
             "1.5",
+            "--health-output-file",
+            "health.jsonl",
+            "--health-interval-seconds",
+            "0.1",
             "--",
             "codex",
             "app-server",
@@ -453,6 +457,8 @@ def test_cli_parser_accepts_codex_app_server_proxy_command():
     assert args.max_restarts == 2
     assert args.restart_delay_seconds == 0.05
     assert args.restart_min_uptime_seconds == 1.5
+    assert str(args.health_output_file) == "health.jsonl"
+    assert args.health_interval_seconds == 0.1
     assert args.app_server_command == [
         "--",
         "codex",
@@ -1148,6 +1154,7 @@ def test_codex_app_server_stdio_proxy_restarts_failed_child(tmp_path):
     )
     downstream_output = StringIO()
     error_file = StringIO()
+    health_output = StringIO()
 
     summary = bridge_codex_app_server_stdio_proxy(
         control_client=control_client,
@@ -1155,6 +1162,7 @@ def test_codex_app_server_stdio_proxy_restarts_failed_child(tmp_path):
         upstream_input=StringIO(),
         downstream_output=downstream_output,
         error_file=error_file,
+        health_output=health_output,
         restart_policy="on-failure",
         max_restarts=1,
         restart_delay_seconds=0,
@@ -1175,12 +1183,68 @@ def test_codex_app_server_stdio_proxy_restarts_failed_child(tmp_path):
         "injected": 0,
         "suppressed": 0,
         "errors": 0,
+        "health_events": 6,
+        "health_write_errors": 0,
     }
     assert state_file.read_text(encoding="utf-8") == "2"
     forwarded_lines = [json.loads(line) for line in downstream_output.getvalue().splitlines()]
     assert [line["params"]["delta"] for line in forwarded_lines] == ["run-1", "run-2"]
     assert error_file.getvalue() == ""
     assert [call[2]["payload"]["delta"] for call in calls] == ["run-1", "run-2"]
+    assert [json.loads(line)["status"] for line in health_output.getvalue().splitlines()] == [
+        "started",
+        "exited",
+        "restarting",
+        "started",
+        "exited",
+        "stopped",
+    ]
+
+
+def test_codex_app_server_stdio_proxy_emits_health_heartbeats(tmp_path):
+    script = tmp_path / "fake_codex_app_server.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import time",
+                "time.sleep(0.2)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    control_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(base_url="http://bridge.local", session_id="ses_1"),
+        transport=lambda method, url, headers, payload, timeout_seconds: {},
+    )
+    health_output = StringIO()
+
+    summary = bridge_codex_app_server_stdio_proxy(
+        control_client=control_client,
+        command_args=[sys.executable, str(script)],
+        upstream_input=StringIO(),
+        downstream_output=StringIO(),
+        health_output=health_output,
+        health_interval_seconds=0.05,
+    )
+
+    health_events = [
+        json.loads(line)
+        for line in health_output.getvalue().splitlines()
+    ]
+    statuses = [event["status"] for event in health_events]
+    assert summary["health_events"] == len(health_events)
+    assert summary["health_write_errors"] == 0
+    assert statuses[0] == "started"
+    assert "running" in statuses
+    assert statuses[-2:] == ["exited", "stopped"]
+    assert all(
+        event["type"] == "agentbridge.codex_app_server_proxy.health"
+        for event in health_events
+    )
+    assert health_events[0]["attempt"] == 1
+    assert health_events[-2]["return_code"] == 0
+    assert health_events[-1]["attempts"] == 1
 
 
 def test_cli_format_response_prints_native_stdout_json(capsys):

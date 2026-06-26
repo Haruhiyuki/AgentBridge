@@ -722,6 +722,33 @@ class TextStreamRouter:
                         self._condition.notify_all()
 
 
+class CodexAppServerProxyHealthWriter:
+    def __init__(self, output_file: TextIO | None) -> None:
+        self.output_file = output_file
+        self._lock = threading.Lock()
+        self.events_written = 0
+        self.write_errors = 0
+
+    def write(self, status: str, **fields: object) -> None:
+        if self.output_file is None:
+            return
+        payload: dict[str, object] = {
+            "type": "agentbridge.codex_app_server_proxy.health",
+            "status": status,
+            "timestamp_unix": time.time(),
+        }
+        for key, value in fields.items():
+            if value is not None:
+                payload[key] = value
+        with self._lock:
+            try:
+                write_json_line(self.output_file, payload)
+            except (BrokenPipeError, OSError, ValueError):
+                self.write_errors += 1
+            else:
+                self.events_written += 1
+
+
 def bridge_codex_app_server_stdio_proxy(
     *,
     control_client: AgentAdapterControlClient,
@@ -741,6 +768,8 @@ def bridge_codex_app_server_stdio_proxy(
     max_restarts: int = 0,
     restart_delay_seconds: float = 1.0,
     restart_min_uptime_seconds: float = 0.0,
+    health_output: TextIO | None = None,
+    health_interval_seconds: float = 0.0,
     strict: bool = False,
 ) -> dict[str, object]:
     if not command_args:
@@ -761,6 +790,11 @@ def bridge_codex_app_server_stdio_proxy(
         raise ValueError(
             "Codex app-server proxy restart_min_uptime_seconds must be non-negative"
         )
+    if health_interval_seconds < 0:
+        raise ValueError(
+            "Codex app-server proxy health_interval_seconds must be non-negative"
+        )
+    health_writer = CodexAppServerProxyHealthWriter(health_output)
     stdin_router = TextStreamRouter(
         upstream_input,
         close_output_on_input_eof=not inject_responses,
@@ -794,6 +828,10 @@ def bridge_codex_app_server_stdio_proxy(
                 bridge_output_format=bridge_output_format,
                 inject_responses=inject_responses,
                 forward_injected_requests=forward_injected_requests,
+                restart_policy=restart_policy,
+                attempt=attempts,
+                health_writer=health_writer,
+                health_interval_seconds=health_interval_seconds,
                 strict=strict,
             )
             uptime_seconds = time.monotonic() - started_at
@@ -817,13 +855,29 @@ def bridge_codex_app_server_stdio_proxy(
             if restarts >= max_restarts:
                 break
             restarts += 1
+            health_writer.write(
+                "restarting",
+                attempt=attempts,
+                restart=restarts,
+                max_restarts=max_restarts,
+                restart_policy=restart_policy,
+                return_code=return_code,
+                delay_seconds=restart_delay_seconds,
+            )
             if restart_delay_seconds > 0:
                 time.sleep(restart_delay_seconds)
     finally:
         stdin_router.close_current()
         stdin_router.stop()
         stdin_router.join(timeout=1.0)
-    return {
+        health_writer.write(
+            "stopped",
+            attempts=attempts,
+            restarts=restarts,
+            restart_policy=restart_policy,
+            return_code=return_code,
+        )
+    summary = {
         "command": command_args,
         "return_code": return_code,
         "attempts": attempts,
@@ -838,6 +892,10 @@ def bridge_codex_app_server_stdio_proxy(
         "suppressed": suppressed,
         "errors": errors,
     }
+    if health_output is not None:
+        summary["health_events"] = health_writer.events_written
+        summary["health_write_errors"] = health_writer.write_errors
+    return summary
 
 
 def bridge_codex_app_server_stdio_proxy_attempt(
@@ -855,6 +913,10 @@ def bridge_codex_app_server_stdio_proxy_attempt(
     bridge_output_format: str,
     inject_responses: bool,
     forward_injected_requests: bool,
+    restart_policy: str,
+    attempt: int,
+    health_writer: CodexAppServerProxyHealthWriter,
+    health_interval_seconds: float,
     strict: bool,
 ) -> dict[str, object]:
     process = subprocess.Popen(
@@ -867,6 +929,20 @@ def bridge_codex_app_server_stdio_proxy_attempt(
     )
     if process.stdin is None or process.stdout is None or process.stderr is None:
         raise RuntimeError("Codex app-server proxy failed to open process pipes")
+    started_at = time.monotonic()
+    health_writer.write(
+        "started",
+        attempt=attempt,
+        pid=process.pid,
+        restart_policy=restart_policy,
+    )
+    health_stop_event, health_thread = start_codex_app_server_proxy_health_probe(
+        process=process,
+        health_writer=health_writer,
+        interval_seconds=health_interval_seconds,
+        attempt=attempt,
+        started_at=started_at,
+    )
     stdin_lock = threading.Lock()
     stdin_router.attach(process.stdin, lock=stdin_lock)
     stderr_thread = threading.Thread(
@@ -977,12 +1053,29 @@ def bridge_codex_app_server_stdio_proxy_attempt(
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+        stop_codex_app_server_proxy_health_probe(health_stop_event, health_thread)
+        health_writer.write(
+            "terminated",
+            attempt=attempt,
+            pid=process.pid,
+            return_code=process.returncode,
+            uptime_seconds=round(time.monotonic() - started_at, 3),
+        )
         raise
     finally:
         stdin_router.detach(process.stdin, close_output=True)
     return_code = process.wait()
+    stop_codex_app_server_proxy_health_probe(health_stop_event, health_thread)
+    health_writer.write(
+        "exited",
+        attempt=attempt,
+        pid=process.pid,
+        return_code=return_code,
+        uptime_seconds=round(time.monotonic() - started_at, 3),
+    )
     stderr_thread.join(timeout=1.0)
     return {
+        "pid": process.pid,
         "return_code": return_code,
         "processed": processed,
         "skipped": skipped,
@@ -1003,6 +1096,44 @@ def should_restart_codex_app_server_proxy(
     if restart_policy == "on-failure":
         return return_code != 0
     return False
+
+
+def start_codex_app_server_proxy_health_probe(
+    *,
+    process: subprocess.Popen[str],
+    health_writer: CodexAppServerProxyHealthWriter,
+    interval_seconds: float,
+    attempt: int,
+    started_at: float,
+) -> tuple[threading.Event | None, threading.Thread | None]:
+    if health_writer.output_file is None or interval_seconds <= 0:
+        return None, None
+    stop_event = threading.Event()
+
+    def run() -> None:
+        while not stop_event.wait(interval_seconds):
+            if process.poll() is not None:
+                return
+            health_writer.write(
+                "running",
+                attempt=attempt,
+                pid=process.pid,
+                uptime_seconds=round(time.monotonic() - started_at, 3),
+            )
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return stop_event, thread
+
+
+def stop_codex_app_server_proxy_health_probe(
+    stop_event: threading.Event | None,
+    thread: threading.Thread | None,
+) -> None:
+    if stop_event is None or thread is None:
+        return
+    stop_event.set()
+    thread.join(timeout=1.0)
 
 
 def forward_text_stream(
@@ -2319,6 +2450,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Count child exits before this uptime as unhealthy in the proxy summary",
     )
     codex_app_server_proxy.add_argument(
+        "--health-output-file",
+        type=Path,
+        help="Append Codex app-server proxy health JSONL to this file; '-' writes stderr",
+    )
+    codex_app_server_proxy.add_argument(
+        "--health-interval-seconds",
+        type=float,
+        default=0.0,
+        help="Emit running health heartbeat JSONL at this interval; 0 disables heartbeats",
+    )
+    codex_app_server_proxy.add_argument(
         "--strict",
         action="store_true",
         help="Terminate on invalid child stdout lines or non-interaction delivery failures",
@@ -2468,6 +2610,9 @@ def main(argv: list[str] | None = None) -> int:
             bridge_output, should_close_bridge_output = open_text_output_path(
                 args.bridge_output_file
             )
+            health_output, should_close_health_output = open_text_output_path(
+                args.health_output_file
+            )
             control_client = AgentAdapterControlClient(build_config_from_args(args))
             try:
                 summary = bridge_codex_app_server_stdio_proxy(
@@ -2488,11 +2633,15 @@ def main(argv: list[str] | None = None) -> int:
                     max_restarts=args.max_restarts,
                     restart_delay_seconds=args.restart_delay_seconds,
                     restart_min_uptime_seconds=args.restart_min_uptime_seconds,
+                    health_output=health_output,
+                    health_interval_seconds=args.health_interval_seconds,
                     strict=args.strict,
                 )
             finally:
                 if should_close_bridge_output and bridge_output is not None:
                     bridge_output.close()
+                if should_close_health_output and health_output is not None:
+                    health_output.close()
             return int(summary["return_code"] or 0)
         if args.command == "claude-hook":
             hook_payload = load_hook_payload_from_args(args)
