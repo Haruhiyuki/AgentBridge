@@ -86,6 +86,12 @@ class NoneBotAgentBridgePlugin:
     def register_matcher(self, matcher: Any) -> Any:
         return register_nonebot_handler(matcher, self.as_async_handler())
 
+    def register_matchers(self, matchers: Any) -> list[Any]:
+        return [
+            self.register_matcher(matcher)
+            for matcher in nonebot_matcher_values(matchers)
+        ]
+
     def register_command_registration_startup(
         self,
         driver: Any,
@@ -503,6 +509,26 @@ def register_nonebot_matcher(
     return plugin
 
 
+def register_nonebot_matchers(
+    matchers: Any,
+    *,
+    control: ControlPlane,
+    command_service: CommandService | None = None,
+    bot_instance_id: str = "nonebot",
+    default_roles: set[str] | None = None,
+    command_prefixes: tuple[str, ...] = ("/agent", "/ab"),
+) -> NoneBotAgentBridgePlugin:
+    plugin = NoneBotAgentBridgePlugin(
+        control=control,
+        command_service=command_service,
+        bot_instance_id=bot_instance_id,
+        default_roles=default_roles,
+        command_prefixes=command_prefixes,
+    )
+    plugin.register_matchers(matchers)
+    return plugin
+
+
 def register_nonebot_command_registration(
     driver: Any,
     registrar: Any,
@@ -535,6 +561,60 @@ def register_nonebot_command_registration(
         registration_id=registration_id,
     )
     return plugin
+
+
+def register_nonebot_lifecycle(
+    *,
+    control: ControlPlane,
+    matchers: Any | None = None,
+    driver: Any | None = None,
+    command_registrar: Any | None = None,
+    command_service: CommandService | None = None,
+    bot_instance_id: str = "nonebot",
+    default_roles: set[str] | None = None,
+    command_prefixes: tuple[str, ...] = ("/agent", "/ab"),
+    platform: str = "onebot.v11",
+    scope: str | None = None,
+    channel_id: str | None = None,
+    thread_id: str | None = None,
+    registration_id: str | None = None,
+) -> NoneBotAgentBridgePlugin:
+    plugin = NoneBotAgentBridgePlugin(
+        control=control,
+        command_service=command_service,
+        bot_instance_id=bot_instance_id,
+        default_roles=default_roles,
+        command_prefixes=command_prefixes,
+    )
+    if matchers is not None:
+        plugin.register_matchers(matchers)
+    if driver is not None or command_registrar is not None:
+        if driver is None or command_registrar is None:
+            raise TypeError(
+                "NoneBot lifecycle command registration requires both driver and "
+                "command_registrar"
+            )
+        plugin.register_command_registration_startup(
+            driver,
+            command_registrar,
+            platform=platform,
+            scope=scope,
+            channel_id=channel_id,
+            thread_id=thread_id,
+            registration_id=registration_id,
+        )
+    return plugin
+
+
+def nonebot_matcher_values(matchers: Any) -> list[Any]:
+    if callable(getattr(matchers, "handle", None)):
+        return [matchers]
+    if isinstance(matchers, dict):
+        return list(matchers.values())
+    try:
+        return list(matchers)
+    except TypeError:
+        return [matchers]
 
 
 def register_nonebot_handler(matcher: Any, handler: Any) -> Any:

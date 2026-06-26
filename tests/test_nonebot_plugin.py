@@ -19,7 +19,9 @@ from agentbridge.nonebot_plugin import (
     NoneBotTransport,
     nonebot_event_to_onebot_event,
     register_nonebot_command_registration,
+    register_nonebot_lifecycle,
     register_nonebot_matcher,
+    register_nonebot_matchers,
 )
 
 
@@ -361,6 +363,141 @@ def test_nonebot_matcher_registration_helper_registers_async_handler():
     assert result["handled"] is True
     assert result["result"]["canonical_command"] == "health"
     assert context.bot_instance_id == "nonebot-helper"
+
+
+class FakeMatcher:
+    def __init__(self) -> None:
+        self.handlers = []
+
+    def handle(self):
+        def decorator(handler):
+            self.handlers.append(handler)
+            return handler
+
+        return decorator
+
+
+def test_nonebot_matchers_registration_helper_wires_multiple_matchers():
+    message_matcher = FakeMatcher()
+    notice_matcher = FakeMatcher()
+    control = ControlPlane()
+
+    plugin = register_nonebot_matchers(
+        {
+            "message": message_matcher,
+            "notice": notice_matcher,
+        },
+        control=control,
+        bot_instance_id="nonebot-multi",
+        default_roles={"operator"},
+    )
+
+    assert isinstance(plugin, NoneBotAgentBridgePlugin)
+    assert len(message_matcher.handlers) == 1
+    assert len(notice_matcher.handlers) == 1
+    result = asyncio.run(
+        notice_matcher.handlers[0](
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 10001,
+                "user_id": 20002,
+                "message_id": 30006,
+                "raw_message": "/agent health",
+            }
+        )
+    )
+    context = control.repository.get_chat_context(result["chat_context_id"])
+    assert result["handled"] is True
+    assert result["result"]["canonical_command"] == "health"
+    assert context.bot_instance_id == "nonebot-multi"
+
+
+def test_nonebot_matchers_registration_helper_accepts_single_matcher():
+    matcher = FakeMatcher()
+
+    plugin = register_nonebot_matchers(
+        matcher,
+        control=ControlPlane(),
+        default_roles={"operator"},
+    )
+
+    assert isinstance(plugin, NoneBotAgentBridgePlugin)
+    assert len(matcher.handlers) == 1
+
+
+def test_nonebot_lifecycle_registers_matchers_and_command_registration():
+    class FakeDriver:
+        def __init__(self) -> None:
+            self.startup_handlers = []
+
+        def on_startup(self):
+            def decorator(handler):
+                self.startup_handlers.append(handler)
+                return handler
+
+            return decorator
+
+    driver = FakeDriver()
+    matcher = FakeMatcher()
+    control = ControlPlane()
+
+    async def registrar(manifest):
+        return {
+            "registration_id": "lifecycle-commands-v1",
+            "commands": manifest["native_entries"][:1],
+            "payload": {"provider": "lifecycle"},
+        }
+
+    plugin = register_nonebot_lifecycle(
+        control=control,
+        matchers=[matcher],
+        driver=driver,
+        command_registrar=registrar,
+        bot_instance_id="nonebot-lifecycle",
+        default_roles={"operator"},
+        scope="global",
+    )
+
+    assert isinstance(plugin, NoneBotAgentBridgePlugin)
+    assert len(matcher.handlers) == 1
+    assert len(driver.startup_handlers) == 1
+    command_result = asyncio.run(
+        matcher.handlers[0](
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 10001,
+                "user_id": 20002,
+                "message_id": 30007,
+                "raw_message": "/agent health",
+            }
+        )
+    )
+    registration_result = asyncio.run(driver.startup_handlers[0]())
+
+    assert command_result["handled"] is True
+    assert command_result["result"]["canonical_command"] == "health"
+    assert registration_result["event"]["payload"]["adapter"] == "nonebot"
+    assert registration_result["event"]["payload"]["bot_instance_id"] == (
+        "nonebot-lifecycle"
+    )
+    assert registration_result["event"]["payload"]["registration_id"] == (
+        "lifecycle-commands-v1"
+    )
+
+
+def test_nonebot_lifecycle_rejects_partial_command_registration_config():
+    try:
+        register_nonebot_lifecycle(
+            control=ControlPlane(),
+            driver=object(),
+        )
+    except TypeError as exc:
+        assert "driver" in str(exc)
+        assert "command_registrar" in str(exc)
+    else:
+        raise AssertionError("expected partial lifecycle registration config to fail")
 
 
 def test_nonebot_plugin_records_command_registration_results():

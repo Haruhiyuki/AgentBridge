@@ -722,6 +722,7 @@ from agentbridge.bot_gateway import BotGatewayService
 from agentbridge.control_plane import ControlPlane
 from agentbridge.nonebot_plugin import (
     NoneBotTransport,
+    register_nonebot_lifecycle,
     register_nonebot_command_registration,
     register_nonebot_matcher,
 )
@@ -743,15 +744,28 @@ register_nonebot_command_registration(
 )
 
 bot_gateway = BotGatewayService(control, transport=NoneBotTransport(bot))
+
+# Or bind multiple inbound matchers and startup command registration to one plugin:
+agentbridge = register_nonebot_lifecycle(
+    control=control,
+    matchers={"message": message_matcher, "notice": notice_matcher},
+    driver=driver,
+    command_registrar=lambda manifest: native_command_registrar(manifest),
+    bot_instance_id="nonebot-main",
+    default_roles={"operator"},
+    registration_id="commands-v1",
+)
 ```
 
 The wrapper has no hard NoneBot dependency. The helper only expects a matcher object
 with a `handle()` decorator; if you need manual wiring, `NoneBotAgentBridgePlugin`
-still exposes `as_async_handler()` and `register_matcher()`. It accepts
-NoneBot/OneBot-style event objects, executes `/agent` and `/ab` text commands, and
-maps callback/action payloads containing a descriptor command through the same audited
-command path. `command_registration_manifest()` exposes the same Bot Gateway command
-manifest for NoneBot startup code, `register_command_registration_startup()` wires a
+still exposes `as_async_handler()`, `register_matcher()`, and `register_matchers()`.
+It accepts NoneBot/OneBot-style event objects, executes `/agent` and `/ab` text commands,
+and maps callback/action payloads containing a descriptor command through the same
+audited command path. `register_nonebot_lifecycle()` keeps multiple inbound matchers and
+optional startup command registration on one plugin instance.
+`command_registration_manifest()` exposes the same Bot Gateway command manifest for
+NoneBot startup code, `register_command_registration_startup()` wires a
 `driver.on_startup()` hook around a sync or async registrar, and
 `record_command_registration_result()` records native menu/command registration outcomes
 as `bot.command_registration.result` events. `NoneBotTransport` can be attached to
