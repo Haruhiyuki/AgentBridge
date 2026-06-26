@@ -521,11 +521,15 @@ def test_admin_home_and_terminal_lifecycle_ui_routes():
     assert 'id="readiness-warnings"' in system_html
     assert 'id="readiness-failures"' in system_html
     assert 'aria-label="Readiness action items"' in system_html
+    assert "<th>Evidence</th>" in system_html
     assert 'id="readiness-actions"' in system_html
+    assert "function readinessActionEvidenceSummary(check)" in system_html
+    assert "function readinessAcceptanceSummaryCounts(summary)" in system_html
     assert "function renderReadinessActions(readiness)" in system_html
     assert "renderReadinessActions(readiness);" in system_html
     assert 'id="system-export-json"' in system_html
     assert "agentbridge.admin_system_health_export.v1" in system_html
+    assert "evidence_summary: readinessActionEvidenceSummary(check)" in system_html
     assert "function downloadSystemHealthJson()" in system_html
     assert "/api/v1/terminal/lifecycle-monitor" in system_html
     assert "/api/v1/bot-gateway/retry-worker" in system_html

@@ -134,7 +134,8 @@ Collect these artifacts for a release candidate:
 - Admin screenshots or exports for System Health, Project/Session, Interaction,
   Terminal Lifecycle, Audit/Event, Device Identity, and Bot Delivery pages.
   The System Health page's `Export JSON` action captures the current endpoint checks,
-  readiness summary, and warn/fail next steps as a structured evidence file.
+  readiness summary, warn/fail next steps, and readiness action evidence summaries as
+  a structured evidence file.
   The Project/Session page's `Export JSON` action captures project inventory,
   workspaces, chat bindings, session queue state, writer leases, and pending approvals
   for multi-project and multi-session evidence.

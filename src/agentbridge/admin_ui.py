@@ -329,6 +329,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
           <tr>
             <th>Status</th>
             <th>Check</th>
+            <th>Evidence</th>
             <th>Next Step</th>
           </tr>
         </thead>
@@ -415,6 +416,59 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
         });
     }
 
+    function readinessInt(value) {
+      const parsed = Number.parseInt(value ?? 0, 10);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function readinessAcceptanceSummaryCounts(summary) {
+      const counts = summary?.counts || {};
+      return [
+        `passed=${counts.passed || 0}`,
+        `failed=${counts.failed || 0}`,
+        `blocked=${counts.blocked || 0}`,
+        `not_run=${counts.not_run || 0}`,
+        `missing=${counts.missing || 0}`,
+        `invalid=${counts.invalid || 0}`,
+        `artifact_errors=${summary?.artifact_error_count || 0}`,
+        `checklist_incomplete=${summary?.checklist_incomplete_count || 0}`,
+        `checklist_errors=${summary?.checklist_error_count || 0}`,
+      ];
+    }
+
+    function readinessActionEvidenceSummary(check) {
+      const id = check.id || "";
+      const evidence = check.evidence || {};
+      if (id === "acceptance.evidence_manifest" && evidence.summary) {
+        return [
+          `manifest_ready=${Boolean(evidence.summary.ready)}`,
+          `sections=${evidence.section_count || 0}`,
+          ...readinessAcceptanceSummaryCounts(evidence.summary),
+        ].join(" ");
+      }
+      if (id === "acceptance.evidence_bundle" && evidence.summary) {
+        return [
+          `bundle_ready=${Boolean(evidence.summary.ready)}`,
+          `artifacts=${evidence.artifact_count || 0}`,
+          ...readinessAcceptanceSummaryCounts(evidence.summary),
+        ].join(" ");
+      }
+      if (id.startsWith("acceptance.")) {
+        const total = readinessInt(evidence.checklist_total);
+        const passed = readinessInt(evidence.checklist_passed_count);
+        return [
+          `section=${evidence.section || "unknown"}`,
+          `status=${evidence.status || "unknown"}`,
+          `artifacts=${evidence.artifact_count || 0}`,
+          `artifact_errors=${evidence.artifact_error_count || 0}`,
+          `checklist=${passed}/${total}`,
+          `checklist_incomplete=${Math.max(total - passed, 0)}`,
+          `checklist_errors=${evidence.checklist_error_count || 0}`,
+        ].join(" ");
+      }
+      return "";
+    }
+
     function renderReadinessActions(readiness) {
       const actionable = readinessActionChecks(readiness);
       const rows = actionable.map((check) => {
@@ -422,6 +476,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
         const values = [
           {text: check.status, className: check.status},
           {text: check.id || "-"},
+          {text: readinessActionEvidenceSummary(check) || "-"},
           {text: check.next_step || check.summary || "-"},
         ];
         for (const value of values) {
@@ -435,7 +490,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       if (!rows.length) {
         const tr = document.createElement("tr");
         const td = document.createElement("td");
-        td.colSpan = 3;
+        td.colSpan = 4;
         td.className = "ok";
         td.textContent = "All readiness checks passed";
         tr.appendChild(td);
@@ -463,6 +518,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
           id: check.id || "unknown",
           summary: check.summary || "",
           next_step: check.next_step || "",
+          evidence_summary: readinessActionEvidenceSummary(check),
           evidence: check.evidence || {},
         })),
       };
