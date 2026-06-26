@@ -338,6 +338,63 @@ def test_sqlalchemy_repository_persists_start_next_turn(tmp_path):
     assert second_repo.list_events(session_id=session.id)[-1].type == "turn.started"
 
 
+def test_sqlalchemy_repository_persists_event_consumer_offsets(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'agentbridge-event-offsets.db'}"
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    first_control = ControlPlane(repository=first_repo)
+
+    project = first_control.create_project(
+        actor=maintainer,
+        name="Event Offset Persistence",
+        trace_id="offset-project",
+    )
+    workspace = first_control.add_workspace(
+        actor=maintainer,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="offset-workspace",
+    )
+    session = first_control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Event Offset Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="offset-session",
+    )
+    first_control.enqueue_turn(
+        actor=maintainer,
+        session_id=session.id,
+        prompt="Persist event offset",
+        trace_id="offset-turn",
+    )
+    last_seq = first_repo.list_events(session_id=session.id)[-1].seq
+
+    offset = first_repo.ack_event_consumer(
+        session_id=session.id,
+        consumer_id="terminal-agent:local",
+        seq=last_seq,
+    )
+    restored = SQLAlchemyRepository(database_url)
+
+    restored_offset = restored.get_event_consumer_offset(
+        session_id=session.id,
+        consumer_id="terminal-agent:local",
+    )
+    assert restored_offset == offset
+
+    regressed = restored.ack_event_consumer(
+        session_id=session.id,
+        consumer_id="terminal-agent:local",
+        seq=0,
+    )
+    assert regressed.last_seq == last_seq
+
+
 def test_sqlalchemy_project_bindings_preserve_unique_default(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'agentbridge-bindings.db'}"
     maintainer = Actor(id="usr_1", roles={"maintainer"})

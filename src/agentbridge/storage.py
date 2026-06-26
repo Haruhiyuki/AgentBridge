@@ -27,6 +27,7 @@ from agentbridge.domain import (
     DeviceIdentityScope,
     DeviceIdentityStatus,
     ErrorCode,
+    EventConsumerOffset,
     GroupRoleBinding,
     Interaction,
     InteractionStatus,
@@ -190,6 +191,7 @@ class InMemoryRepository:
         self.audit_events: list[AuditEvent] = []
         self.semantic_events: list[SemanticEvent] = []
         self.bot_delivery_records: dict[str, BotDeliveryRecord] = {}
+        self.event_consumer_offsets: dict[tuple[str, str], EventConsumerOffset] = {}
         self.command_results: dict[str, CommandResult] = {}
         self.event_idempotency: dict[str, SemanticEvent] = {}
         self.event_stream_seq: dict[str, int] = {}
@@ -2227,6 +2229,68 @@ class InMemoryRepository:
         if project_id:
             return f"project:{project_id}"
         return "system"
+
+    def get_event_consumer_offset(
+        self,
+        *,
+        session_id: str,
+        consumer_id: str,
+    ) -> EventConsumerOffset | None:
+        with self._lock:
+            self.get_session(session_id)
+            consumer_id = self._require_event_consumer_id(consumer_id)
+            stream_id = self._event_stream_id(project_id=None, session_id=session_id)
+            return self.event_consumer_offsets.get((stream_id, consumer_id))
+
+    def ack_event_consumer(
+        self,
+        *,
+        session_id: str,
+        consumer_id: str,
+        seq: int,
+    ) -> EventConsumerOffset:
+        with self._lock:
+            self.get_session(session_id)
+            consumer_id = self._require_event_consumer_id(consumer_id)
+            stream_id = self._event_stream_id(project_id=None, session_id=session_id)
+            latest_seq = self.event_stream_seq.get(stream_id, 0)
+            if seq < 0:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "ACK seq 必须是非负整数。",
+                    next_step="请使用已收到事件的 seq 作为 ACK 游标。",
+                    details={"seq": seq},
+                )
+            if seq > latest_seq:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "ACK seq 不能超过当前事件流最新 seq。",
+                    next_step="请先回放并处理已存在的事件，再确认对应 seq。",
+                    details={"seq": seq, "latest_seq": latest_seq},
+                )
+            key = (stream_id, consumer_id)
+            existing = self.event_consumer_offsets.get(key)
+            acknowledged_seq = max(seq, existing.last_seq if existing else 0)
+            offset = EventConsumerOffset(
+                id=existing.id if existing else new_id("eoff"),
+                stream_id=stream_id,
+                session_id=session_id,
+                consumer_id=consumer_id,
+                last_seq=acknowledged_seq,
+            )
+            self.event_consumer_offsets[key] = offset
+            return offset
+
+    @staticmethod
+    def _require_event_consumer_id(consumer_id: str) -> str:
+        normalized = consumer_id.strip()
+        if not normalized:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "consumer_id 必须是非空字符串。",
+                next_step="请为事件消费者提供稳定的非空 consumer_id。",
+            )
+        return normalized
 
     def get_bot_delivery_record(self, idempotency_key: str) -> BotDeliveryRecord | None:
         with self._lock:

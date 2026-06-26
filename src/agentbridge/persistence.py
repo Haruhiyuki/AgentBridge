@@ -37,6 +37,7 @@ from agentbridge.domain import (
     ChatContext,
     CommandResult,
     DeviceIdentity,
+    EventConsumerOffset,
     GroupRoleBinding,
     Interaction,
     Project,
@@ -246,6 +247,23 @@ event_stream_offsets_table = Table(
     Column("seq", Integer, nullable=False),
 )
 
+event_consumer_offsets_table = Table(
+    "event_consumer_offsets",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("stream_id", String(255), nullable=False, index=True),
+    Column("session_id", String(64), nullable=True, index=True),
+    Column("consumer_id", String(255), nullable=False, index=True),
+    Column("last_seq", Integer, nullable=False),
+    Column("updated_at", String(64), nullable=False, index=True),
+    Column("payload", JSON, nullable=False),
+    UniqueConstraint(
+        "stream_id",
+        "consumer_id",
+        name="uq_event_consumer_offsets_stream_consumer",
+    ),
+)
+
 bot_delivery_records_table = Table(
     "bot_delivery_records",
     metadata,
@@ -334,6 +352,7 @@ class SQLAlchemyRepository(InMemoryRepository):
         "store_bot_delivery_record",
         "append_audit",
         "append_event",
+        "ack_event_consumer",
     }
 
     def __init__(
@@ -474,6 +493,13 @@ class SQLAlchemyRepository(InMemoryRepository):
             self.event_stream_seq = {
                 row.stream_id: int(row.seq)
                 for row in connection.execute(select(event_stream_offsets_table)).all()
+            }
+            self.event_consumer_offsets = {
+                (offset.stream_id, offset.consumer_id): offset
+                for offset in (
+                    EventConsumerOffset.model_validate(row.payload)
+                    for row in connection.execute(select(event_consumer_offsets_table)).all()
+                )
             }
             self.bot_delivery_records = {
                 row.idempotency_key: BotDeliveryRecord.model_validate(row.payload)
@@ -661,6 +687,7 @@ class SQLAlchemyRepository(InMemoryRepository):
     def _persist_state(self) -> None:
         with self._lock, self.engine.begin() as connection:
             for table in (
+                event_consumer_offsets_table,
                 event_stream_offsets_table,
                 bot_delivery_records_table,
                 semantic_events_table,
@@ -919,6 +946,22 @@ class SQLAlchemyRepository(InMemoryRepository):
                 [
                     {"stream_id": stream_id, "seq": seq}
                     for stream_id, seq in self.event_stream_seq.items()
+                ],
+            )
+            self._insert_many(
+                connection,
+                event_consumer_offsets_table,
+                [
+                    {
+                        "id": offset.id,
+                        "stream_id": offset.stream_id,
+                        "session_id": offset.session_id,
+                        "consumer_id": offset.consumer_id,
+                        "last_seq": offset.last_seq,
+                        "updated_at": utc_datetime_key(offset.updated_at),
+                        "payload": offset.model_dump(mode="json"),
+                    }
+                    for offset in self.event_consumer_offsets.values()
                 ],
             )
             self._insert_many(

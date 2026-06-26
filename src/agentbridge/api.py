@@ -3587,7 +3587,16 @@ def handle_terminal_ws_action(
             session_id=session_id,
             attributes={"operation": "terminal_ws_replay_events"},
         )
-        after_seq = non_negative_ws_int_from_payload(payload, "after_seq", default=0)
+        consumer_id = optional_ws_str(payload, "consumer_id")
+        after_seq = optional_non_negative_ws_int_from_payload(payload, "after_seq")
+        if after_seq is None and consumer_id:
+            offset = control.repository.get_event_consumer_offset(
+                session_id=session_id,
+                consumer_id=consumer_id,
+            )
+            after_seq = offset.last_seq if offset else 0
+        elif after_seq is None:
+            after_seq = 0
         limit = positive_ws_int_from_payload(payload, "limit", default=100)
         events = control.repository.list_events(
             session_id=session_id,
@@ -3598,6 +3607,22 @@ def handle_terminal_ws_action(
             "events": [event.model_dump(mode="json") for event in events],
             "last_seq": events[-1].seq if events else after_seq,
         }
+    if action == "ack_events":
+        actor = actor_from_terminal_ws_payload(payload)
+        control.require_session_permission(
+            actor,
+            Permission.SESSION_VIEW,
+            session_id=session_id,
+            attributes={"operation": "terminal_ws_ack_events"},
+        )
+        consumer_id = required_ws_str(payload, "consumer_id")
+        seq = non_negative_ws_int_from_payload(payload, "seq", default=0)
+        offset = control.repository.ack_event_consumer(
+            session_id=session_id,
+            consumer_id=consumer_id,
+            seq=seq,
+        )
+        return {"offset": offset.model_dump(mode="json")}
     if action == "start_session":
         actor = actor_from_terminal_ws_payload(payload)
         command_payload = payload.get("command")
@@ -3758,8 +3783,8 @@ def handle_terminal_ws_action(
         ErrorCode.COMMAND_UNKNOWN,
         f"未知 Terminal WebSocket action：{action}",
         next_step=(
-            "请使用 health、replay_events、start_session、restart_session、acquire_lease、"
-            "release_lease、claim_next_turn、submit_input、snapshot 或 status。"
+            "请使用 health、replay_events、ack_events、start_session、restart_session、"
+            "acquire_lease、release_lease、claim_next_turn、submit_input、snapshot 或 status。"
         ),
     )
 
@@ -3793,6 +3818,19 @@ def required_ws_str(payload: dict[str, object], key: str) -> str:
     return value
 
 
+def optional_ws_str(payload: dict[str, object], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            f"{key} 必须是非空字符串。",
+            next_step=f"请在 payload 中提供非空字符串 {key}，或省略该字段。",
+        )
+    return value
+
+
 def non_negative_ws_int_from_payload(
     payload: dict[str, object],
     key: str,
@@ -3800,6 +3838,18 @@ def non_negative_ws_int_from_payload(
     default: int,
 ) -> int:
     value = payload.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{key} must be a non-negative integer")
+    return max(value, 0)
+
+
+def optional_non_negative_ws_int_from_payload(
+    payload: dict[str, object],
+    key: str,
+) -> int | None:
+    value = payload.get(key)
+    if value is None:
+        return None
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{key} must be a non-negative integer")
     return max(value, 0)

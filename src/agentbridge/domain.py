@@ -585,6 +585,17 @@ class SemanticEvent(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class EventConsumerOffset(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    stream_id: str
+    session_id: str | None = None
+    consumer_id: str
+    last_seq: int
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class BotDeliveryRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

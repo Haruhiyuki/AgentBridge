@@ -7181,17 +7181,64 @@ def test_terminal_websocket_replays_session_events_after_seq(monkeypatch, tmp_pa
 
         websocket.send_json(
             {
+                "id": "ack",
+                "type": "ack_events",
+                "payload": {
+                    "actor": actor,
+                    "consumer_id": "terminal-agent:local",
+                    "seq": last_seq,
+                },
+            }
+        )
+        acked = websocket.receive_json()
+
+    assert acked["type"] == "terminal.result"
+    assert acked["id"] == "ack"
+    assert acked["ok"] is True
+    assert acked["data"]["offset"]["consumer_id"] == "terminal-agent:local"
+    assert acked["data"]["offset"]["last_seq"] == last_seq
+
+    second_turn = client.post(
+        f"/api/v1/sessions/{session_id}/turns",
+        json={
+            "actor": actor,
+            "prompt": "queued after terminal ws reconnect",
+            "trace_id": "terminal-ws-replay-second-turn",
+        },
+    ).json()
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/terminal/ws?token=secret"
+    ) as websocket:
+        websocket.send_json(
+            {
+                "id": "replay-after-ack",
+                "type": "replay_events",
+                "payload": {
+                    "actor": actor,
+                    "consumer_id": "terminal-agent:local",
+                },
+            }
+        )
+        resumed = websocket.receive_json()
+
+        websocket.send_json(
+            {
                 "id": "replay-empty",
                 "type": "replay_events",
-                "payload": {"actor": actor, "after_seq": last_seq},
+                "payload": {"actor": actor, "after_seq": resumed["data"]["last_seq"]},
             }
         )
         empty = websocket.receive_json()
 
+    assert resumed["type"] == "terminal.result"
+    assert resumed["id"] == "replay-after-ack"
+    assert resumed["ok"] is True
+    assert [event["turn_id"] for event in resumed["data"]["events"]] == [second_turn["id"]]
     assert empty["type"] == "terminal.result"
     assert empty["id"] == "replay-empty"
     assert empty["ok"] is True
-    assert empty["data"] == {"events": [], "last_seq": last_seq}
+    assert empty["data"] == {"events": [], "last_seq": resumed["data"]["last_seq"]}
 
 
 def test_terminal_websocket_claim_next_can_submit_prompt(monkeypatch, tmp_path):
