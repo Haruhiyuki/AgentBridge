@@ -796,6 +796,27 @@ class LocalTerminalAgentServer:
                 trace_id=str(payload.get("trace_id") or "local-terminal"),
             )
             return {"next_epoch": next_epoch}
+        if action == "claim_next_turn":
+            actor = actor_from_payload(payload)
+            expected_queue_version = payload.get("expected_queue_version")
+            if expected_queue_version is not None and not isinstance(
+                expected_queue_version, str
+            ):
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "expected_queue_version 必须是字符串。",
+                    next_step="请省略 expected_queue_version 或传入最新 queue_version。",
+                )
+            turn, queue_version = self.control.claim_next_turn(
+                actor=actor,
+                session_id=required_str(payload, "session_id"),
+                trace_id=str(payload.get("trace_id") or "local-terminal"),
+                expected_queue_version=expected_queue_version,
+            )
+            return {
+                "queue_version": queue_version,
+                "turn": turn.model_dump(mode="json") if turn else None,
+            }
         if action == "submit_input":
             request_id = payload.get("request_id")
             request_id = self.terminal.submit_input(
@@ -837,8 +858,8 @@ class LocalTerminalAgentServer:
             next_step=(
                 "请使用 health、lifecycle_status、run_lifecycle_monitor_once、"
                 "probe_agent_launch_profiles、detect_agent_adapters、start_session、"
-                "restart_session、acquire_human_lease、release_lease、submit_input、"
-                "snapshot、status、read_output 或 stream_output。"
+                "restart_session、acquire_human_lease、release_lease、claim_next_turn、"
+                "submit_input、snapshot、status、read_output 或 stream_output。"
             ),
         )
 

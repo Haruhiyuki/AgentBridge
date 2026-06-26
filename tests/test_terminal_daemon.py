@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import agentbridge.terminal_daemon as terminal_daemon
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, Visibility
+from agentbridge.domain import Actor, TurnStatus, Visibility
 from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService, TerminalStatus
 from agentbridge.terminal_daemon import (
     DesktopTerminalLauncher,
@@ -83,6 +83,26 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
             )
             assert detect["ok"] is True
             assert detect["data"]["adapters"]["generic_tui"]["status"] == "pty_only"
+
+            queued_turn = control.enqueue_turn(
+                actor=Actor(id="usr_1", roles={"maintainer"}),
+                session_id=session.id,
+                prompt="daemon claim next queued turn",
+                trace_id="daemon-queued-turn",
+            )
+            claimed = await client.request(
+                "claim_next_turn",
+                {
+                    "session_id": session.id,
+                    "actor_id": "usr_1",
+                    "roles": ["maintainer"],
+                    "trace_id": "daemon-claim-next",
+                },
+            )
+            assert claimed["ok"] is True
+            assert claimed["data"]["turn"]["id"] == queued_turn.id
+            assert claimed["data"]["turn"]["status"] == "running"
+            assert control.repository.get_turn(queued_turn.id).status == TurnStatus.RUNNING
 
             started = await client.request(
                 "start_session",

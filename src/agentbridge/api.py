@@ -3638,6 +3638,23 @@ def handle_terminal_ws_action(
             trace_id=str(payload.get("trace_id") or "terminal-ws"),
         )
         return {"next_epoch": next_epoch}
+    if action == "claim_next_turn":
+        actor = actor_from_terminal_ws_payload(payload)
+        expected_queue_version = payload.get("expected_queue_version")
+        if expected_queue_version is not None and not isinstance(
+            expected_queue_version, str
+        ):
+            raise TypeError("expected_queue_version must be a string")
+        turn, queue_version = control.claim_next_turn(
+            actor=actor,
+            session_id=session_id,
+            trace_id=str(payload.get("trace_id") or "terminal-ws"),
+            expected_queue_version=expected_queue_version,
+        )
+        return {
+            "queue_version": queue_version,
+            "turn": turn.model_dump(mode="json") if turn else None,
+        }
     if action == "submit_input":
         actor = actor_from_terminal_ws_payload(payload)
         control.require_terminal_control(
@@ -3694,7 +3711,7 @@ def handle_terminal_ws_action(
         f"未知 Terminal WebSocket action：{action}",
         next_step=(
             "请使用 health、start_session、restart_session、acquire_lease、release_lease、"
-            "submit_input、snapshot 或 status。"
+            "claim_next_turn、submit_input、snapshot 或 status。"
         ),
     )
 

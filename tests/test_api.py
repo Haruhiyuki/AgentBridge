@@ -7002,7 +7002,8 @@ def test_terminal_websocket_rejects_admin_cookie_without_ws_token(monkeypatch, t
 
 def test_terminal_websocket_accepts_commands_with_token(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "secret")
-    client = TestClient(create_app())
+    control = ControlPlane()
+    client = TestClient(create_app(control))
     actor = {"id": "usr_1", "roles": ["maintainer"]}
     session_id = _create_session_with_project(
         client,
@@ -7011,10 +7012,39 @@ def test_terminal_websocket_accepts_commands_with_token(monkeypatch, tmp_path):
         prefix="terminal-ws-token",
         name="Terminal WS Token",
     )
+    queued_turn = client.post(
+        f"/api/v1/sessions/{session_id}/turns",
+        json={
+            "actor": actor,
+            "prompt": "queued from terminal ws",
+            "trace_id": "terminal-ws-queued-turn",
+        },
+    ).json()
+    queue_version = client.get(f"/api/v1/sessions/{session_id}/queue").json()[
+        "queue_version"
+    ]
 
     with client.websocket_connect(
         f"/api/v1/sessions/{session_id}/terminal/ws?token=secret"
     ) as websocket:
+        websocket.send_json(
+            {
+                "id": "claim",
+                "type": "claim_next_turn",
+                "payload": {
+                    "actor": actor,
+                    "expected_queue_version": queue_version,
+                    "trace_id": "terminal-ws-claim-next",
+                },
+            }
+        )
+        claimed = websocket.receive_json()
+        assert claimed["type"] == "terminal.result"
+        assert claimed["id"] == "claim"
+        assert claimed["ok"] is True
+        assert claimed["data"]["turn"]["id"] == queued_turn["id"]
+        assert claimed["data"]["turn"]["status"] == "running"
+
         websocket.send_json(
             {
                 "id": "start",
@@ -7099,6 +7129,7 @@ def test_terminal_websocket_accepts_commands_with_token(monkeypatch, tmp_path):
         "output_base_cursor": 0,
         "output_retained_chars": 9,
     }
+    assert control.repository.get_turn(queued_turn["id"]).status == TurnStatus.RUNNING
 
 
 def test_terminal_lifecycle_monitor_can_autostart_from_api_env(monkeypatch):
