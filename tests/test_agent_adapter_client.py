@@ -459,7 +459,16 @@ def test_cli_handshake_prints_probe_compatible_json(capsys):
     assert payload["agent_type"] == "claude"
     assert payload["schema_version"] == "claude-hooks.v1"
     assert payload["supported_schema_versions"] == ["claude-hooks.v1"]
+    assert payload["capabilities"] == [
+        "agentbridge.event_ingest",
+        "agentbridge.response_poll",
+        "claude.hooks",
+        "claude.hooks.provider_snapshot",
+    ]
     assert payload["schema_snapshot"]["adapter"] == "claude_hooks"
+    assert payload["schema_snapshot"]["compatibility"]["verification_status"] == (
+        "provider_snapshot_verified"
+    )
 
 
 def test_cli_schemas_prints_selected_agent_matrix(capsys):
@@ -494,6 +503,12 @@ def test_cli_schemas_prints_specific_snapshot(capsys):
     assert payload["agent_type"] == "claude"
     assert payload["schema_version"] == "claude-hooks.v1"
     assert payload["normalization"]["unknown_adapter_event_type"] == "reject"
+    assert payload["provider_schema_snapshot"]["captured_from"][
+        "claude_code_version"
+    ] == "2.1.193 (Claude Code)"
+    assert "QuestionRequested" in payload["provider_schema_coverage"][
+        "legacy_alias_event_types"
+    ]
 
 
 def test_cli_parser_accepts_emit_and_wait_options():

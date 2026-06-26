@@ -1,6 +1,7 @@
 import pytest
 
 from agentbridge.agent_adapter_events import (
+    adapter_provider_version_verification,
     adapter_response_frames_from_events,
     adapter_schema_behavior_matrix_for,
     adapter_schema_snapshot_for,
@@ -162,6 +163,39 @@ def test_adapter_schema_snapshot_describes_versioned_mapping_and_extractors():
         "approval_output": "hookSpecificOutput",
         "question_output": "hookSpecificOutput.updatedInput",
     }
+    compatibility = snapshot["compatibility"]
+    assert compatibility["verification_status"] == "provider_snapshot_verified"
+    assert compatibility["provider_version_matrix"]["verified_provider_versions"][0][
+        "provider_version_text"
+    ] == "2.1.193 (Claude Code)"
+    provider_snapshot = snapshot["provider_schema_snapshot"]
+    assert provider_snapshot["captured_from"]["claude_code_version"] == (
+        "2.1.193 (Claude Code)"
+    )
+    assert "MessageDisplay" in provider_snapshot["hook_events"]
+    assert provider_snapshot["tool_matchers"]["AskUserQuestion"][
+        "provider_hook_event"
+    ] == "PermissionRequest"
+    coverage = snapshot["provider_schema_coverage"]
+    assert "PermissionRequest" in coverage["verified_adapter_event_types"]
+    assert "AskUserQuestion" in coverage["verified_adapter_event_types"]
+    assert "QuestionRequested" in coverage["legacy_alias_event_types"]
+    assert "PlanRequested" in coverage["legacy_alias_event_types"]
+    assert coverage["unverified_adapter_event_types"] == []
+
+
+def test_adapter_provider_version_verification_accepts_claude_snapshot_version():
+    verification = adapter_provider_version_verification(
+        agent_type=AgentType.CLAUDE,
+        schema_version="claude-hooks.v1",
+        provider_version_text="Claude Code 2.1.193",
+    )
+
+    assert verification["status"] == "verified"
+    assert verification["provider_version"] == "2.1.193"
+    assert verification["matched_provider_version"]["provider_version_text"] == (
+        "2.1.193 (Claude Code)"
+    )
 
 
 def test_adapter_schema_behavior_matrix_lists_supported_versions():

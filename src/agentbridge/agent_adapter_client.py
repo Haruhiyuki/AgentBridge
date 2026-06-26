@@ -2123,6 +2123,7 @@ def default_adapter_capabilities(agent_type: AgentType) -> list[str]:
             "agentbridge.event_ingest",
             "agentbridge.response_poll",
             "claude.hooks",
+            "claude.hooks.provider_snapshot",
         ]
     if agent_type == AgentType.CODEX:
         return [

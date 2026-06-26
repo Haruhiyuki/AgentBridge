@@ -164,10 +164,10 @@ Adapter processes can poll
 answers, approval decisions, cancellations, and expirations for interactions they created.
 The packaged `agentbridge-adapter-client` CLI and `agentbridge.agent_adapter_client`
 module provide the same bridge for native adapter processes, including standard
-handshake JSON with schema snapshots, Codex provider-captured schema projection,
-API-token or device-key headers, event submission, response polling, blocking waits for
-adapter-originated interactions, explicit offline outbox flushing, and local
-schema/provider-version matrix inspection:
+handshake JSON with schema snapshots, Claude Hook and Codex provider-captured schema
+projections, API-token or device-key headers, event submission, response polling,
+blocking waits for adapter-originated interactions, explicit offline outbox flushing, and
+local schema/provider-version matrix inspection:
 
 ```bash
 export AGENTBRIDGE_API_URL="http://127.0.0.1:8000"

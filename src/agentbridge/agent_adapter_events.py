@@ -292,7 +292,12 @@ def adapter_provider_schema_coverage(
     if provider_schema_snapshot is None:
         return None
     provider_methods: set[str] = set()
-    for section_name in ("server_requests", "server_notifications"):
+    for section_name in (
+        "server_requests",
+        "server_notifications",
+        "hook_events",
+        "tool_matchers",
+    ):
         section = provider_schema_snapshot.get(section_name)
         if isinstance(section, dict):
             provider_methods.update(str(method) for method in section)
@@ -363,8 +368,13 @@ def adapter_schema_compatibility_for(
             provider_schema_snapshot=provider_schema_snapshot,
         )
     if agent_type == AgentType.CLAUDE:
+        provider_schema_snapshot = provider_schema_snapshot_for(
+            agent_type_value=agent_type.value,
+            schema_version=normalized_schema_version,
+        )
         return claude_hooks_compatibility_matrix(
             schema_version=normalized_schema_version,
+            provider_schema_snapshot=provider_schema_snapshot,
         )
     raise unsupported_agent_error(agent_type)
 
@@ -436,22 +446,62 @@ def codex_app_server_compatibility_matrix(
     }
 
 
-def claude_hooks_compatibility_matrix(*, schema_version: str) -> dict[str, object]:
+def claude_hooks_compatibility_matrix(
+    *,
+    schema_version: str,
+    provider_schema_snapshot: dict[str, object] | None,
+) -> dict[str, object]:
+    captured_from = (
+        provider_schema_snapshot.get("captured_from")
+        if isinstance(provider_schema_snapshot, dict)
+        else None
+    )
+    provider_version = (
+        captured_from.get("claude_code_version")
+        if isinstance(captured_from, dict)
+        else None
+    )
+    verified_provider_versions: list[dict[str, object]] = []
+    if isinstance(provider_version, str) and provider_version.strip():
+        verified_provider_versions.append(
+            {
+                "provider_version_text": provider_version,
+                "provider_version": version_number_from_text(provider_version),
+                "captured_at": provider_schema_snapshot.get("captured_at"),
+                "evidence": {
+                    "command": captured_from.get("command")
+                    if isinstance(captured_from, dict)
+                    else None,
+                    "documentation_source": captured_from.get("documentation_source")
+                    if isinstance(captured_from, dict)
+                    else None,
+                    "documentation_checked_at": captured_from.get(
+                        "documentation_checked_at"
+                    )
+                    if isinstance(captured_from, dict)
+                    else None,
+                },
+            }
+        )
     return {
         "agent_type": AgentType.CLAUDE.value,
         "adapter": ADAPTER_NAME_BY_AGENT[AgentType.CLAUDE],
         "schema_version": schema_version,
         "provider": "anthropic.claude_code_hooks",
-        "verification_status": "schema_contract_only",
+        "verification_status": (
+            "provider_snapshot_verified"
+            if verified_provider_versions
+            else "schema_contract_only"
+        ),
         "version_policy": "warn_when_unverified",
         "provider_version_matrix": {
             "observed_version_source": "version_probe.version_text",
-            "verified_provider_versions": [],
+            "verified_provider_versions": verified_provider_versions,
         },
         "notes": [
             (
-                "Claude Hook support is currently verified at the AgentBridge "
-                "contract level; provider-version captures still need to be added."
+                "Claude Hook behavior is generated from the captured provider hook "
+                "reference and local Claude Code version probe when available."
             ),
             (
                 "Unknown provider versions stay usable behind the schema handshake but "

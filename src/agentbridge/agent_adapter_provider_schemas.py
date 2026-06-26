@@ -1,5 +1,101 @@
 from __future__ import annotations
 
+CLAUDE_HOOKS_PROVIDER_SCHEMA_SNAPSHOT_V1: dict[str, object] = {
+    "provider": "anthropic.claude_code_hooks",
+    "schema_version": "claude-hooks.v1",
+    "captured_at": "2026-06-26",
+    "captured_from": {
+        "claude_code_version": "2.1.193 (Claude Code)",
+        "command": "claude --version",
+        "documentation_source": "https://code.claude.com/docs/en/hooks",
+        "documentation_checked_at": "2026-06-26",
+    },
+    "wire_contract": {
+        "command_hook_input": "stdin_json",
+        "command_hook_output": "stdout_json_or_exit_code",
+        "http_hook_input": "application_json_post_body",
+        "http_hook_output": "json_response_body",
+        "hook_specific_output_field": "hookSpecificOutput",
+        "hook_event_name_field": "hook_event_name",
+    },
+    "projection_scope": "agentbridge_supported_hook_events_from_provider_reference",
+    "provider_event_counts": {
+        "hook_events": 11,
+        "tool_matchers": 1,
+        "legacy_aliases": 2,
+    },
+    "hook_events": {
+        "SessionStart": {
+            "semantic_hint": "agent_session_started",
+            "cadence": "session_lifecycle",
+        },
+        "MessageDisplay": {
+            "semantic_hint": "assistant_delta",
+            "cadence": "assistant_stream",
+            "output_fields": ["displayContent"],
+        },
+        "PreToolUse": {
+            "semantic_hint": "tool_started_or_policy_gate",
+            "cadence": "tool_call",
+            "matcher_field": "tool_name",
+        },
+        "PostToolUse": {
+            "semantic_hint": "tool_completed",
+            "cadence": "tool_call",
+            "matcher_field": "tool_name",
+        },
+        "PostToolUseFailure": {
+            "semantic_hint": "tool_failed",
+            "cadence": "tool_call",
+            "matcher_field": "tool_name",
+        },
+        "FileChanged": {
+            "semantic_hint": "file_change_completed",
+            "cadence": "filesystem_watch",
+            "matcher_field": "file_path",
+        },
+        "PermissionRequest": {
+            "semantic_hint": "approval_requested",
+            "cadence": "permission_dialog",
+            "matcher_field": "tool_name",
+            "output_fields": ["hookSpecificOutput.permissionDecision"],
+        },
+        "Stop": {
+            "semantic_hint": "turn_completed",
+            "cadence": "turn_lifecycle",
+        },
+        "StopFailure": {
+            "semantic_hint": "turn_failed",
+            "cadence": "turn_lifecycle",
+        },
+        "Notification": {
+            "semantic_hint": "operator_notification",
+            "cadence": "async_notification",
+        },
+        "SessionEnd": {
+            "semantic_hint": "agent_session_ended",
+            "cadence": "session_lifecycle",
+        },
+    },
+    "tool_matchers": {
+        "AskUserQuestion": {
+            "provider_hook_event": "PermissionRequest",
+            "semantic_hint": "question_requested",
+            "reason": "Tool-name matcher projected as a stable AgentBridge adapter event.",
+        },
+    },
+    "legacy_aliases": {
+        "QuestionRequested": {
+            "canonical_provider_method": "AskUserQuestion",
+            "reason": "kept for pre-provider-snapshot AgentBridge adapter compatibility",
+        },
+        "PlanRequested": {
+            "canonical_provider_method": "PermissionRequest",
+            "reason": "kept for pre-provider-snapshot AgentBridge adapter compatibility",
+        },
+    },
+}
+
 CODEX_APP_SERVER_PROVIDER_SCHEMA_SNAPSHOT_V1: dict[str, object] = {
     "provider": "openai.codex_app_server",
     "schema_version": "codex-app-server.v1",
@@ -119,6 +215,8 @@ def provider_schema_snapshot_for(
     agent_type_value: str,
     schema_version: str,
 ) -> dict[str, object] | None:
+    if agent_type_value == "claude" and schema_version == "claude-hooks.v1":
+        return CLAUDE_HOOKS_PROVIDER_SCHEMA_SNAPSHOT_V1
     if agent_type_value == "codex" and schema_version == "codex-app-server.v1":
         return CODEX_APP_SERVER_PROVIDER_SCHEMA_SNAPSHOT_V1
     return None
