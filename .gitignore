@@ -9,6 +9,7 @@ dist/
 build/
 htmlcov/
 .coverage
+.runtime/
 agentbridge.db
 *.sqlite
 *.sqlite3
