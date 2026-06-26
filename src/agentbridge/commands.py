@@ -20,6 +20,7 @@ from agentbridge.domain import (
     InteractionType,
     LeaseOwnerType,
     PolicyScope,
+    Project,
     RiskLevel,
     Visibility,
     WorkspaceType,
@@ -1261,7 +1262,7 @@ class CommandService:
             return self._result(
                 invocation,
                 "Projects",
-                f"共 {len(projects)} 个项目。",
+                format_project_list_message(projects),
                 {"projects": [project.model_dump(mode="json") for project in projects]},
             )
         if command == "project.info":
@@ -1305,7 +1306,7 @@ class CommandService:
             return self._result(
                 invocation,
                 "Sessions",
-                f"共 {len(sessions)} 个会话。",
+                format_session_list_message(sessions),
                 {"sessions": [session.model_dump(mode="json") for session in sessions]},
             )
         if command == "session.select":
@@ -1709,16 +1710,21 @@ class CommandService:
                     if interaction.status
                     in {InteractionStatus.PENDING, InteractionStatus.PARTIALLY_APPROVED}
                 ]
+            interaction_type = None
             if args.get("interaction_type"):
+                interaction_type = InteractionType(str(args["interaction_type"]))
                 interactions = [
                     interaction
                     for interaction in interactions
-                    if interaction.type.value == args["interaction_type"]
+                    if interaction.type == interaction_type
                 ]
             return self._result(
                 invocation,
                 "Interactions",
-                f"共 {len(interactions)} 个交互。",
+                format_interaction_list_message(
+                    interactions,
+                    interaction_type=interaction_type,
+                ),
                 {
                     "interactions": [
                         interaction.model_dump(mode="json") for interaction in interactions
@@ -1763,7 +1769,11 @@ class CommandService:
             return self._result(
                 invocation,
                 "Plans",
-                f"共 {len(plans)} 个计划交互。",
+                format_interaction_list_message(
+                    plans,
+                    interaction_type=InteractionType.PLAN,
+                    label="计划交互",
+                ),
                 {
                     "interactions": [
                         interaction.model_dump(mode="json") for interaction in plans
@@ -2334,6 +2344,65 @@ def select_numbered_item[T](
     return items[index - 1]
 
 
+def format_project_list_message(projects: list[Project]) -> str:
+    if not projects:
+        return "共 0 个项目。"
+    lines = [f"共 {len(projects)} 个项目："]
+    for index, project in enumerate(projects, start=1):
+        aliases = f" · aliases={','.join(project.aliases)}" if project.aliases else ""
+        lines.append(
+            f"{index}. {project.name} ({project.slug}) · "
+            f"{project.status.value} · id={project.id}{aliases}"
+        )
+    lines.append("使用 /agent select project <编号> 切换活动项目。")
+    return "\n".join(lines)
+
+
+def format_session_list_message(sessions: list[AgentSession]) -> str:
+    if not sessions:
+        return "共 0 个会话。"
+    lines = [f"共 {len(sessions)} 个会话："]
+    for index, session in enumerate(sessions, start=1):
+        lines.append(
+            f"{index}. [{session.short_code}] {session.name} · "
+            f"{session.status.value} · project_id={session.project_id}"
+        )
+    lines.append(
+        "使用 /agent select session <编号> 切换活动会话；"
+        "跨项目时可加 --project <project>。"
+    )
+    return "\n".join(lines)
+
+
+def format_interaction_list_message(
+    interactions: list[Interaction],
+    *,
+    interaction_type: InteractionType | None,
+    label: str | None = None,
+) -> str:
+    item_label = label or interaction_type_label(interaction_type)
+    if not interactions:
+        return f"共 0 个{item_label}。"
+    lines = [f"共 {len(interactions)} 个{item_label}："]
+    for index, interaction in enumerate(interactions, start=1):
+        prompt = compact_list_text(interaction.prompt, limit=56)
+        lines.append(
+            f"{index}. {interaction.type.value} · {interaction.status.value} · "
+            f"{interaction.id} · {prompt}"
+        )
+    lines.append(interaction_action_hint(interaction_type))
+    return "\n".join(lines)
+
+
+def compact_list_text(value: str, *, limit: int) -> str:
+    text = " ".join(value.split())
+    if not text:
+        return "(无文本)"
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
 def interaction_type_label(interaction_type: InteractionType | None) -> str:
     if interaction_type == InteractionType.APPROVAL:
         return "审批"
@@ -2342,6 +2411,19 @@ def interaction_type_label(interaction_type: InteractionType | None) -> str:
     if interaction_type == InteractionType.PLAN:
         return "计划"
     return "交互"
+
+
+def interaction_action_hint(interaction_type: InteractionType | None) -> str:
+    if interaction_type == InteractionType.APPROVAL:
+        return "使用 /agent approve <编号> 或 /agent deny <编号> 处理审批。"
+    if interaction_type == InteractionType.QUESTION:
+        return "使用 /agent answer <编号> <答案> 回答问题。"
+    if interaction_type == InteractionType.PLAN:
+        return (
+            "使用 /agent plan approve <编号>、/agent plan revise <编号> <意见> "
+            "或 /agent plan cancel <编号> 处理计划。"
+        )
+    return "使用对应的审批、问题或计划命令加 <编号> 查看或处理交互。"
 
 
 def interaction_list_command(interaction_type: InteractionType | None) -> str:

@@ -246,6 +246,20 @@ def test_select_commands_apply_numbered_project_and_session_choices(tmp_path):
         chat_context_id=context.id,
     )
 
+    project_list = execute(
+        commands,
+        "/agent project list",
+        maintainer,
+        context.id,
+        "select-project-list",
+    )
+    session_list = execute(
+        commands,
+        "/agent session list --project alpha",
+        maintainer,
+        context.id,
+        "select-alpha-session-list",
+    )
     project_result = execute(
         commands,
         "/agent select project 2",
@@ -262,6 +276,12 @@ def test_select_commands_apply_numbered_project_and_session_choices(tmp_path):
     )
 
     updated_context = control.repository.get_chat_context(context.id)
+    assert "1. Alpha (alpha)" in project_list.message
+    assert "2. Beta (beta)" in project_list.message
+    assert "/agent select project <编号>" in project_list.message
+    assert f"1. [{first_session.short_code}] Alpha One" in session_list.message
+    assert f"2. [{second_session.short_code}] Alpha Two" in session_list.message
+    assert "/agent select session <编号>" in session_list.message
     assert project_result.canonical_command == "project.select"
     assert project_result.data["project_id"] == second_project.id
     assert project_result.data["selected_index"] == 2
@@ -957,6 +977,15 @@ def test_numbered_interaction_commands_use_type_filtered_pending_lists(tmp_path)
     assert [item["id"] for item in question_list.data["interactions"]] == [question.id]
     assert [item["id"] for item in approval_list.data["interactions"]] == [approval.id]
     assert [item["id"] for item in plan_list.data["interactions"]] == [plan.id]
+    assert "1. question · pending" in question_list.message
+    assert "Which environment?" in question_list.message
+    assert "/agent answer <编号> <答案>" in question_list.message
+    assert "1. approval · pending" in approval_list.message
+    assert "Deploy now?" in approval_list.message
+    assert "/agent approve <编号>" in approval_list.message
+    assert "1. plan · pending" in plan_list.message
+    assert "Plan: run tests then deploy." in plan_list.message
+    assert "/agent plan approve <编号>" in plan_list.message
     assert answer_result.data["interaction_id"] == question.id
     assert answer_result.data["interaction"]["answer"] == "staging"
     assert approval_result.data["interaction_id"] == approval.id

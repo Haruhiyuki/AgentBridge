@@ -719,6 +719,9 @@ select from the current project or session list without copying IDs:
 /agent select session 2 --project backend
 ```
 
+Project and session list responses include the visible one-based numbers and a short
+`select` command hint; those numbers are transient positions in the current list.
+
 For text-only fallback, users may reply to a Bot-rendered question or approval message
 and omit the Interaction ID:
 
@@ -838,7 +841,9 @@ Users can inspect and resolve them through commands:
 
 Pure numeric interaction arguments are one-based indexes into the current pending list
 for that command type: approvals use `/agent approvals`, questions use
-`/agent question list`, and plans use `/agent plan list`.
+`/agent question list`, and plans use `/agent plan list`. These list responses render
+the same numbers in their message text with the matching answer/approve/plan command
+hint.
 
 On OneBot-style text-only platforms, replying to the rendered question, approval, or
 plan message lets users omit `<interaction-id>` for `/agent answer`, `/agent approve`,
