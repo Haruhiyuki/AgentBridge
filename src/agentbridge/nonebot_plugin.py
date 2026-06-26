@@ -8,6 +8,7 @@ from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
 from agentbridge.onebot import (
     OneBotInboundAdapter,
+    command_text_from_action_payload,
     execute_onebot_inbound_command,
 )
 
@@ -108,7 +109,7 @@ def register_nonebot_handler(matcher: Any, handler: Any) -> Any:
 
 def nonebot_event_to_onebot_event(event: Any) -> dict[str, Any]:
     source = event_mapping(event)
-    command_text = command_text_from_action_payload(source)
+    command_text = command_text_from_action_payload(source) or None
     plain_text = command_text or text_from_event(event, source)
     onebot_event = dict(source)
     if plain_text is not None:
@@ -165,24 +166,6 @@ def event_mapping(event: Any) -> dict[str, Any]:
     if message is not None and "message" not in payload:
         payload["message"] = message
     return payload
-
-
-def command_text_from_action_payload(payload: dict[str, Any]) -> str | None:
-    for key in ("command", "callback_data"):
-        value = string_value(payload.get(key))
-        if value:
-            return value
-    for key in ("data", "payload"):
-        nested = payload.get(key)
-        if isinstance(nested, dict):
-            for nested_key in ("command", "raw_text", "callback_data", "value"):
-                value = string_value(nested.get(nested_key))
-                if value:
-                    return value
-        value = string_value(nested)
-        if value:
-            return value
-    return None
 
 
 def text_from_event(event: Any, payload: dict[str, Any]) -> str | None:

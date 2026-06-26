@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import urllib.error
 import urllib.request
@@ -264,13 +265,17 @@ class OneBotInboundAdapter:
         self.command_prefixes = command_prefixes
 
     def command_from_event(self, event: dict[str, Any]) -> OneBotInboundCommand | None:
-        if event.get("post_type") != "message":
-            return None
-        raw_text = self._extract_text(event).strip()
+        raw_text = self._command_text(event)
         if not self._is_command(raw_text):
             return None
-        message_type = event.get("message_type")
+        message_type = self._message_type(event)
         user_id = self._string_field(event, "user_id")
+        if user_id is None:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "OneBot 命令事件缺少字段：user_id",
+                next_step="按钮回调和消息事件都必须携带点击者或发送者 user_id。",
+            )
         if message_type == "group":
             chat_space_id = self._required_string_field(event, "group_id")
             command_user_id = None
@@ -283,7 +288,7 @@ class OneBotInboundAdapter:
                 f"不支持的 OneBot message_type：{message_type}",
                 next_step="当前仅支持 group 和 private 消息。",
             )
-        message_id = self._required_string_field(event, "message_id")
+        message_id = self._event_id(event)
         actor = Actor(id=f"onebot:{user_id}", roles=set(self.default_roles))
         return OneBotInboundCommand(
             raw_text=raw_text,
@@ -297,6 +302,21 @@ class OneBotInboundAdapter:
             reply_message_id=self._reply_message_id(event),
             original_event=event,
         )
+
+    def _command_text(self, event: dict[str, Any]) -> str:
+        if event.get("post_type") == "message":
+            return self._extract_text(event).strip()
+        return command_text_from_action_payload(event).strip()
+
+    def _message_type(self, event: dict[str, Any]) -> str | None:
+        message_type = self._string_field(event, "message_type")
+        if message_type:
+            return message_type
+        if event.get("group_id") is not None:
+            return "group"
+        if event.get("user_id") is not None:
+            return "private"
+        return None
 
     def _is_command(self, text: str) -> bool:
         return any(
@@ -328,6 +348,9 @@ class OneBotInboundAdapter:
         direct_reply = self._string_field(event, "reply_message_id")
         if direct_reply is not None:
             return direct_reply
+        nested_reply = nested_string_field(event, "reply_message_id")
+        if nested_reply is not None:
+            return nested_reply
         message = event.get("message")
         if not isinstance(message, list):
             return None
@@ -338,6 +361,18 @@ class OneBotInboundAdapter:
             message_id = data.get("id")
             return str(message_id) if message_id is not None else None
         return None
+
+    def _event_id(self, event: dict[str, Any]) -> str:
+        for key in ("message_id", "event_id", "id"):
+            value = self._string_field(event, key)
+            if value is not None:
+                return value
+        for key in ("message_id", "event_id", "id"):
+            value = nested_string_field(event, key)
+            if value is not None:
+                return value
+        body = json.dumps(event, ensure_ascii=False, sort_keys=True, default=str)
+        return f"event:{hashlib.sha256(body.encode('utf-8')).hexdigest()[:16]}"
 
     def _required_string_field(self, event: dict[str, Any], key: str) -> str:
         value = self._string_field(event, key)
@@ -353,6 +388,45 @@ class OneBotInboundAdapter:
     def _string_field(event: dict[str, Any], key: str) -> str | None:
         value = event.get(key)
         return str(value) if value is not None else None
+
+
+def command_text_from_action_payload(payload: dict[str, Any]) -> str:
+    value = nested_command_text(payload)
+    return value or ""
+
+
+def nested_command_text(value: Any, *, depth: int = 0) -> str | None:
+    if depth > 4:
+        return None
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, dict):
+        return None
+    for key in ("command", "raw_text", "callback_data", "value"):
+        text = value.get(key)
+        if isinstance(text, str) and text.strip():
+            return text
+    for key in ("data", "payload"):
+        nested = nested_command_text(value.get(key), depth=depth + 1)
+        if nested:
+            return nested
+    return None
+
+
+def nested_string_field(payload: dict[str, Any], key: str, *, depth: int = 0) -> str | None:
+    if depth > 4:
+        return None
+    for nested_key in ("data", "payload"):
+        value = payload.get(nested_key)
+        if not isinstance(value, dict):
+            continue
+        field = value.get(key)
+        if field is not None:
+            return str(field)
+        nested = nested_string_field(value, key, depth=depth + 1)
+        if nested is not None:
+            return nested
+    return None
 
 
 def execute_onebot_inbound_command(

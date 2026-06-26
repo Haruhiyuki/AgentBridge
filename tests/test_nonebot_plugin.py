@@ -122,6 +122,26 @@ def test_nonebot_plugin_maps_action_callback_to_command(tmp_path):
     assert stored.votes == {"onebot:20002": True}
 
 
+def test_nonebot_event_normalizes_nested_action_descriptor_payload():
+    payload = nonebot_event_to_onebot_event(
+        {
+            "notice_type": "button_clicked",
+            "group_id": 10001,
+            "user_id": 20002,
+            "event_id": "callback-nested",
+            "data": {
+                "action_id": "approve-int_1",
+                "payload": {"command": "/agent approve int_1 once"},
+            },
+        }
+    )
+
+    assert payload["post_type"] == "message"
+    assert payload["message_type"] == "group"
+    assert payload["raw_message"] == "/agent approve int_1 once"
+    assert payload["message_id"] == "callback-nested"
+
+
 def test_nonebot_plugin_ignores_non_command_messages():
     plugin = NoneBotAgentBridgePlugin(control=ControlPlane())
 

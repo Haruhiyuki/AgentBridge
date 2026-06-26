@@ -13,7 +13,15 @@ from agentbridge.api import create_app
 from agentbridge.bot_gateway import BotGatewayService
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, AgentBridgeError, BotPlatform, ErrorCode
+from agentbridge.domain import (
+    Actor,
+    AgentBridgeError,
+    BotPlatform,
+    ErrorCode,
+    InteractionStatus,
+    InteractionType,
+    Visibility,
+)
 from agentbridge.onebot import OneBotInboundAdapter, OneBotV11HTTPTransport, onebot_text_payload
 
 
@@ -305,6 +313,54 @@ def test_onebot_inbound_adapter_extracts_segments_reply_and_private_context():
     assert command.reply_message_id == "old-message"
 
 
+def test_onebot_inbound_adapter_maps_action_callback_descriptor_to_command():
+    adapter = OneBotInboundAdapter(bot_instance_id="bot-main", default_roles={"approver"})
+
+    command = adapter.command_from_event(
+        {
+            "post_type": "notice",
+            "notice_type": "button_clicked",
+            "group_id": 10001,
+            "user_id": 20002,
+            "event_id": "callback-1",
+            "data": {
+                "action_id": "approve-int_1",
+                "payload": {
+                    "command": "/agent approve int_1 once",
+                    "reply_message_id": "rendered-message-1",
+                },
+            },
+        }
+    )
+
+    assert command is not None
+    assert command.raw_text == "/agent approve int_1 once"
+    assert command.actor.id == "onebot:20002"
+    assert command.actor.roles == {"approver"}
+    assert command.chat_space_id == "10001"
+    assert command.user_id is None
+    assert command.reply_message_id == "rendered-message-1"
+    assert command.idempotency_key == "onebot:callback-1"
+
+
+def test_onebot_inbound_adapter_rejects_action_callback_without_user_id():
+    adapter = OneBotInboundAdapter(bot_instance_id="bot-main")
+
+    with pytest.raises(AgentBridgeError) as exc_info:
+        adapter.command_from_event(
+            {
+                "post_type": "notice",
+                "notice_type": "button_clicked",
+                "group_id": 10001,
+                "event_id": "callback-1",
+                "callback_data": "/agent approve int_1 once",
+            }
+        )
+
+    assert exc_info.value.code == ErrorCode.COMMAND_ARGUMENT_INVALID
+    assert "user_id" in exc_info.value.message
+
+
 def test_onebot_inbound_adapter_ignores_non_command_message():
     adapter = OneBotInboundAdapter(bot_instance_id="bot-main")
 
@@ -358,6 +414,66 @@ def test_onebot_events_api_ignores_non_commands_and_executes_commands():
     assert handled.status_code == 200
     assert handled.json()["handled"] is True
     assert handled.json()["result"]["canonical_command"] == "health"
+
+
+def test_onebot_events_api_executes_action_callback_with_click_actor(tmp_path):
+    control = ControlPlane()
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    project = control.create_project(actor=maintainer, name="Backend", trace_id="project")
+    workspace = control.add_workspace(
+        actor=maintainer,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="workspace",
+    )
+    context = control.get_or_create_chat_context(
+        bot_instance_id="onebot-http",
+        platform="onebot.v11",
+        chat_space_id="10001",
+    )
+    session = control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Callback Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="session",
+    )
+    interaction = control.create_interaction(
+        actor=maintainer,
+        session_id=session.id,
+        interaction_type=InteractionType.APPROVAL,
+        prompt="Allow direct OneBot callback?",
+        required_votes=1,
+        trace_id="approval",
+        chat_context_id=context.id,
+    )
+    client = TestClient(create_app(control_plane=control))
+
+    response = client.post(
+        "/api/v1/onebot/events",
+        json={
+            "default_roles": ["approver"],
+            "event": {
+                "post_type": "notice",
+                "notice_type": "button_clicked",
+                "group_id": 10001,
+                "user_id": 20002,
+                "event_id": "callback-approve-1",
+                "payload": {"command": f"/agent approve {interaction.id} once"},
+            },
+        },
+    )
+
+    stored = control.get_interaction(actor=maintainer, interaction_id=interaction.id)
+    assert response.status_code == 200
+    assert response.json()["handled"] is True
+    assert response.json()["result"]["canonical_command"] == "approval.vote"
+    assert stored.status == InteractionStatus.RESOLVED
+    assert stored.votes == {"onebot:20002": True}
 
 
 def test_managed_device_identity_requires_onebot_event_ingest_scope_for_events():

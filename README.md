@@ -564,7 +564,7 @@ External Bot Gateway subscribers can also receive Bot-facing render frames witho
 wscat -c 'ws://127.0.0.1:8000/api/v1/bot-gateway/session-events/ws?session_id=<session-id>&chat_context_id=<chat-context-id>&after_seq=42'
 ```
 
-Each pushed frame uses `type: "bot.render.create"` and includes the semantic event, render document, target chat context, platform, per-message idempotency keys, and platform-neutral `actions` for button-capable adapters. Each action descriptor carries a label, style, command, `callback_data`, and payload that existing NoneBot callback handling can map back into the audited `/agent` command path. Set `AGENTBRIDGE_WS_TOKEN` or `AGENTBRIDGE_WS_TOKEN_FILE` to protect this subscription endpoint in the same way as the other WebSocket routes.
+Each pushed frame uses `type: "bot.render.create"` and includes the semantic event, render document, target chat context, platform, per-message idempotency keys, and platform-neutral `actions` for button-capable adapters. Each action descriptor carries a label, style, command, `callback_data`, and payload that OneBot/NoneBot callback handling can map back into the audited `/agent` command path. Set `AGENTBRIDGE_WS_TOKEN` or `AGENTBRIDGE_WS_TOKEN_FILE` to protect this subscription endpoint in the same way as the other WebSocket routes.
 
 Platform adapters can report delivery lifecycle results back to AgentBridge:
 
@@ -638,7 +638,18 @@ curl -X POST http://127.0.0.1:8000/api/v1/onebot/events \
   -d '{"event":{"post_type":"message","message_type":"group","group_id":10001,"user_id":20002,"message_id":30003,"raw_message":"/agent health"}}'
 ```
 
-Only `/agent` and `/ab` text commands are executed. Non-command messages are ignored.
+The same endpoint accepts action callback payloads that contain a rendered action
+descriptor command, including nested `data.payload.command` or `payload.command` shapes:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/onebot/events \
+  -H 'content-type: application/json' \
+  -d '{"default_roles":["approver"],"event":{"post_type":"notice","notice_type":"button_clicked","group_id":10001,"user_id":20002,"event_id":"callback-1","payload":{"command":"/agent approve <interaction-id> once"}}}'
+```
+
+Only `/agent` and `/ab` commands are executed. Non-command messages are ignored, and
+callback events must carry the clicking `user_id` so the command actor can be
+re-authorized through RBAC/access policy instead of trusting the button payload.
 Managed device credentials need `onebot_event_ingest` to call this endpoint.
 
 For NoneBot deployments, register a matcher from application setup code:
@@ -660,7 +671,7 @@ The wrapper has no hard NoneBot dependency. The helper only expects a matcher ob
 with a `handle()` decorator; if you need manual wiring, `NoneBotAgentBridgePlugin`
 still exposes `as_async_handler()` and `register_matcher()`. It accepts
 NoneBot/OneBot-style event objects, executes `/agent` and `/ab` text commands, and
-maps callback/action payloads containing a command string through the same audited
+maps callback/action payloads containing a descriptor command through the same audited
 command path.
 
 ## Interactions And Approvals
