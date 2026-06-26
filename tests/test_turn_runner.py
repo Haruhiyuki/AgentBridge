@@ -93,6 +93,46 @@ def test_advance_loop_runs_queue_to_completion(tmp_path):
     assert drained["reason"] == "queue_empty"
 
 
+def test_lifecycle_completion_without_turn_id_resolves_active_turn(tmp_path):
+    # 复现真实坑：Claude Stop hook 报 turn.completed 但不知道 AgentBridge 的 turn_id，
+    # 应归到会话当前活动的 turn 并完成，而不是 400 失败导致 turn 永不完成。
+    control, terminal, actor, session = bootstrap(tmp_path)
+    terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start")
+    turn = control.enqueue_turn(
+        actor=actor, session_id=session.id, prompt="任务", trace_id="t1"
+    )
+    terminal.advance_queue(session_id=session.id)
+    assert control.repository.get_session(session.id).active_turn_id == turn.id
+
+    control.ingest_session_event(
+        session_id=session.id,
+        event_type="turn.completed",
+        source=SemanticEventSource.AGENT_ADAPTER,
+        trace_id="stop-hook",
+        turn_id=None,  # 适配器不带 turn_id
+    )
+    assert control.repository.get_turn(turn.id).status == TurnStatus.COMPLETED
+    assert control.repository.get_session(session.id).status == SessionStatus.IDLE
+
+
+def test_terminal_exit_fails_active_turn(tmp_path):
+    # 终端在 turn 运行中退出/丢失时，该 turn 必须失败、会话回到 IDLE，否则僵尸占用会话。
+    control, terminal, actor, session = bootstrap(tmp_path)
+    terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start")
+    turn = control.enqueue_turn(
+        actor=actor, session_id=session.id, prompt="任务", trace_id="t1"
+    )
+    terminal.advance_queue(session_id=session.id)
+    assert control.repository.get_turn(turn.id).status == TurnStatus.RUNNING
+
+    terminal._fail_active_turn_after_terminal_loss(
+        session_id=session.id, reason="terminal_exited", trace_id="exit"
+    )
+    assert control.repository.get_turn(turn.id).status == TurnStatus.FAILED
+    assert control.repository.get_session(session.id).status == SessionStatus.IDLE
+    assert control.repository.get_session(session.id).active_turn_id is None
+
+
 def test_advance_yields_to_human_takeover(tmp_path):
     control, terminal, actor, session = bootstrap(tmp_path)
     terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start")

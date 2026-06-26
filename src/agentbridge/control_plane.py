@@ -1180,6 +1180,15 @@ class ControlPlane:
             existing = self.repository.get_event_by_idempotency_key(idempotency_key)
             if existing:
                 return existing
+        # 外部 Agent 适配器（如 Claude Code Hooks）不知道 AgentBridge 的 turn_id：它发的
+        # assistant.delta / tool.* / turn.completed 等都属于当前活动 turn，统一补上 active_turn_id，
+        # 这样回答能与完成事件归到同一 turn、被正确合并。
+        if turn_id is None and (
+            source == SemanticEventSource.AGENT_ADAPTER
+            or event_type
+            in {"turn.started", "turn.completed", "turn.failed", "turn.interrupted"}
+        ):
+            turn_id = session.active_turn_id
         self._apply_turn_lifecycle_event(
             session_id=session_id,
             event_type=event_type,
@@ -1212,12 +1221,9 @@ class ControlPlane:
         }:
             return
         if not turn_id:
-            raise AgentBridgeError(
-                ErrorCode.COMMAND_ARGUMENT_INVALID,
-                f"{event_type} 事件必须携带 turn_id。",
-                next_step="请让 Terminal Agent 使用已入队 Turn ID 发送生命周期事件。",
-                status_code=400,
-            )
+            # 无法定位 turn（事件未带 turn_id 且会话当前没有活动 turn）：仍记录该事件，
+            # 但不做生命周期状态变更，避免外部 hook 因此收到 400。
+            return
         if event_type == "turn.started":
             self.repository.start_turn(session_id=session_id, turn_id=turn_id)
             return

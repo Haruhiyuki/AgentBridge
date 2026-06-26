@@ -71,14 +71,22 @@ def chat_messages_from_events(
     """
     ordered = sorted(events, key=lambda event: event.seq)
 
-    # 先按 turn 聚合 assistant 文本，完成时作为一条回答输出。
+    # 先按 turn 聚合 assistant 文本，完成时作为一条回答输出。部分适配器事件可能不带 turn_id，
+    # 因此跟踪"当前 turn"（任何带 turn_id 的事件都会更新它），把无 turn_id 的分片归到它，
+    # 并记录每个完成/失败事件解析到的 turn，保证回答与完成事件落在同一 key。
     answer_by_turn: dict[str, str] = {}
+    resolved_turn_for_seq: dict[int, str] = {}
+    current_turn = ""
     for event in ordered:
+        if event.turn_id:
+            current_turn = event.turn_id
         if event.type == "assistant.delta":
             piece = _payload_text(event)
             if piece:
-                key = event.turn_id or ""
+                key = event.turn_id or current_turn
                 answer_by_turn[key] = answer_by_turn.get(key, "") + piece
+        elif event.type == "turn.completed" or event.type in FAIL_TYPES:
+            resolved_turn_for_seq[event.seq] = event.turn_id or current_turn
 
     messages: list[dict[str, object]] = []
     cursor = after_seq
@@ -97,7 +105,7 @@ def chat_messages_from_events(
                 }
             )
         elif event.type == "turn.completed":
-            text = answer_by_turn.get(event.turn_id or "", "").strip()
+            text = answer_by_turn.get(resolved_turn_for_seq.get(event.seq, ""), "").strip()
             messages.append(
                 {
                     "seq": event.seq,

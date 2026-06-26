@@ -1107,6 +1107,9 @@ class TerminalBackend(Protocol):
 
 
 DEFAULT_PTY_OUTPUT_LIMIT_CHARS = 1_000_000
+# TUI 类 agent（如 Codex 的 ratatui 界面）在 0×0 终端下无法渲染；给新 PTY 一个合理的初始尺寸。
+DEFAULT_PTY_COLS = int(os.environ.get("AGENTBRIDGE_TERMINAL_PTY_COLS", "120") or 120)
+DEFAULT_PTY_ROWS = int(os.environ.get("AGENTBRIDGE_TERMINAL_PTY_ROWS", "40") or 40)
 
 
 @dataclass(frozen=True)
@@ -1440,6 +1443,10 @@ class PtyTerminalBackend:
                 )
             Path(cwd).mkdir(parents=True, exist_ok=True)
             master_fd, slave_fd = pty.openpty()
+            # 给 PTY 一个非零初始窗口大小，否则 TUI agent 在 0×0 终端下无法渲染。
+            with suppress(OSError):
+                winsize = struct.pack("HHHH", DEFAULT_PTY_ROWS, DEFAULT_PTY_COLS, 0, 0)
+                fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
             try:
                 process = subprocess.Popen(
                     argv,
@@ -2232,7 +2239,21 @@ class TerminalAgentService:
         }:
             return self._advance_skip(session_id, f"session_status={session.status.value}")
         if session.active_turn_id is not None:
-            return self._advance_skip(session_id, "turn_active")
+            # 自愈：挂着 active_turn 但终端已死（僵尸 turn）→ 当场让该 turn 失败、释放会话，
+            # 不依赖"退出事件是否曾上报"，从而也能修复进程重启前遗留的僵尸会话。
+            active_status = self.status(
+                session_id=session_id, trace_id=f"{trace_id}:zombie-check"
+            )
+            if active_status.started and active_status.running:
+                return self._advance_skip(session_id, "turn_active")
+            self._fail_active_turn_after_terminal_loss(
+                session_id=session_id,
+                reason="terminal_not_running",
+                trace_id=trace_id,
+            )
+            session = self.control.repository.get_session(session_id)
+            if session.active_turn_id is not None:
+                return self._advance_skip(session_id, "turn_active")
         if session.queue_paused:
             return self._advance_skip(session_id, "queue_paused")
         # 本地用户接管时，机器人退为观察者，绝不抢输入。
@@ -2294,8 +2315,8 @@ class TerminalAgentService:
         terminal_not_running）的结果，过滤掉 queue_empty / turn_active 这类常态噪声。"""
         results: list[dict[str, object]] = []
         for session in self.control.repository.list_sessions():
-            if session.active_turn_id is not None:
-                continue
+            # 注意：不要在这里因 active_turn_id 提前跳过——advance_queue 需要机会对
+            # "挂着 active_turn 但终端已死"的僵尸会话做自愈（让该 turn 失败、释放会话）。
             if session.status in {
                 SessionStatus.CLOSED,
                 SessionStatus.CLOSING,
@@ -2664,6 +2685,41 @@ class TerminalAgentService:
         )
         with self._lifecycle_lock:
             self._reported_terminal_exits.add(exit_key)
+        self._fail_active_turn_after_terminal_loss(
+            session_id=session.id,
+            reason="terminal_exited",
+            trace_id=trace_id,
+        )
+
+    def _fail_active_turn_after_terminal_loss(
+        self, *, session_id: str, reason: str, trace_id: str
+    ) -> None:
+        """终端在某个 turn 运行中退出/丢失时，把该 turn 标记失败，释放会话避免僵尸占用。
+
+        持久交互进程一旦死亡，进行中那一轮的模型上下文已不可恢复，必须让它失败、把会话
+        交回 IDLE，后续任务才能继续；否则会话会一直停在 running、active_turn 永不清空。"""
+        try:
+            session = self.control.repository.get_session(session_id)
+            turn_id = session.active_turn_id
+            if not turn_id:
+                return
+            turn = self.control.repository.get_turn(turn_id)
+            if turn.status != TurnStatus.RUNNING:
+                return
+            self.control.ingest_session_event(
+                session_id=session_id,
+                event_type="turn.failed",
+                source=SemanticEventSource.TERMINAL_AGENT,
+                trace_id=f"{trace_id}:turn-failed",
+                turn_id=turn_id,
+                idempotency_key=f"turn-failed-terminal:{turn_id}",
+                payload={
+                    "error": "终端在任务执行中退出，本轮无法继续。",
+                    "reason": reason,
+                },
+            )
+        except AgentBridgeError:
+            pass
 
     def _emit_terminal_lost_once(
         self,
@@ -2698,6 +2754,11 @@ class TerminalAgentService:
         )
         with self._lifecycle_lock:
             self._reported_terminal_losses.add(loss_key)
+        self._fail_active_turn_after_terminal_loss(
+            session_id=session.id,
+            reason="terminal_lost",
+            trace_id=trace_id,
+        )
 
     def _terminal_lifecycle_actor(self) -> Actor:
         return Actor(id="terminal-agent", roles={"admin"})

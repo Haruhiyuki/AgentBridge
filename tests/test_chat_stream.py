@@ -93,6 +93,19 @@ def test_after_seq_only_emits_new_but_coalesces_full_turn():
     assert cursor == 12
 
 
+def test_orphan_assistant_delta_attaches_to_current_turn():
+    # 复现真实坑：assistant.delta 来自 hook 不带 turn_id，turn.completed 带（解析出的）turn_id；
+    # 投影需把无 turn_id 的分片归到当前 turn，使回答与完成事件落在同一 key。
+    events = [
+        ev(7, "turn.started", turn_id="turn_1"),
+        ev(8, "assistant.delta", turn_id=None, payload={"text": "这是回答。"}),
+        ev(9, "turn.completed", turn_id="turn_1"),
+    ]
+    messages, _ = chat_messages_from_events(events)
+    assert kinds(messages) == ["answer"]
+    assert messages[0]["text"] == "这是回答。"
+
+
 def test_empty_answer_falls_back_to_neutral_done():
     # Codex 暂无 hooks：没有 assistant.delta，完成时给中性提示。
     events = [
