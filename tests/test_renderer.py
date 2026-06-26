@@ -161,6 +161,26 @@ def test_question_request_event_renders_select_action_for_options():
     ]
 
 
+def test_assistant_delta_update_key_is_stable_for_turn_stream():
+    first = make_event("assistant.delta", {"text": "hel"}).model_copy(
+        update={"seq": 2, "turn_id": "turn_1"}
+    )
+    second = make_event("assistant.delta", {"text": "lo"}).model_copy(
+        update={"seq": 3, "turn_id": "turn_1"}
+    )
+    unrelated = make_event("tool.started", {"tool_name": "Bash"}).model_copy(
+        update={"seq": 4, "turn_id": "turn_1"}
+    )
+
+    first_document = document_from_event(first)
+    second_document = document_from_event(second)
+    unrelated_document = document_from_event(unrelated)
+
+    assert first_document.update_key == "session:ses_1:assistant:turn_1"
+    assert second_document.update_key == first_document.update_key
+    assert unrelated_document.update_key == "session:ses_1:4"
+
+
 def test_tool_progress_events_render_readable_status():
     cases = [
         (

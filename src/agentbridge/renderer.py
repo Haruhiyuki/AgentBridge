@@ -525,9 +525,16 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
         title=title,
         blocks=blocks,
         actions=actions,
-        update_key=f"{event.stream_id}:{event.seq}",
+        update_key=render_document_update_key(event),
         visibility=visibility,
     )
+
+
+def render_document_update_key(event: SemanticEvent) -> str:
+    if event.type in {"assistant.delta", "assistant.completed"}:
+        answer_scope = event.turn_id or event.session_id or "stream"
+        return f"{event.stream_id}:assistant:{answer_scope}"
+    return f"{event.stream_id}:{event.seq}"
 
 
 def event_title(event: SemanticEvent) -> str:

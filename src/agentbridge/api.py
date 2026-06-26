@@ -3421,6 +3421,10 @@ def bot_gateway_render_frame(
                     event_id=event.id,
                     message_index=index,
                 ),
+                "update_key": bot_render_message_update_key(
+                    document_update_key=document.update_key,
+                    message_index=index,
+                ),
                 "text": text,
             }
             for index, text in enumerate(text_messages)
@@ -3448,6 +3452,16 @@ def bot_render_idempotency_key(
     message_index: int,
 ) -> str:
     return f"{platform.value}:{chat_context_id}:{event_id}:{message_index}"
+
+
+def bot_render_message_update_key(
+    *,
+    document_update_key: str | None,
+    message_index: int,
+) -> str | None:
+    if not document_update_key:
+        return None
+    return f"{document_update_key}:{message_index}"
 
 
 async def stream_terminal_commands(

@@ -833,6 +833,60 @@ def test_bot_gateway_websocket_fans_out_rendered_events(tmp_path):
     assert idle == {"type": "idle_timeout", "last_seq": frame["seq"]}
 
 
+def test_bot_gateway_websocket_exposes_stable_update_keys_for_assistant_deltas(
+    tmp_path,
+):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    turn_event = next(
+        event
+        for event in control.repository.list_events(session_id=session_id)
+        if event.type == "turn.queued"
+    )
+    control.emit_event(
+        event_type="assistant.delta",
+        source=SemanticEventSource.TERMINAL_AGENT,
+        trace_id="assistant-delta-one",
+        session_id=session_id,
+        project_id=turn_event.project_id,
+        turn_id=turn_event.turn_id,
+        payload={"text": "hel"},
+    )
+    control.emit_event(
+        event_type="assistant.delta",
+        source=SemanticEventSource.TERMINAL_AGENT,
+        trace_id="assistant-delta-two",
+        session_id=session_id,
+        project_id=turn_event.project_id,
+        turn_id=turn_event.turn_id,
+        payload={"text": "lo"},
+    )
+    client = TestClient(create_app(control))
+
+    with client.websocket_connect(
+        "/api/v1/bot-gateway/session-events/ws"
+        f"?session_id={session_id}&chat_context_id={context.id}"
+        "&after_seq=2&idle_timeout_seconds=0"
+    ) as websocket:
+        first_frame = websocket.receive_json()
+        second_frame = websocket.receive_json()
+
+    assert first_frame["event"]["type"] == "assistant.delta"
+    assert second_frame["event"]["type"] == "assistant.delta"
+    assert first_frame["messages"][0]["text"] == "hel"
+    assert second_frame["messages"][0]["text"] == "lo"
+    assert first_frame["document"]["update_key"] == (
+        f"session:{session_id}:assistant:{turn_event.turn_id}"
+    )
+    assert second_frame["document"]["update_key"] == first_frame["document"]["update_key"]
+    assert second_frame["messages"][0]["update_key"] == first_frame["messages"][0][
+        "update_key"
+    ]
+    assert second_frame["messages"][0]["idempotency_key"] != first_frame["messages"][0][
+        "idempotency_key"
+    ]
+
+
 def test_bot_gateway_websocket_includes_button_action_descriptors(tmp_path):
     control = ControlPlane()
     context, session_id = create_session_with_turn(control, tmp_path)
