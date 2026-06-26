@@ -689,6 +689,47 @@ def test_readiness_endpoint_warns_for_incomplete_acceptance_checklist(
     assert "checklist item passed" in checks["acceptance.native_session"]["next_step"]
 
 
+def test_readiness_endpoint_fails_for_non_list_acceptance_checklist(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_file = tmp_path / "acceptance-evidence.json"
+    evidence_file.write_text(
+        json.dumps(
+            {
+                "schema_version": ACCEPTANCE_EVIDENCE_SCHEMA_VERSION,
+                "sections": {
+                    "34.1": {
+                        "status": "passed",
+                        "artifacts": ["artifacts/native-session.json"],
+                        "checklist": "passed",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", str(evidence_file))
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    assert payload["status"] == "not_ready"
+    assert checks["acceptance.native_session"]["status"] == "fail"
+    assert checks["acceptance.native_session"]["evidence"]["checklist_error_count"] == 1
+    assert checks["acceptance.native_session"]["evidence"]["checklist"][-1] == {
+        "id": None,
+        "label": None,
+        "status": "checklist_must_be_list",
+        "status_valid": False,
+        "expected": False,
+        "notes_present": False,
+    }
+
+
 def test_readiness_endpoint_fails_for_duplicate_acceptance_artifact_path(
     monkeypatch,
     tmp_path,

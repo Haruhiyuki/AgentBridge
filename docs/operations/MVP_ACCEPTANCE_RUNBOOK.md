@@ -58,7 +58,7 @@ until they are signed off. Unknown manifest section IDs are malformed evidence a
 the manifest. Section artifact lists must be JSON arrays, and artifact paths must be safe
 relative POSIX paths. Non-list artifact fields, unsafe artifact paths, repeated artifact
 paths inside the same section, or malformed sha256 digests are malformed evidence and
-fail the section. Unknown, duplicate, missing-id, or
+fail the section. Non-list checklist fields, unknown, duplicate, missing-id, or
 invalid-status checklist items are malformed evidence and fail the section until the
 manifest is corrected.
 When `AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS=true`, artifact paths are resolved under

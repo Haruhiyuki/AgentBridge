@@ -422,7 +422,18 @@ def acceptance_checklist_payloads(
     raw_items_by_id: dict[str, dict[str, object]] = {}
     duplicate_ids: set[str] = set()
     unknown_items: list[dict[str, object]] = []
-    if isinstance(raw_checklist, list):
+    if raw_checklist is not None and not isinstance(raw_checklist, list):
+        unknown_items.append(
+            {
+                "id": None,
+                "label": None,
+                "status": "checklist_must_be_list",
+                "status_valid": False,
+                "expected": False,
+                "notes_present": False,
+            }
+        )
+    elif isinstance(raw_checklist, list):
         expected_ids = {item["id"] for item in expected_items}
         for raw_item in raw_checklist:
             if not isinstance(raw_item, dict):

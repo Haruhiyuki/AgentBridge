@@ -415,6 +415,30 @@ def test_acceptance_cli_summary_fails_for_invalid_checklist_item(tmp_path, capsy
     ) in output
 
 
+def test_acceptance_cli_summary_fails_for_non_list_checklist(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["sections"]["34.1"]["status"] = "passed"
+    payload["sections"]["34.1"]["artifacts"] = ["artifacts/native-session.json"]
+    payload["sections"]["34.1"]["checklist"] = "passed"
+    manifest.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+
+    result = main(["summary", str(manifest), "--show-checklist", "--fail-on-fail"])
+    output = capsys.readouterr().out
+
+    assert result == ACCEPTANCE_EXIT_INVALID
+    assert "checklist_errors=1" in output
+    assert (
+        "34.1 checklist id=<missing> status=checklist_must_be_list "
+        "expected=false status_valid=false"
+    ) in output
+
+
 def test_acceptance_cli_summary_fails_for_duplicate_section_artifact_path(
     tmp_path,
     capsys,
