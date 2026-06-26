@@ -32,7 +32,7 @@ This repository currently contains the first executable backend slice:
 - Project/chat-context approval quorum overrides through REST and `/agent policy`.
 - Chat-context scoped role bindings with `/agent role list/grant/revoke` and REST management APIs.
 - Persistent access policy allow/deny rules with action/resource/actor/role/attribute matching and a simulation API.
-- Built-in Admin Web pages for system health, project/session operations with active Turn, queue, pending approval, and lease status, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations including platform capabilities, with optional token-gated browser access.
+- Built-in Admin Web pages for system health, project/session operations with active Turn, queue, pending approval, and lease status, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations including platform capabilities plus selected-message edit/delete actions, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
 Production PTY supervision, richer Bot renderers, provider-native key custody, and deeper Claude Hook/Codex app-server adapters are planned next milestones.
@@ -908,7 +908,9 @@ device keys, edits allowed scopes, allowed resource IDs, and certificate fingerp
 issues or renews managed certificates from CSR PEM, shows last-used timestamps, shows
 generated keys/certificates once, and revokes selected devices.
 The Bot delivery page lists delivery records, shows retry worker state, displays
-platform capability contracts and rate-limit policies, and can retry due failures.
+platform capability contracts and rate-limit policies, retries due failures, and can
+edit or delete a selected delivery through the same Bot Gateway mutation APIs used by
+external adapters.
 
 Set `AGENTBRIDGE_ADMIN_TOKEN` or `AGENTBRIDGE_ADMIN_TOKEN_FILE` to require a browser
 token before serving `/admin` pages. When `AGENTBRIDGE_API_TOKEN` or

@@ -4548,6 +4548,19 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
       font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       overflow: auto;
     }
+    textarea {
+      width: 100%;
+      min-height: 88px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+      font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .edit-field {
+      flex: 1 1 260px;
+      max-width: none;
+    }
     .danger { color: var(--danger); }
     @media (max-width: 980px) {
       main { grid-template-columns: 1fr; }
@@ -4628,6 +4641,17 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
         <div class="metric">
           <span>OneBot Delete</span><strong id="cap-onebot-delete">-</strong>
         </div>
+        <div class="metric">
+          <span>OneBot Edit</span><strong id="cap-onebot-edit">-</strong>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button class="primary" id="edit-selected" type="button">Edit Selected</button>
+        <button id="delete-selected" type="button">Delete Selected</button>
+        <label class="edit-field">
+          Message Text
+          <textarea id="edit-text" placeholder="updated delivery text"></textarea>
+        </label>
       </div>
       <pre id="worker">{}</pre>
       <pre id="capabilities">{}</pre>
@@ -4689,6 +4713,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
         }
         tr.addEventListener("click", () => {
           selectedKey = record.idempotency_key;
+          $("edit-text").value = record.text || "";
           $("selected").textContent = JSON.stringify(record, null, 2);
           document.querySelectorAll("#records tr").forEach((row) => {
             row.classList.toggle("selected", row.dataset.key === selectedKey);
@@ -4713,6 +4738,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
       const onebot = platforms.find((item) => item.platform === "onebot.v11") || {};
       setText("cap-platforms", platforms.length);
       setText("cap-onebot-delete", onebot.deleteMessage);
+      setText("cap-onebot-edit", onebot.editMessage);
       $("capabilities").textContent = JSON.stringify(capabilities, null, 2);
     }
 
@@ -4759,6 +4785,35 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
       await refreshRecords();
     }
 
+    async function editSelected() {
+      if (!selectedKey) throw new Error("Select a delivery record");
+      const updated = await requestJson("/api/v1/bot-gateway/deliveries/edit", {
+        method: "POST",
+        body: JSON.stringify({
+          idempotency_key: selectedKey,
+          text: $("edit-text").value,
+          payload: {source: "admin"},
+        }),
+      });
+      $("selected").textContent = JSON.stringify(updated, null, 2);
+      setStatus(`Edited ${selectedKey}`);
+      await refreshRecords();
+    }
+
+    async function deleteSelected() {
+      if (!selectedKey) throw new Error("Select a delivery record");
+      const deleted = await requestJson("/api/v1/bot-gateway/deliveries/delete", {
+        method: "POST",
+        body: JSON.stringify({
+          idempotency_key: selectedKey,
+          payload: {source: "admin"},
+        }),
+      });
+      $("selected").textContent = JSON.stringify(deleted, null, 2);
+      setStatus(`Deleted ${selectedKey}`);
+      await refreshRecords();
+    }
+
     async function run(action) {
       try {
         await action();
@@ -4772,6 +4827,8 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
     $("retry-due").addEventListener("click", () => run(retryDue));
     $("worker-refresh").addEventListener("click", () => run(refreshWorker));
     $("worker-run").addEventListener("click", () => run(runWorker));
+    $("edit-selected").addEventListener("click", () => run(editSelected));
+    $("delete-selected").addEventListener("click", () => run(deleteSelected));
     Promise.all([refreshRecords(), refreshWorker()]).catch((error) => {
       setStatus(error.message);
     });

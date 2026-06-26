@@ -1338,8 +1338,13 @@ def test_bot_delivery_admin_ui_serves_dashboard():
     html = response.text
     assert "AgentBridge Bot Delivery" in html
     assert "/api/v1/bot-gateway/deliveries" in html
+    assert "/api/v1/bot-gateway/deliveries/edit" in html
+    assert "/api/v1/bot-gateway/deliveries/delete" in html
     assert "/api/v1/bot-gateway/retry-worker" in html
     assert "/api/v1/bot-gateway/capabilities" in html
     assert "/api/v1/bot-gateway/rate-limits" in html
     assert "async function retryDue()" in html
+    assert "async function editSelected()" in html
+    assert "async function deleteSelected()" in html
     assert "function renderCapabilities(capabilities)" in html
+    assert "cap-onebot-edit" in html
