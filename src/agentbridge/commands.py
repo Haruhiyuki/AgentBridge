@@ -727,7 +727,11 @@ class CommandService:
         if existing:
             return existing
 
-        result = self._execute_uncached(invocation)
+        try:
+            result = self._execute_uncached(invocation)
+        except AgentBridgeError as exc:
+            self._audit_failed_command(invocation, exc)
+            raise
         project_id_value = result.data.get("project_id")
         session_id_value = result.data.get("session_id")
         command_audit = self.control.audit(
@@ -746,6 +750,30 @@ class CommandService:
         result = result.model_copy(update={"audit_id": command_audit.id})
         self.control.repository.store_command_result(invocation.idempotency_key, result)
         return result
+
+    def _audit_failed_command(
+        self,
+        invocation: CommandInvocation,
+        exc: AgentBridgeError,
+    ) -> None:
+        self.control.audit(
+            action="command.failed",
+            actor=invocation.actor,
+            outcome=(
+                AuditOutcome.DENIED
+                if exc.code == ErrorCode.PERMISSION_DENIED or exc.status_code == 403
+                else AuditOutcome.FAILED
+            ),
+            trace_id=invocation.trace_id,
+            chat_context_id=invocation.chat_context_id,
+            details={
+                "canonical_command": invocation.canonical_command,
+                "invocation_id": invocation.id,
+                "error_code": exc.code.value,
+                "status_code": exc.status_code,
+                "message": exc.message,
+            },
+        )
 
     def _strip_prefix(self, raw_text: str) -> str:
         stripped = raw_text.strip()

@@ -11,7 +11,7 @@ This repository currently contains the first executable backend slice:
 - Python/FastAPI Control Plane skeleton.
 - Shared domain models for projects, workspaces, sessions, turns, interactions, writer leases, chat contexts, and audit events.
 - In-memory repository suitable for contract tests and local MVP prototyping.
-- `/agent` command parser and executor for project/session routing, numbered project/session selection, turn enqueueing, queue list/remove/clear/move/pause/resume, lease control, and idempotent invocation handling.
+- `/agent` command parser and executor for project/session routing, numbered project/session selection, turn enqueueing, queue list/remove/clear/move/pause/resume, lease control, idempotent invocation handling, and command-level success/failure audit records.
 - Project active-session, running-Turn, queued-Turn, and daily per-user Turn quotas plus Workspace write-capacity enforcement for multi-session safety.
 - Ordered semantic event streams with replay and idempotent Terminal Agent event ingestion.
 - Optional SQLAlchemy persistence with an Alembic-managed schema.

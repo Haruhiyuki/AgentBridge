@@ -7,6 +7,7 @@ from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
     Actor,
     AgentBridgeError,
+    AuditOutcome,
     ErrorCode,
     InteractionStatus,
     InteractionType,
@@ -121,6 +122,62 @@ def test_command_idempotency_does_not_create_duplicate_session(tmp_path):
 
     assert first == second
     assert len(control.repository.sessions) == 1
+
+
+def test_failed_command_execution_is_audited(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+
+    with pytest.raises(AgentBridgeError) as exc_info:
+        execute(
+            commands,
+            "/agent ask run without a session",
+            maintainer,
+            context.id,
+            "missing-session-command",
+        )
+
+    failed_audits = [
+        event for event in control.repository.audit_events if event.action == "command.failed"
+    ]
+    assert exc_info.value.code == ErrorCode.TARGET_SESSION_REQUIRED
+    assert len(failed_audits) == 1
+    assert failed_audits[0].outcome == AuditOutcome.FAILED
+    assert failed_audits[0].actor_id == maintainer.id
+    assert failed_audits[0].trace_id == "missing-session-command"
+    assert failed_audits[0].details["canonical_command"] == "turn.enqueue"
+    assert failed_audits[0].details["error_code"] == "TARGET_SESSION_REQUIRED"
+    assert (
+        control.repository.get_command_result("missing-session-command")
+        is None
+    )
+
+
+def test_permission_denied_command_failure_is_audited_as_denied(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    operator = Actor(id="usr_operator", roles={"operator"})
+
+    with pytest.raises(AgentBridgeError) as exc_info:
+        execute(
+            commands,
+            f"/agent project create --name Denied --path {tmp_path} --root {tmp_path}",
+            operator,
+            context.id,
+            "denied-project-create",
+        )
+
+    failed_audits = [
+        event for event in control.repository.audit_events if event.action == "command.failed"
+    ]
+    assert exc_info.value.code == ErrorCode.PERMISSION_DENIED
+    assert len(failed_audits) == 1
+    assert failed_audits[0].outcome == AuditOutcome.DENIED
+    assert failed_audits[0].details["canonical_command"] == "project.create"
+    assert failed_audits[0].details["status_code"] == 403
 
 
 def test_select_commands_apply_numbered_project_and_session_choices(tmp_path):
