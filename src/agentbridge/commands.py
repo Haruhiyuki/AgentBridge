@@ -2472,5 +2472,126 @@ def missing_argument(command: str, argument: str) -> AgentBridgeError:
     return AgentBridgeError(
         ErrorCode.COMMAND_ARGUMENT_INVALID,
         f"{command} 缺少参数 {argument}。",
-        next_step=f"请补充 {argument} 后重试。",
+        next_step=missing_argument_next_step(command, argument),
     )
+
+
+def missing_argument_next_step(command: str, argument: str) -> str:
+    hints = {
+        ("project use", "<project>"): (
+            "请执行 /agent project list 查看项目编号或标识，再执行 "
+            "/agent select project <编号> 或 /agent project use <project>。"
+        ),
+        ("project create", "--name <name>"): (
+            "请提供项目名，例如 /agent project create --name Backend "
+            "--path <path> --root <root>。"
+        ),
+        ("session use", "<session>"): (
+            "请执行 /agent session list 查看会话编号或短码，再执行 "
+            "/agent select session <编号> 或 /agent session use <session>。"
+        ),
+        ("select", "<project|session> <number>"): (
+            "请先执行 /agent project list 或 /agent session list 查看编号，再执行 "
+            "/agent select project <编号> 或 /agent select session <编号>。"
+        ),
+        ("select project", "<number>"): (
+            "请执行 /agent project list 查看当前项目编号，再执行 "
+            "/agent select project <编号>。"
+        ),
+        ("select session", "<number>"): (
+            "请执行 /agent session list 查看当前会话编号，再执行 "
+            "/agent select session <编号>；跨项目时可加 --project <project>。"
+        ),
+        ("queue remove", "<turn>"): (
+            "请执行 /agent queue list 查看 queued Turn ID，再执行 "
+            "/agent queue remove <turn>。"
+        ),
+        ("queue move", "<turn>"): (
+            "请执行 /agent queue list 查看 queued Turn ID 和 queue_version，再执行 "
+            "/agent queue move <turn> --before <turn> --version <queue_version>。"
+        ),
+        ("queue move", "--before <turn>"): (
+            "请执行 /agent queue list 查看目标 Turn ID，再补充 --before <turn>。"
+        ),
+        ("queue move", "--version <queue_version>"): (
+            "请执行 /agent queue list 查看 queue_version，再补充 "
+            "--version <queue_version>。"
+        ),
+        ("queue pause", "--version <queue_version>"): (
+            "请执行 /agent queue list 查看 queue_version，再执行 "
+            "/agent queue pause --version <queue_version>。"
+        ),
+        ("queue resume", "--version <queue_version>"): (
+            "请执行 /agent queue list 查看 queue_version，再执行 "
+            "/agent queue resume --version <queue_version>。"
+        ),
+        ("answer", "<interaction-id>"): (
+            "请执行 /agent question list 查看问题编号，再执行 "
+            "/agent answer <编号> <答案>；在支持引用回复的平台也可直接回复问题消息。"
+        ),
+        ("answer", "<answer>"): (
+            "请在问题编号后追加答案，例如 /agent answer 1 staging。"
+        ),
+        ("approve", "<interaction-id>"): (
+            "请执行 /agent approvals 查看审批编号，再执行 /agent approve <编号>。"
+        ),
+        ("deny", "<interaction-id>"): (
+            "请执行 /agent approvals 查看审批编号，再执行 "
+            "/agent deny <编号> <原因>。"
+        ),
+        ("approval show", "<interaction-id>"): (
+            "请执行 /agent approvals 查看审批编号，再执行 "
+            "/agent approval show <编号>。"
+        ),
+        ("approval cancel", "<interaction-id>"): (
+            "请执行 /agent approvals 查看审批编号，再执行 "
+            "/agent approval cancel <编号> <原因>。"
+        ),
+        ("question show", "<interaction-id>"): (
+            "请执行 /agent question list 查看问题编号，再执行 "
+            "/agent question show <编号>。"
+        ),
+        ("plan show", "<interaction-id>"): (
+            "请执行 /agent plan list 查看计划编号，再执行 /agent plan show <编号>。"
+        ),
+        ("plan approve", "<interaction-id>"): (
+            "请执行 /agent plan list 查看计划编号，再执行 "
+            "/agent plan approve <编号>。"
+        ),
+        ("plan revise", "<interaction-id>"): (
+            "请执行 /agent plan list 查看计划编号，再执行 "
+            "/agent plan revise <编号> <意见>。"
+        ),
+        ("plan revise", "<feedback>"): (
+            "请在计划编号后追加修改意见，例如 /agent plan revise 1 "
+            "Use expand-contract migration first。"
+        ),
+        ("plan cancel", "<interaction-id>"): (
+            "请执行 /agent plan list 查看计划编号，再执行 "
+            "/agent plan cancel <编号> <原因>。"
+        ),
+        ("control release", "--epoch <epoch>"): (
+            "请执行 /agent control status 查看当前写入租约，再补充 --epoch <epoch>。"
+        ),
+        ("role grant", "<actor-id>"): (
+            "请提供目标用户 ID，例如 /agent role grant usr_123 operator。"
+        ),
+        ("role grant", "<role>"): (
+            "请提供要授予的角色，例如 /agent role grant usr_123 operator。"
+        ),
+        ("role revoke", "<actor-id>"): (
+            "请提供目标用户 ID，例如 /agent role revoke usr_123 operator。"
+        ),
+        ("role revoke", "<role>"): (
+            "请提供要撤销的角色，例如 /agent role revoke usr_123 operator。"
+        ),
+        ("policy set", "<risk-level> <quorum>"): (
+            "请提供风险等级和 quorum，例如 /agent policy set critical 2。"
+        ),
+    }
+    if argument == "--version <queue_version>" and command.startswith("queue "):
+        return (
+            "请执行 /agent queue list 查看 queue_version，再补充 "
+            "--version <queue_version>。"
+        )
+    return hints.get((command, argument), f"请补充 {argument} 后重试。")

@@ -721,6 +721,9 @@ select from the current project or session list without copying IDs:
 
 Project and session list responses include the visible one-based numbers and a short
 `select` command hint; those numbers are transient positions in the current list.
+When a text command is missing a required argument, AgentBridge returns a
+command-specific `next_step` with the relevant list command, numbered selector, or
+draft-style example instead of a generic retry message.
 
 For text-only fallback, users may reply to a Bot-rendered question or approval message
 and omit the Interaction ID:

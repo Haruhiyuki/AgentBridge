@@ -1059,6 +1059,71 @@ def test_unknown_ascii_command_is_rejected_but_non_command_text_becomes_prompt()
     assert invocation.args["prompt"] == "修复登录接口的测试失败"
 
 
+def test_missing_argument_errors_include_recovery_commands():
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    actor = Actor(id="usr_1", roles={"maintainer"})
+
+    cases = [
+        (
+            "/agent project use",
+            ["/agent project list", "/agent select project <编号>"],
+        ),
+        (
+            "/agent session use",
+            ["/agent session list", "/agent select session <编号>"],
+        ),
+        (
+            "/agent select session",
+            ["/agent session list", "/agent select session <编号>"],
+        ),
+        (
+            "/agent queue pause",
+            ["/agent queue list", "--version <queue_version>"],
+        ),
+        (
+            "/agent queue move turn_1",
+            ["/agent queue list", "--before <turn>"],
+        ),
+        (
+            "/agent answer",
+            ["/agent question list", "/agent answer <编号> <答案>"],
+        ),
+        (
+            "/agent answer 1",
+            ["/agent answer 1 staging"],
+        ),
+        (
+            "/agent approve",
+            ["/agent approvals", "/agent approve <编号>"],
+        ),
+        (
+            "/agent deny",
+            ["/agent approvals", "/agent deny <编号>"],
+        ),
+        (
+            "/agent plan approve",
+            ["/agent plan list", "/agent plan approve <编号>"],
+        ),
+        (
+            "/agent plan revise 1",
+            ["/agent plan revise 1", "Use expand-contract migration first"],
+        ),
+    ]
+
+    for raw_text, expected_fragments in cases:
+        with pytest.raises(AgentBridgeError) as exc_info:
+            commands.parse(
+                raw_text=raw_text,
+                actor=actor,
+                chat_context_id=context.id,
+            )
+        assert exc_info.value.code == ErrorCode.COMMAND_ARGUMENT_INVALID
+        for fragment in expected_fragments:
+            assert fragment in exc_info.value.next_step
+
+
 def test_active_project_pointer_uses_optimistic_lock(tmp_path):
     control = ControlPlane()
     context = make_context(control)
