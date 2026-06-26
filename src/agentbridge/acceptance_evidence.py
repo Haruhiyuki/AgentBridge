@@ -513,8 +513,10 @@ def acceptance_artifact_payloads(
     artifact_root: Path | None,
     verify_artifacts: bool,
 ) -> list[dict[str, object]]:
-    if not isinstance(artifacts, list):
+    if artifacts is None:
         return []
+    if not isinstance(artifacts, list):
+        return [{"path": None, "status": "artifacts_must_be_list"}]
     payloads: list[dict[str, object]] = []
     seen_paths: set[str] = set()
     for artifact in artifacts:

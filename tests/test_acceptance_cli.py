@@ -504,6 +504,27 @@ def test_acceptance_cli_summary_fails_for_unsafe_artifact_path(tmp_path, capsys)
     assert "34.1 status=passed artifacts=1 artifact_errors=1" in output
 
 
+def test_acceptance_cli_summary_fails_for_non_list_artifacts(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["sections"]["34.1"]["status"] = "passed"
+    payload["sections"]["34.1"]["artifacts"] = "artifacts/native-session.json"
+    manifest.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    mark_section_checklist_passed(manifest, "34.1")
+    capsys.readouterr()
+
+    result = main(["summary", str(manifest), "--fail-on-fail"])
+    output = capsys.readouterr().out
+
+    assert result == ACCEPTANCE_EXIT_INVALID
+    assert "artifact_errors=1" in output
+    assert "34.1 status=passed artifacts=1 artifact_errors=1" in output
+
+
 def test_acceptance_cli_summary_fails_for_unknown_manifest_section(tmp_path, capsys):
     manifest = tmp_path / "acceptance-evidence.json"
     main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])

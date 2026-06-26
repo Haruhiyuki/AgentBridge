@@ -1035,8 +1035,8 @@ requires every checklist item to be `passed` before release evidence is ready; u
 Unknown manifest section IDs are malformed evidence and fail readiness until corrected. The
 `attach-artifact` command copies files into the artifact root, computes sha256 digests,
 and writes digest-backed manifest references for release-candidate evidence; artifact
-paths must be safe relative POSIX paths, and repeated artifact paths inside the same
-section or malformed sha256 digests are malformed evidence. The
+lists must be JSON arrays, paths must be safe relative POSIX paths, and repeated artifact
+paths inside the same section or malformed sha256 digests are malformed evidence. The
 `attach-admin-export` command first validates that a downloaded Admin JSON export uses a
 known built-in evidence schema and includes the required top-level evidence fields for
 that Admin page; System Health exports must also preserve acceptance readiness action
