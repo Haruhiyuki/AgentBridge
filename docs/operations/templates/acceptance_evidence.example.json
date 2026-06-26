@@ -1,0 +1,47 @@
+{
+  "schema_version": "agentbridge.acceptance_evidence.v1",
+  "checked_at": "2026-06-27T00:00:00Z",
+  "environment": "staging",
+  "sections": {
+    "34.1": {
+      "status": "not_run",
+      "artifacts": [],
+      "notes": "Native Claude Code PTY, no claude -p, Bot restart, and 20-turn Session run."
+    },
+    "34.2": {
+      "status": "not_run",
+      "artifacts": [],
+      "notes": "Visible terminal, human lease takeover, Bot input blocking, release, and no crossed input."
+    },
+    "34.3": {
+      "status": "not_run",
+      "artifacts": [],
+      "notes": "OneBot group create/bind, incremental answers, tool progress, questions, approvals, fallback text, and long code."
+    },
+    "34.4": {
+      "status": "not_run",
+      "artifacts": [],
+      "notes": "Group role auth, callback re-authorization, Admin review, approval audit, and workdir restrictions."
+    },
+    "34.5": {
+      "status": "not_run",
+      "artifacts": [],
+      "notes": "Three projects in one group, default project, project commands, allowed roots, quotas, and Admin view."
+    },
+    "34.6": {
+      "status": "not_run",
+      "artifacts": [],
+      "notes": "Three independent Sessions, session commands, unsafe ambiguity handling, queues, restart recovery, and no cross-write."
+    },
+    "34.7": {
+      "status": "not_run",
+      "artifacts": [],
+      "notes": "OneBot /agent commands, unified invocations, auth, idempotency, interaction fallback, trace IDs, and unknown commands."
+    },
+    "34.8": {
+      "status": "not_run",
+      "artifacts": [],
+      "notes": "Control Plane disconnect, event replay, old epoch rejection, interaction expiry, and Bot retry/degradation."
+    }
+  }
+}

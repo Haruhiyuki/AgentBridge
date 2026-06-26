@@ -1011,6 +1011,9 @@ report using `AGENTBRIDGE_API_URL`, API token, or managed-device credentials, pr
 degraded/failing checks with operator next steps through `--format actions`, and can
 return non-zero for degraded or not-ready deployments. The readiness report treats
 missing product auth gates as warnings and configured-but-unusable token files, static
-device keys, managed devices, or client certificate fingerprints as failures. Use
+device keys, managed devices, or client certificate fingerprints as failures. Set
+`AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE` to an
+`agentbridge.acceptance_evidence.v1` manifest when collecting manual MVP sign-off; use
+`docs/operations/templates/acceptance_evidence.example.json` as the starting point and
 `docs/operations/MVP_ACCEPTANCE_RUNBOOK.md` to map the automated readiness gate to the
 manual MVP acceptance items from the design document.

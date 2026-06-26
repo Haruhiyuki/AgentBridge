@@ -16,6 +16,7 @@ export AGENTBRIDGE_ADMIN_TOKEN=...
 export AGENTBRIDGE_WS_TOKEN=...
 export AGENTBRIDGE_DEVICE_KEYS='{"readiness-runner":"..."}'
 export AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS_FILE=/etc/agentbridge/client-fingerprints.txt
+export AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE=/var/lib/agentbridge/acceptance-evidence.json
 export AGENTBRIDGE_TERMINAL_EVENT_OUTBOX=/var/lib/agentbridge/terminal-events.jsonl
 export AGENTBRIDGE_BOT_RETRY_WORKER_ENABLED=true
 export AGENTBRIDGE_DEVICE_CERT_SCAN_WORKER_ENABLED=true
@@ -42,6 +43,12 @@ deployment. Missing HTTP API, Admin Web, WebSocket, device credential, or client
 certificate gates are warnings; configured token files, static device keys, managed
 devices, or fingerprint sources that do not yield a usable credential are failures.
 
+Manual acceptance evidence uses the `agentbridge.acceptance_evidence.v1` manifest
+schema. Start from `docs/operations/templates/acceptance_evidence.example.json`, set
+each design-document section `34.1` through `34.8` to `passed`, and attach at least one
+artifact reference per section. Readiness treats a missing manifest as a warning, an
+unreadable or malformed manifest as a failure, and any failed section as a failure.
+
 ## Acceptance Evidence Matrix
 
 | Design section | Automated evidence | Manual or integration evidence still required |
@@ -61,6 +68,8 @@ Collect these artifacts for a release candidate:
 
 - `agentbridge-readiness --format json` output and `--format actions --fail-on-warn`
   exit status.
+- `AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE` manifest with every design-document section
+  from `34.1` through `34.8` marked `passed` and backed by artifact references.
 - Admin screenshots or exports for System Health, Project/Session, Interaction,
   Terminal Lifecycle, Audit/Event, Device Identity, and Bot Delivery pages.
 - Audit JSON/CSV/signed archive covering the manual acceptance run.

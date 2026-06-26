@@ -14,7 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from fastapi.testclient import TestClient
 
-from agentbridge.api import create_app
+from agentbridge.api import ACCEPTANCE_EVIDENCE_SCHEMA_VERSION, create_app
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
     Actor,
@@ -146,6 +146,7 @@ def test_readiness_endpoint_reports_mvp_operational_checks(monkeypatch):
     monkeypatch.delenv("AGENTBRIDGE_DEVICE_KEYS", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS_FILE", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_DATABASE_URL", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_TERMINAL_EVENT_OUTBOX", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_BOT_RETRY_WORKER_ENABLED", raising=False)
@@ -175,8 +176,10 @@ def test_readiness_endpoint_reports_mvp_operational_checks(monkeypatch):
     assert checks["security.websocket_gate"]["status"] == "warn"
     assert checks["security.device_credentials"]["status"] == "warn"
     assert checks["security.client_certificate_gate"]["status"] == "warn"
+    assert checks["acceptance.evidence_manifest"]["status"] == "warn"
     assert "terminal_lifecycle" in payload["sources"]
     assert "security_gates" in payload["sources"]
+    assert "acceptance_evidence" in payload["sources"]
 
 
 def test_readiness_endpoint_reports_configured_security_gates(monkeypatch):
@@ -230,6 +233,106 @@ def test_readiness_endpoint_fails_when_configured_security_gate_has_no_credentia
     assert checks["security.websocket_gate"]["status"] == "fail"
     assert checks["security.websocket_gate"]["evidence"]["websocket_token_configured"] is True
     assert checks["security.websocket_gate"]["evidence"]["websocket_token_count"] == 0
+
+
+def test_readiness_endpoint_reports_acceptance_evidence_manifest(monkeypatch, tmp_path):
+    evidence_file = tmp_path / "acceptance-evidence.json"
+    sections = {
+        section: {
+            "status": "passed",
+            "artifacts": [f"artifacts/{section.replace('.', '_')}.json"],
+            "notes": f"Section {section} passed in staging.",
+        }
+        for section in (
+            "34.1",
+            "34.2",
+            "34.3",
+            "34.4",
+            "34.5",
+            "34.6",
+            "34.7",
+            "34.8",
+        )
+    }
+    evidence_file.write_text(
+        json.dumps(
+            {
+                "schema_version": ACCEPTANCE_EVIDENCE_SCHEMA_VERSION,
+                "sections": sections,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", str(evidence_file))
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    assert checks["acceptance.evidence_manifest"]["status"] == "pass"
+    assert checks["acceptance.native_session"]["status"] == "pass"
+    assert checks["acceptance.recovery"]["status"] == "pass"
+    assert payload["sources"]["acceptance_evidence"]["section_count"] == 8
+    assert (
+        payload["sources"]["acceptance_evidence"]["sections"]["34.1"]["artifact_count"]
+        == 1
+    )
+
+
+def test_readiness_endpoint_fails_for_invalid_acceptance_evidence_manifest(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv(
+        "AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE",
+        str(tmp_path / "missing-acceptance-evidence.json"),
+    )
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    assert payload["status"] == "not_ready"
+    assert checks["acceptance.evidence_manifest"]["status"] == "fail"
+    assert checks["acceptance.evidence_manifest"]["evidence"]["error"].startswith(
+        "read_error:"
+    )
+
+
+def test_readiness_endpoint_flags_incomplete_acceptance_section(monkeypatch, tmp_path):
+    evidence_file = tmp_path / "acceptance-evidence.json"
+    evidence_file.write_text(
+        json.dumps(
+            {
+                "schema_version": ACCEPTANCE_EVIDENCE_SCHEMA_VERSION,
+                "sections": {
+                    "34.1": {
+                        "status": "passed",
+                        "artifacts": ["artifacts/native-session.json"],
+                    },
+                    "34.8": {"status": "failed", "artifacts": ["artifacts/recovery.json"]},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", str(evidence_file))
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    assert payload["status"] == "not_ready"
+    assert checks["acceptance.evidence_manifest"]["status"] == "pass"
+    assert checks["acceptance.native_session"]["status"] == "pass"
+    assert checks["acceptance.visible_terminal_takeover"]["status"] == "warn"
+    assert checks["acceptance.recovery"]["status"] == "fail"
 
 
 def test_api_token_gate_protects_rest_api_when_configured(monkeypatch):
