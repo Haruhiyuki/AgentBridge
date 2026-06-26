@@ -476,6 +476,47 @@ def test_onebot_events_api_executes_action_callback_with_click_actor(tmp_path):
     assert stored.votes == {"onebot:20002": True}
 
 
+def test_onebot_events_api_executes_modal_plan_revision(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_event(control, tmp_path)
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    interaction = control.create_interaction(
+        actor=maintainer,
+        session_id=session_id,
+        interaction_type=InteractionType.PLAN,
+        prompt="Plan: deploy directly.",
+        trace_id="modal-plan",
+        chat_context_id=context.id,
+    )
+    client = TestClient(create_app(control_plane=control))
+
+    response = client.post(
+        "/api/v1/onebot/events",
+        json={
+            "default_roles": ["operator"],
+            "event": {
+                "post_type": "notice",
+                "notice_type": "modal_submitted",
+                "group_id": 10001,
+                "user_id": 20002,
+                "event_id": "modal-plan-1",
+                "payload": {
+                    "command_template": f"/agent plan revise {interaction.id} {{feedback}}",
+                    "values": {
+                        "feedback": "Use expand-contract migration first",
+                    },
+                },
+            },
+        },
+    )
+
+    stored = control.get_interaction(actor=maintainer, interaction_id=interaction.id)
+    assert response.status_code == 200
+    assert response.json()["result"]["canonical_command"] == "plan.revise"
+    assert stored.status == InteractionStatus.RESOLVED
+    assert stored.answer == "Use expand-contract migration first"
+
+
 def test_onebot_reply_to_approval_delivery_infers_interaction_for_text_fallback(tmp_path):
     control = ControlPlane()
     maintainer = Actor(id="usr_maintainer", roles={"maintainer"})

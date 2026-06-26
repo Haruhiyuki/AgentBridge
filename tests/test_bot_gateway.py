@@ -729,18 +729,30 @@ def test_bot_gateway_websocket_includes_plan_action_descriptors(tmp_path):
     assert frame["event"]["type"] == "plan.requested"
     assert [action["label"] for action in frame["actions"]] == [
         "批准计划",
+        "要求修改",
         "查看计划",
         "取消计划",
     ]
     assert [action["style"] for action in frame["actions"]] == [
         "primary",
         "default",
+        "default",
         "danger",
+    ]
+    assert [action["type"] for action in frame["actions"]] == [
+        "button",
+        "modal",
+        "button",
+        "button",
     ]
     assert frame["actions"][0]["payload"]["command"] == (
         f"/agent plan approve {interaction.id}"
     )
-    assert frame["actions"][2]["callback_data"] == (
+    assert frame["actions"][1]["command_template"] == (
+        f"/agent plan revise {interaction.id} {{feedback}}"
+    )
+    assert frame["actions"][1]["input"]["name"] == "feedback"
+    assert frame["actions"][3]["callback_data"] == (
         f"/agent plan cancel {interaction.id}"
     )
     assert f"/agent plan revise {interaction.id} <feedback>" in frame["messages"][0]["text"]

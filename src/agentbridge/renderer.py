@@ -34,6 +34,21 @@ class RenderActionStyle(StrEnum):
     DANGER = "danger"
 
 
+class RenderActionType(StrEnum):
+    BUTTON = "button"
+    MODAL = "modal"
+
+
+class RenderActionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    label: str
+    placeholder: str | None = None
+    required: bool = True
+    multiline: bool = False
+
+
 class RenderBlock(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -49,20 +64,25 @@ class RenderAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
+    type: RenderActionType = RenderActionType.BUTTON
     label: str
     command: str
     style: RenderActionStyle = RenderActionStyle.DEFAULT
+    command_template: str | None = None
+    input: RenderActionInput | None = None
 
 
 class RenderActionDescriptor(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: str
-    type: str = "button"
+    type: RenderActionType = RenderActionType.BUTTON
     label: str
     style: RenderActionStyle = RenderActionStyle.DEFAULT
     command: str
     callback_data: str
+    command_template: str | None = None
+    input: RenderActionInput | None = None
     payload: dict[str, Any]
 
 
@@ -180,6 +200,19 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                     label="批准计划",
                     command=f"/agent plan approve {interaction_id}",
                     style=RenderActionStyle.PRIMARY,
+                ),
+                RenderAction(
+                    id=f"plan-revise-{interaction_id}",
+                    type=RenderActionType.MODAL,
+                    label="要求修改",
+                    command=revise_command,
+                    command_template=f"/agent plan revise {interaction_id} {{feedback}}",
+                    input=RenderActionInput(
+                        name="feedback",
+                        label="修改意见",
+                        placeholder="说明希望 Agent 调整的计划",
+                        multiline=True,
+                    ),
                 ),
                 RenderAction(
                     id=f"plan-show-{interaction_id}",
@@ -442,23 +475,40 @@ class OneBotV11TextRenderer(PlainTextRenderer):
 
 
 def render_action_descriptors(actions: list[RenderAction]) -> list[dict[str, Any]]:
-    return [render_action_descriptor(action).model_dump(mode="json") for action in actions]
+    return [
+        render_action_descriptor(action).model_dump(mode="json", exclude_none=True)
+        for action in actions
+    ]
 
 
 def render_action_descriptor(action: RenderAction) -> RenderActionDescriptor:
+    payload: dict[str, Any] = {
+        "action_id": action.id,
+        "label": action.label,
+        "style": action.style.value,
+    }
+    callback_data = action.command
+    if action.type == RenderActionType.MODAL:
+        callback_data = action.id
+        payload["type"] = action.type.value
+        payload["fallback_command"] = action.command
+        if action.command_template:
+            payload["command_template"] = action.command_template
+        if action.input:
+            payload["input"] = action.input.model_dump(mode="json", exclude_none=True)
+    else:
+        payload["command"] = action.command
+        payload["callback_data"] = action.command
     return RenderActionDescriptor(
         id=action.id,
+        type=action.type,
         label=action.label,
         style=action.style,
         command=action.command,
-        callback_data=action.command,
-        payload={
-            "action_id": action.id,
-            "command": action.command,
-            "callback_data": action.command,
-            "label": action.label,
-            "style": action.style.value,
-        },
+        callback_data=callback_data,
+        command_template=action.command_template,
+        input=action.input,
+        payload=payload,
     )
 
 

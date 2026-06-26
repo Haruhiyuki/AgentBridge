@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shlex
 import urllib.error
 import urllib.request
@@ -13,6 +14,8 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from agentbridge.domain import Actor, AgentBridgeError, BotPlatform, ChatContext, ErrorCode
+
+MODAL_COMMAND_PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_-]*)\}")
 
 
 class HTTPPoster(Protocol):
@@ -403,6 +406,9 @@ def nested_command_text(value: Any, *, depth: int = 0) -> str | None:
         return value
     if not isinstance(value, dict):
         return None
+    modal_text = command_text_from_modal_payload(value)
+    if modal_text:
+        return modal_text
     for key in ("command", "raw_text", "callback_data", "value"):
         text = value.get(key)
         if isinstance(text, str) and text.strip():
@@ -412,6 +418,39 @@ def nested_command_text(value: Any, *, depth: int = 0) -> str | None:
         if nested:
             return nested
     return None
+
+
+def command_text_from_modal_payload(payload: dict[str, Any]) -> str | None:
+    template = payload.get("command_template") or payload.get("commandTemplate")
+    if not isinstance(template, str) or not template.strip():
+        return None
+    values = modal_payload_values(payload)
+    if not values:
+        return None
+    placeholders = MODAL_COMMAND_PLACEHOLDER.findall(template)
+    if not placeholders:
+        return None
+    command = template
+    for placeholder in placeholders:
+        if placeholder not in values:
+            return None
+        command = command.replace(
+            "{" + placeholder + "}",
+            shlex.quote(values[placeholder]),
+        )
+    return command.strip() or None
+
+
+def modal_payload_values(payload: dict[str, Any]) -> dict[str, str]:
+    for key in ("values", "inputs", "input_values", "fields"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            return {
+                str(field): str(field_value)
+                for field, field_value in value.items()
+                if field_value is not None
+            }
+    return {}
 
 
 def nested_string_field(payload: dict[str, Any], key: str, *, depth: int = 0) -> str | None:

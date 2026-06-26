@@ -564,7 +564,7 @@ External Bot Gateway subscribers can also receive Bot-facing render frames witho
 wscat -c 'ws://127.0.0.1:8000/api/v1/bot-gateway/session-events/ws?session_id=<session-id>&chat_context_id=<chat-context-id>&after_seq=42'
 ```
 
-Each pushed frame uses `type: "bot.render.create"` and includes the semantic event, render document, target chat context, platform, per-message idempotency keys, and platform-neutral `actions` for button-capable adapters. Each action descriptor carries a label, style, command, `callback_data`, and payload that OneBot/NoneBot callback handling can map back into the audited `/agent` command path. Set `AGENTBRIDGE_WS_TOKEN` or `AGENTBRIDGE_WS_TOKEN_FILE` to protect this subscription endpoint in the same way as the other WebSocket routes.
+Each pushed frame uses `type: "bot.render.create"` and includes the semantic event, render document, target chat context, platform, per-message idempotency keys, and platform-neutral `actions` for button- or modal-capable adapters. Button descriptors carry a label, style, command, `callback_data`, and payload that OneBot/NoneBot callback handling can map back into the audited `/agent` command path. Modal descriptors add `command_template` and input metadata; submitted payload values are rendered into the command template before the same command execution, RBAC, and access-policy checks run. Set `AGENTBRIDGE_WS_TOKEN` or `AGENTBRIDGE_WS_TOKEN_FILE` to protect this subscription endpoint in the same way as the other WebSocket routes.
 
 Platform adapters can report delivery lifecycle results back to AgentBridge:
 
@@ -736,9 +736,9 @@ Users can inspect and resolve them through commands:
 On OneBot-style text-only platforms, replying to the rendered question, approval, or
 plan message lets users omit `<interaction-id>` for `/agent answer`, `/agent approve`,
 `/agent deny`, and `/agent plan show/approve/revise/cancel`.
-Bot-rendered plan requests expose callback-safe approve/show/cancel actions and keep
-revision feedback as the explicit `/agent plan revise <interaction-id> <feedback>`
-text fallback until a platform adapter supports modal input.
+Bot-rendered plan requests expose callback-safe approve/show/cancel actions, a modal
+descriptor for revision feedback, and the explicit
+`/agent plan revise <interaction-id> <feedback>` text fallback.
 
 REST callers can use `GET /api/v1/interactions`,
 `POST /api/v1/sessions/{id}/interactions`, `POST /api/v1/interactions/{id}/answer`,

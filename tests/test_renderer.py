@@ -128,7 +128,7 @@ def test_approval_request_event_renders_approver_actions():
     assert "/agent approve int_1 once" in messages[0]
 
 
-def test_plan_request_event_renders_plan_actions_without_clicking_revision():
+def test_plan_request_event_renders_plan_actions_with_modal_revision():
     event = make_event(
         "plan.requested",
         {
@@ -143,17 +143,27 @@ def test_plan_request_event_renders_plan_actions_without_clicking_revision():
 
     assert [action.command for action in document.actions] == [
         "/agent plan approve int_plan",
+        "/agent plan revise int_plan <feedback>",
         "/agent plan show int_plan",
         "/agent plan cancel int_plan",
     ]
     assert [action.style for action in document.actions] == [
         "primary",
         "default",
+        "default",
         "danger",
     ]
+    assert [action.type for action in document.actions] == [
+        "button",
+        "modal",
+        "button",
+        "button",
+    ]
+    assert document.actions[1].command_template == "/agent plan revise int_plan {feedback}"
+    assert document.actions[1].input is not None
+    assert document.actions[1].input.name == "feedback"
     assert "需要确认计划" in messages[0]
     assert "/agent plan revise int_plan <feedback>" in messages[0]
-    assert "<feedback>" not in [action.command for action in document.actions]
 
 
 def test_render_action_descriptors_are_callback_ready():
@@ -182,6 +192,32 @@ def test_render_action_descriptors_are_callback_ready():
             },
         }
     ]
+
+
+def test_modal_action_descriptor_carries_template_and_input_metadata():
+    event = make_event("plan.requested", {"prompt": "Plan: deploy."})
+    event = event.model_copy(update={"interaction_id": "int_plan"})
+
+    document = document_from_event(event)
+    descriptors = render_action_descriptors(document.actions)
+    revise = descriptors[1]
+
+    assert revise["type"] == "modal"
+    assert revise["label"] == "要求修改"
+    assert revise["command"] == "/agent plan revise int_plan <feedback>"
+    assert revise["callback_data"] == "plan-revise-int_plan"
+    assert revise["command_template"] == "/agent plan revise int_plan {feedback}"
+    assert revise["input"] == {
+        "name": "feedback",
+        "label": "修改意见",
+        "placeholder": "说明希望 Agent 调整的计划",
+        "required": True,
+        "multiline": True,
+    }
+    assert revise["payload"]["command_template"] == (
+        "/agent plan revise int_plan {feedback}"
+    )
+    assert revise["payload"]["input"]["name"] == "feedback"
 
 
 def test_interaction_expired_event_renders_operator_warning():
