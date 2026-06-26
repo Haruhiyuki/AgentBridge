@@ -868,6 +868,51 @@ def test_bot_gateway_websocket_preserves_interaction_ack_frame_type(tmp_path):
     )
 
 
+def test_bot_gateway_websocket_emits_render_update_and_delete(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    transport = InMemoryBotTransport()
+    gateway = BotGatewayService(control, transport=transport)
+    delivered = gateway.deliver_session_events(
+        session_id=session_id,
+        chat_context_id=context.id,
+        after_seq=1,
+    )
+    delivery_key = delivered[0].idempotency_key
+
+    gateway.edit_delivery(
+        idempotency_key=delivery_key,
+        text="edited websocket text",
+        payload={"source": "test-edit"},
+    )
+    gateway.delete_delivery(
+        idempotency_key=delivery_key,
+        payload={"source": "test-delete"},
+    )
+    client = TestClient(create_app(control))
+
+    with client.websocket_connect(
+        "/api/v1/bot-gateway/session-events/ws"
+        f"?session_id={session_id}&chat_context_id={context.id}"
+        "&after_seq=2&idle_timeout_seconds=0"
+    ) as websocket:
+        update_frame = websocket.receive_json()
+        delete_frame = websocket.receive_json()
+
+    assert update_frame["type"] == "bot.render.update"
+    assert update_frame["event"]["payload"]["delivery_idempotency_key"] == delivery_key
+    assert update_frame["event"]["payload"]["text"] == "edited websocket text"
+    assert update_frame["event"]["payload"]["edit_revision"] == 1
+    assert update_frame["event"]["payload"]["original_event_type"] == "turn.queued"
+    assert update_frame["messages"][0]["idempotency_key"] == (
+        f"onebot.v11:{context.id}:{update_frame['event_id']}:0"
+    )
+    assert delete_frame["type"] == "bot.render.delete"
+    assert delete_frame["event"]["payload"]["delivery_idempotency_key"] == delivery_key
+    assert delete_frame["event"]["payload"]["platform_state"] == "deleted"
+    assert delete_frame["event"]["payload"]["platform_payload"]["source"] == "test-delete"
+
+
 def test_bot_gateway_websocket_requires_token_when_configured(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "secret")
     control = ControlPlane()

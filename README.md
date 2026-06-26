@@ -588,7 +588,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/deliveries/delete \
   -d '{"idempotency_key":"<message-key>"}'
 ```
 
-The in-memory transport supports edit/delete for contract tests. OneBot V11 supports native `delete_msg`; standard OneBot V11 message editing is not available and returns a capability error unless a platform-specific transport adds that extension.
+The in-memory transport supports edit/delete for contract tests. OneBot V11 supports native `delete_msg`; standard OneBot V11 message editing is not available and returns a capability error unless a platform-specific transport adds that extension. Successful edit/delete result updates also emit `bot.render.update` or `bot.render.delete` semantic events for Bot Gateway WebSocket subscribers.
 
 Bot clients and platform adapters can discover the conservative standard capability contract before choosing render or mutation behavior:
 

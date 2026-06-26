@@ -610,7 +610,66 @@ class BotGatewayService:
 
         updated = record.model_copy(update=update)
         self.control.repository.store_bot_delivery_record(updated)
+        if action in {BotDeliveryResultAction.EDIT, BotDeliveryResultAction.DELETE}:
+            self._emit_render_mutation_event(updated, action=action)
         return updated
+
+    def _emit_render_mutation_event(
+        self,
+        record: BotDeliveryRecord,
+        *,
+        action: BotDeliveryResultAction,
+    ) -> None:
+        original_event = self.control.repository.get_semantic_event(record.event_id)
+        event_type = (
+            "bot.render.update"
+            if action == BotDeliveryResultAction.EDIT
+            else "bot.render.delete"
+        )
+        occurred_at = (
+            record.edited_at
+            if action == BotDeliveryResultAction.EDIT
+            else record.deleted_at
+        )
+        idempotency_suffix = (
+            f"bot-render-update:{record.edit_revision}"
+            if action == BotDeliveryResultAction.EDIT
+            else "bot-render-delete"
+        )
+        payload: dict[str, object] = {
+            "delivery_id": record.id,
+            "delivery_idempotency_key": record.idempotency_key,
+            "platform": record.platform.value,
+            "chat_context_id": record.chat_context_id,
+            "event_id": record.event_id,
+            "event_seq": record.event_seq,
+            "message_index": record.message_index,
+            "platform_message_id": record.platform_message_id,
+            "platform_state": record.platform_state.value,
+            "text": record.text,
+            "edit_revision": record.edit_revision,
+            "platform_payload": dict(record.platform_payload),
+            "occurred_at": (occurred_at or record.updated_at).isoformat(),
+        }
+        if original_event is not None:
+            payload.update(
+                {
+                    "original_event_type": original_event.type,
+                    "original_event_id": original_event.id,
+                    "original_event_seq": original_event.seq,
+                }
+            )
+        self.control.emit_event(
+            event_type=event_type,
+            source=SemanticEventSource.BOT_GATEWAY,
+            trace_id=original_event.trace_id if original_event else "bot-delivery-result",
+            project_id=original_event.project_id if original_event else None,
+            session_id=original_event.session_id if original_event else None,
+            turn_id=original_event.turn_id if original_event else None,
+            interaction_id=original_event.interaction_id if original_event else None,
+            payload=payload,
+            idempotency_key=f"{record.idempotency_key}:{idempotency_suffix}",
+        )
 
     def _get_delivery_record(self, idempotency_key: str) -> BotDeliveryRecord:
         record = self.control.repository.get_bot_delivery_record(idempotency_key)
