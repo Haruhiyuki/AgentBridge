@@ -11,7 +11,7 @@ This repository currently contains the first executable backend slice:
 - Python/FastAPI Control Plane skeleton.
 - Shared domain models for projects, workspaces, sessions, turns, interactions, writer leases, chat contexts, and audit events.
 - In-memory repository suitable for contract tests and local MVP prototyping.
-- `/agent` command parser and executor for project/session routing, turn enqueueing, queue list/remove/clear/move/pause/resume, lease control, and idempotent invocation handling.
+- `/agent` command parser and executor for project/session routing, numbered project/session selection, turn enqueueing, queue list/remove/clear/move/pause/resume, lease control, and idempotent invocation handling.
 - Project active-session, running-Turn, queued-Turn, and daily per-user Turn quotas plus Workspace write-capacity enforcement for multi-session safety.
 - Ordered semantic event streams with replay and idempotent Terminal Agent event ingestion.
 - Optional SQLAlchemy persistence with an Alembic-managed schema.
@@ -707,6 +707,17 @@ including `bot.message.received`, `bot.command.received`, `bot.action.clicked`,
 `bot.selection.submitted`, and `bot.modal.submitted`; ignored non-command messages are
 still captured as received events for operational review.
 Managed device credentials need `onebot_event_ingest` to call this endpoint.
+
+For text platforms where list results are easiest to reference by number, users can
+select from the current project or session list without copying IDs:
+
+```text
+/agent project list
+/agent select project 2
+/agent session list
+/agent select session 2
+/agent select session 2 --project backend
+```
 
 For text-only fallback, users may reply to a Bot-rendered question or approval message
 and omit the Interaction ID:

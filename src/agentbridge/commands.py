@@ -55,6 +55,7 @@ COMMAND_ALIASES = {
     "设置": "set",
     "健康": "health",
     "上下文": "context",
+    "选择": "select",
 }
 
 KNOWN_ROOTS = {
@@ -209,6 +210,18 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
         target_mode="project",
     ),
     command_spec(
+        "project.select",
+        aliases=["select project", "选择 项目"],
+        summary="Select a project by the current project-list number.",
+        usage="/agent select project <number> [--version <pointer-version>]",
+        argument_schema=command_arguments_schema(
+            {"index": INTEGER_SCHEMA, "expected_version": OPTIONAL_INTEGER_SCHEMA},
+            required=["index"],
+        ),
+        required_permission="project.view",
+        target_mode="project",
+    ),
+    command_spec(
         "project.create",
         aliases=["project create", "项目 创建"],
         summary="Register a managed project and default workspace.",
@@ -269,6 +282,22 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
         argument_schema=command_arguments_schema(
             {"session": STRING_SCHEMA, "expected_version": OPTIONAL_INTEGER_SCHEMA},
             required=["session"],
+        ),
+        required_permission="session.view",
+        target_mode="session",
+    ),
+    command_spec(
+        "session.select",
+        aliases=["select session", "选择 会话"],
+        summary="Select a session by the current session-list number.",
+        usage="/agent select session <number> [--project <project>] [--version <pointer-version>]",
+        argument_schema=command_arguments_schema(
+            {
+                "index": INTEGER_SCHEMA,
+                "project": OPTIONAL_STRING_SCHEMA,
+                "expected_version": OPTIONAL_INTEGER_SCHEMA,
+            },
+            required=["index"],
         ),
         required_permission="session.view",
         target_mode="session",
@@ -758,6 +787,8 @@ class CommandService:
             return self._parse_project(tokens)
         if root == "session":
             return self._parse_session(tokens)
+        if root == "select":
+            return self._parse_select(tokens)
         if root == "queue":
             return self._parse_queue(tokens)
         if root == "control":
@@ -871,6 +902,31 @@ class CommandService:
             ErrorCode.COMMAND_UNKNOWN,
             f"未知 session 子命令：{action}",
             next_step="可用子命令：list、new、use、info、close。",
+        )
+
+    def _parse_select(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
+        if not tokens:
+            raise missing_argument("select", "<project|session> <number>")
+        target = self._canonical_token(tokens[0])
+        positional, options = parse_options(tokens[1:])
+        if not positional:
+            raise missing_argument(f"select {target}", "<number>")
+        index = parse_selection_index(f"select {target}", positional[0])
+        if target == "project":
+            return "project.select", {
+                "index": index,
+                "expected_version": parse_optional_int(options.get("version")),
+            }
+        if target == "session":
+            return "session.select", {
+                "index": index,
+                "project": options.get("project") or options.get("p"),
+                "expected_version": parse_optional_int(options.get("version")),
+            }
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_UNKNOWN,
+            f"未知 select 目标：{target}",
+            next_step="可用目标：project、session。",
         )
 
     def _parse_queue(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
@@ -1194,6 +1250,8 @@ class CommandService:
                     "context": context.model_dump(mode="json"),
                 },
             )
+        if command == "project.select":
+            return self._execute_project_select(invocation)
         if command == "session.create":
             return self._execute_session_create(invocation)
         if command == "session.list":
@@ -1209,6 +1267,8 @@ class CommandService:
                 f"共 {len(sessions)} 个会话。",
                 {"sessions": [session.model_dump(mode="json") for session in sessions]},
             )
+        if command == "session.select":
+            return self._execute_session_select(invocation)
         if command == "session.use":
             context = self.control.use_session(
                 actor=invocation.actor,
@@ -1901,6 +1961,93 @@ class CommandService:
             },
         )
 
+    def _execute_project_select(self, invocation: CommandInvocation) -> CommandResult:
+        args = invocation.args
+        projects = self.control.list_projects_for_context(
+            invocation.actor,
+            invocation.chat_context_id,
+        )
+        index = int(args["index"])
+        project = select_numbered_item(
+            projects,
+            index,
+            item_label="项目",
+            list_command="/agent project list",
+        )
+        context = self.control.use_project(
+            actor=invocation.actor,
+            chat_context_id=invocation.chat_context_id,
+            project_token=project.id,
+            expected_version=args.get("expected_version")
+            if isinstance(args.get("expected_version"), int)
+            else None,
+            trace_id=invocation.trace_id,
+        )
+        return self._result(
+            invocation,
+            "Project Selected",
+            f"已选择第 {index} 个项目：{project.name}，pointer_version={context.pointer_version}。",
+            {
+                "project_id": project.id,
+                "selected_index": index,
+                "project": project.model_dump(mode="json"),
+                "context": context.model_dump(mode="json"),
+            },
+        )
+
+    def _execute_session_select(self, invocation: CommandInvocation) -> CommandResult:
+        args = invocation.args
+        project_id = self._optional_project_id(invocation)
+        sessions = self.control.list_sessions_for_context(
+            invocation.actor,
+            project_id=project_id,
+            chat_context_id=invocation.chat_context_id,
+        )
+        index = int(args["index"])
+        session = select_numbered_item(
+            sessions,
+            index,
+            item_label="会话",
+            list_command="/agent session list",
+        )
+        expected_version = (
+            args.get("expected_version")
+            if isinstance(args.get("expected_version"), int)
+            else None
+        )
+        context = self.control.repository.get_chat_context(invocation.chat_context_id)
+        if context.active_project_id != session.project_id:
+            context = self.control.use_project(
+                actor=invocation.actor,
+                chat_context_id=invocation.chat_context_id,
+                project_token=session.project_id,
+                expected_version=expected_version,
+                trace_id=invocation.trace_id,
+            )
+            expected_version = context.pointer_version
+        context = self.control.use_session(
+            actor=invocation.actor,
+            chat_context_id=invocation.chat_context_id,
+            session_token=session.id,
+            expected_version=expected_version,
+            trace_id=invocation.trace_id,
+        )
+        return self._result(
+            invocation,
+            "Session Selected",
+            (
+                f"已选择第 {index} 个会话：[{session.short_code}] {session.name}，"
+                f"pointer_version={context.pointer_version}。"
+            ),
+            {
+                "project_id": session.project_id,
+                "session_id": session.id,
+                "selected_index": index,
+                "session": session.model_dump(mode="json"),
+                "context": context.model_dump(mode="json"),
+            },
+        )
+
     def _resolve_project_arg(self, invocation: CommandInvocation):
         token = invocation.args.get("project")
         context = self.control.repository.get_chat_context(invocation.chat_context_id)
@@ -2066,6 +2213,35 @@ def parse_required_int(command: str, value: object) -> int:
     if parsed is None:
         raise missing_argument(command, "<integer>")
     return parsed
+
+
+def parse_selection_index(command: str, value: object) -> int:
+    index = parse_required_int(command, value)
+    if index < 1:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            f"{command} 编号必须从 1 开始。",
+            next_step="请执行对应的 list 命令查看当前编号。",
+            details={"index": index},
+        )
+    return index
+
+
+def select_numbered_item[T](
+    items: list[T],
+    index: int,
+    *,
+    item_label: str,
+    list_command: str,
+) -> T:
+    if index > len(items):
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            f"{item_label} 编号超出范围：{index}。",
+            next_step=f"请执行 {list_command} 查看当前编号后重试。",
+            details={"index": index, "count": len(items)},
+        )
+    return items[index - 1]
 
 
 def risk_level_from_policy_key(value: str) -> RiskLevel:

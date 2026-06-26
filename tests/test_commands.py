@@ -13,6 +13,7 @@ from agentbridge.domain import (
     LeaseOwnerType,
     RiskLevel,
     SemanticEventSource,
+    Visibility,
 )
 
 
@@ -120,6 +121,125 @@ def test_command_idempotency_does_not_create_duplicate_session(tmp_path):
 
     assert first == second
     assert len(control.repository.sessions) == 1
+
+
+def test_select_commands_apply_numbered_project_and_session_choices(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+    first_project = control.create_project(
+        actor=maintainer,
+        name="Alpha",
+        slug="alpha",
+        max_active_sessions=5,
+        trace_id="select-alpha",
+    )
+    second_project = control.create_project(
+        actor=maintainer,
+        name="Beta",
+        slug="beta",
+        max_active_sessions=5,
+        trace_id="select-beta",
+    )
+    first_workspace = control.add_workspace(
+        actor=maintainer,
+        project_id=first_project.id,
+        machine_id="local",
+        path=str(tmp_path / "alpha"),
+        allowed_root=str(tmp_path),
+        trace_id="select-alpha-workspace",
+    )
+    second_workspace = control.add_workspace(
+        actor=maintainer,
+        project_id=second_project.id,
+        machine_id="local",
+        path=str(tmp_path / "beta"),
+        allowed_root=str(tmp_path),
+        trace_id="select-beta-workspace",
+    )
+    first_session = control.create_session(
+        actor=maintainer,
+        project_id=first_project.id,
+        workspace_id=first_workspace.id,
+        name="Alpha One",
+        agent_type=first_project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="select-alpha-session-1",
+        chat_context_id=context.id,
+    )
+    second_session = control.create_session(
+        actor=maintainer,
+        project_id=first_project.id,
+        workspace_id=first_workspace.id,
+        name="Alpha Two",
+        agent_type=first_project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="select-alpha-session-2",
+        chat_context_id=context.id,
+    )
+    control.create_session(
+        actor=maintainer,
+        project_id=second_project.id,
+        workspace_id=second_workspace.id,
+        name="Beta One",
+        agent_type=second_project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="select-beta-session-1",
+        chat_context_id=context.id,
+    )
+
+    project_result = execute(
+        commands,
+        "/agent select project 2",
+        maintainer,
+        context.id,
+        "select-project-2",
+    )
+    session_result = execute(
+        commands,
+        "/agent select session 2 --project alpha",
+        maintainer,
+        context.id,
+        "select-alpha-session-2",
+    )
+
+    updated_context = control.repository.get_chat_context(context.id)
+    assert project_result.canonical_command == "project.select"
+    assert project_result.data["project_id"] == second_project.id
+    assert project_result.data["selected_index"] == 2
+    assert session_result.canonical_command == "session.select"
+    assert session_result.data["project_id"] == first_project.id
+    assert session_result.data["session_id"] == second_session.id
+    assert session_result.data["selected_index"] == 2
+    assert updated_context.active_project_id == first_project.id
+    assert updated_context.active_session_id == second_session.id
+    assert first_session.id != second_session.id
+
+
+def test_select_command_rejects_out_of_range_number(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+    control.create_project(
+        actor=maintainer,
+        name="Only Project",
+        slug="only-project",
+        trace_id="select-only-project",
+    )
+
+    with pytest.raises(AgentBridgeError) as exc_info:
+        execute(
+            commands,
+            "/agent select project 2",
+            maintainer,
+            context.id,
+            "select-project-missing",
+        )
+
+    assert exc_info.value.code == ErrorCode.COMMAND_ARGUMENT_INVALID
+    assert exc_info.value.details == {"index": 2, "count": 1}
 
 
 def test_project_create_command_sets_active_session_quota(tmp_path):

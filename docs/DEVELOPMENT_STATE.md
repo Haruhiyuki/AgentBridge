@@ -24,6 +24,7 @@ Implemented in this slice:
   - `ask` / `send`
   - `control status/takeover/release`
   - `health`
+- Text fallback command recovery now includes numbered project/session selection through `/agent select project <number>` and `/agent select session <number> [--project <project>]`, using the same visible list order as `project list` and `session list` and keeping session selection synchronized with the selected Session's owning project.
 - Idempotent command execution by idempotency key.
 - Optimistic locking for active project/session pointers.
 - Writer lease epoch handling with local human preemption over bot control.
@@ -205,6 +206,7 @@ Not implemented yet:
 
 - The first backend slice uses an in-memory repository to make command, routing, lease, and API semantics testable before introducing persistence.
 - Unknown ASCII-looking `/agent` management commands are rejected instead of being silently treated as prompts. Non-command free text still becomes `ask` to support the documented shortcut pattern.
+- Numbered `/agent select project|session` is intentionally a separate command instead of overloading `project use 1` or `session use 1`, so numeric project names, aliases, IDs, or short codes keep their normal resolver semantics while text-only users still get an explicit numbered recovery path after list commands.
 - Semantic events are separate from audit records: events drive product state replay and Bot rendering, while audit records preserve security/accountability history.
 - Audit listing is a repository concern. In-memory and SQLAlchemy repositories return bounded newest-first results; the SQLAlchemy path filters action, actor, trace, project, session, interaction, created-at windows, normalized details text, and safe dot-path details-field candidates in the database, then applies the shared exact field matcher until the requested limit is reached.
 - Audit archive signing now prefers an external command signer before local PEM or HMAC signing, so production deployments can bridge to KMS/HSM/Vault without loading non-exportable keys into AgentBridge. The external signer receives the canonical archive on stdin plus digest/key metadata in environment variables and returns JSON signature metadata for offline verification. `agentbridge-audit-verify` independently canonicalizes signed archives, verifies `archive_sha256`, and checks HMAC, Ed25519, RSA-PSS-SHA256, ECDSA-SHA256, or KMS-style RSA-PSS labels with a supplied HMAC key, public key, or certificate. Provider-native SDK clients and richer verifier distribution/attestation workflows remain future hardening.
