@@ -1157,6 +1157,11 @@ def verify_acceptance_bundle_payload(
     if not isinstance(summary, dict):
         errors.append("bundle_summary_must_be_object")
         summary = {}
+    verify_acceptance_bundle_entry_set(
+        archive,
+        artifact_entries=artifact_entries,
+        errors=errors,
+    )
     artifact_index = verify_acceptance_bundle_artifacts(
         archive,
         artifact_entries=artifact_entries,
@@ -1217,6 +1222,30 @@ def duplicate_zip_entries(archive: zipfile.ZipFile) -> list[str]:
             duplicates.add(name)
         seen.add(name)
     return sorted(duplicates)
+
+
+def verify_acceptance_bundle_entry_set(
+    archive: zipfile.ZipFile,
+    *,
+    artifact_entries: list[object],
+    errors: list[str],
+) -> None:
+    expected_entries = {
+        "acceptance-bundle.json",
+        "acceptance-evidence.json",
+    }
+    for raw_artifact in artifact_entries:
+        if not isinstance(raw_artifact, dict):
+            continue
+        raw_archive_path = raw_artifact.get("archive_path")
+        if isinstance(raw_archive_path, str) and acceptance_bundle_archive_path(
+            raw_archive_path,
+            required_prefix="artifacts",
+        ):
+            expected_entries.add(raw_archive_path)
+    for archive_path in sorted(set(archive.namelist())):
+        if archive_path not in expected_entries:
+            errors.append(f"unexpected_bundle_entry:{archive_path}")
 
 
 def verify_acceptance_bundle_artifacts(
