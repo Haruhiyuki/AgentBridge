@@ -3777,7 +3777,7 @@ async def http_api_request_authorized(
     ):
         return True
     required_scope = http_api_required_device_scope(request)
-    resource_ids = await http_api_resource_ids(request)
+    resource_ids = await http_api_resource_ids(request, control=control)
     presented_tokens = http_api_presented_tokens(request)
     return (
         client_certificate_authorized(
@@ -3800,7 +3800,11 @@ async def http_api_request_authorized(
     )
 
 
-async def http_api_resource_ids(request: Request) -> set[str]:
+async def http_api_resource_ids(
+    request: Request,
+    *,
+    control: ControlPlane | None = None,
+) -> set[str]:
     path_segments = request.url.path.rstrip("/").split("/")
     resource_ids: set[str] = set()
     resource_collections = {
@@ -3828,32 +3832,15 @@ async def http_api_resource_ids(request: Request) -> set[str]:
         if value and value.strip():
             resource_ids.add(value.strip())
     resource_ids.update(await http_api_body_resource_ids(request))
+    resource_ids.update(await http_api_resolved_resource_ids(request, control=control))
     return resource_ids
 
 
 async def http_api_body_resource_ids(request: Request) -> set[str]:
     if request.method.upper() not in {"POST", "PUT", "PATCH", "DELETE"}:
         return set()
-    if not http_request_has_json_body(request):
-        return set()
-    content_length = request.headers.get("content-length")
-    if content_length:
-        try:
-            if int(content_length) > http_api_resource_body_limit_bytes():
-                return set()
-        except ValueError:
-            return set()
-    try:
-        body = await request.body()
-    except RuntimeError:
-        return set()
-    if not body or len(body) > http_api_resource_body_limit_bytes():
-        return set()
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
-        return set()
-    if not isinstance(payload, dict):
+    payload = await http_api_json_body(request)
+    if payload is None:
         return set()
     resource_ids: set[str] = set()
     for field_name in (
@@ -3866,6 +3853,56 @@ async def http_api_body_resource_ids(request: Request) -> set[str]:
     ):
         collect_http_resource_id_value(payload.get(field_name), resource_ids)
     return resource_ids
+
+
+async def http_api_resolved_resource_ids(
+    request: Request,
+    *,
+    control: ControlPlane | None,
+) -> set[str]:
+    if control is None or request.method.upper() != "POST":
+        return set()
+    if request.url.path.rstrip("/") not in {
+        "/api/v1/bot-gateway/delivery-results",
+        "/api/v1/bot-gateway/deliveries/edit",
+        "/api/v1/bot-gateway/deliveries/delete",
+    }:
+        return set()
+    payload = await http_api_json_body(request)
+    if payload is None:
+        return set()
+    idempotency_key = payload.get("idempotency_key")
+    if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+        return set()
+    record = control.repository.get_bot_delivery_record(idempotency_key.strip())
+    if record is None:
+        return set()
+    return {record.chat_context_id}
+
+
+async def http_api_json_body(request: Request) -> dict[str, object] | None:
+    if not http_request_has_json_body(request):
+        return None
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > http_api_resource_body_limit_bytes():
+                return None
+        except ValueError:
+            return None
+    try:
+        body = await request.body()
+    except RuntimeError:
+        return None
+    if not body or len(body) > http_api_resource_body_limit_bytes():
+        return None
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
 
 
 def http_request_has_json_body(request: Request) -> bool:

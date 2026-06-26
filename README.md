@@ -399,8 +399,11 @@ device-identity IDs when those IDs are visible in the REST path/query string, su
 top-level JSON body fields, or the WebSocket route. Omit it or pass an empty list for
 all resources; pass `"*"` for an explicit wildcard. If the allowlist is non-empty and a
 request has no visible resource ID, the managed credential is rejected. The auth layer
-only inspects bounded JSON bodies for stable top-level resource fields; it does not
-perform endpoint-specific command parsing before authentication.
+only inspects bounded JSON bodies for stable top-level resource fields and does not
+perform command parsing before authentication. Bot Gateway delivery result, edit, and
+delete mutations also resolve the posted delivery `idempotency_key` to that delivery
+record's `chat_context_id` before checking the allowlist, so adapter credentials can be
+scoped to a chat context even though those mutation bodies carry only the message key.
 `AGENTBRIDGE_DEVICE_AUTH_RESOURCE_BODY_LIMIT_BYTES` controls the JSON body inspection
 limit and defaults to `1048576`.
 Managed device credentials need `audit_read` to call audit, audit export, and event history HTTP read APIs,

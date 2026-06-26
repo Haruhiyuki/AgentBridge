@@ -665,6 +665,114 @@ def test_managed_device_identity_resource_ids_limit_body_resources(tmp_path):
     assert denied_policy_response.status_code == 403
 
 
+def test_managed_device_identity_resolves_bot_delivery_to_chat_context(tmp_path):
+    control = ControlPlane()
+    admin = Actor(id="security-admin", roles={"admin"})
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    allowed_context = control.get_or_create_chat_context(
+        bot_instance_id="bot-test",
+        platform="onebot.v11",
+        chat_space_id="allowed-delivery-chat",
+    )
+    denied_context = control.get_or_create_chat_context(
+        bot_instance_id="bot-test",
+        platform="onebot.v11",
+        chat_space_id="denied-delivery-chat",
+    )
+    project = control.create_project(
+        actor=maintainer,
+        name="Bot Delivery Device Project",
+        trace_id="device-bot-delivery-project",
+    )
+    workspace = control.add_workspace(
+        actor=maintainer,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path / "bot-delivery"),
+        allowed_root=str(tmp_path),
+        trace_id="device-bot-delivery-workspace",
+    )
+    allowed_session = control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Allowed Bot Delivery Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="device-bot-delivery-allowed-session",
+        chat_context_id=allowed_context.id,
+    )
+    denied_session = control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Denied Bot Delivery Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="device-bot-delivery-denied-session",
+        chat_context_id=denied_context.id,
+    )
+    client = TestClient(create_app(control))
+
+    allowed_delivery_response = client.post(
+        "/api/v1/bot-gateway/deliver-session-events",
+        json={"session_id": allowed_session.id, "chat_context_id": allowed_context.id},
+    )
+    denied_delivery_response = client.post(
+        "/api/v1/bot-gateway/deliver-session-events",
+        json={"session_id": denied_session.id, "chat_context_id": denied_context.id},
+    )
+    assert allowed_delivery_response.status_code == 200
+    assert denied_delivery_response.status_code == 200
+    allowed_idempotency_key = allowed_delivery_response.json()[0]["idempotency_key"]
+    denied_idempotency_key = denied_delivery_response.json()[0]["idempotency_key"]
+
+    control.upsert_device_identity(
+        actor=admin,
+        device_id="bot-delivery-device",
+        device_key="managed-secret",
+        allowed_scopes={DeviceIdentityScope.BOT_GATEWAY_MANAGE},
+        allowed_resource_ids={allowed_context.id},
+        trace_id="device-bot-delivery-create",
+    )
+    headers = {
+        "x-agentbridge-device-id": "bot-delivery-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+
+    result_response = client.post(
+        "/api/v1/bot-gateway/delivery-results",
+        json={"idempotency_key": allowed_idempotency_key, "action": "acknowledge"},
+        headers=headers,
+    )
+    edit_response = client.post(
+        "/api/v1/bot-gateway/deliveries/edit",
+        json={"idempotency_key": allowed_idempotency_key, "text": "Updated delivery"},
+        headers=headers,
+    )
+    delete_response = client.post(
+        "/api/v1/bot-gateway/deliveries/delete",
+        json={"idempotency_key": allowed_idempotency_key},
+        headers=headers,
+    )
+    denied_edit_response = client.post(
+        "/api/v1/bot-gateway/deliveries/edit",
+        json={"idempotency_key": denied_idempotency_key, "text": "Denied delivery"},
+        headers=headers,
+    )
+
+    assert result_response.status_code == 200
+    assert result_response.json()["chat_context_id"] == allowed_context.id
+    assert edit_response.status_code == 200
+    assert edit_response.json()["chat_context_id"] == allowed_context.id
+    assert edit_response.json()["platform_state"] == "edited"
+    assert delete_response.status_code == 200
+    assert delete_response.json()["chat_context_id"] == allowed_context.id
+    assert delete_response.json()["platform_state"] == "deleted"
+    assert denied_edit_response.status_code == 403
+    assert denied_edit_response.json()["error_code"] == "PERMISSION_DENIED"
+
+
 def test_managed_device_identity_can_be_certificate_only():
     client = TestClient(create_app())
     actor = {"id": "security-admin", "roles": ["admin"]}
