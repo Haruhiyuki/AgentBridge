@@ -6,7 +6,7 @@ import json
 import shutil
 import sys
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from agentbridge.acceptance_evidence import (
@@ -26,6 +26,7 @@ ACCEPTANCE_EXIT_INCOMPLETE = 2
 ACCEPTANCE_EXIT_INVALID = 3
 ACCEPTANCE_BUNDLE_SCHEMA_VERSION = "agentbridge.acceptance_bundle.v1"
 AcceptanceOutputFormat = Literal["json", "summary"]
+AcceptanceBundleOutputFormat = Literal["json", "summary"]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -112,6 +113,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow bundling not-ready evidence when all referenced artifacts verify",
     )
     bundle_parser.add_argument("--force", action="store_true")
+
+    verify_bundle_parser = subparsers.add_parser(
+        "verify-bundle",
+        help="Verify a portable acceptance evidence bundle without extracting it",
+    )
+    verify_bundle_parser.add_argument("path", type=Path)
+    verify_bundle_parser.add_argument(
+        "--format",
+        choices=["json", "summary"],
+        default="summary",
+    )
+    verify_bundle_parser.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help="Allow verified draft bundles whose manifest is not ready",
+    )
     return parser
 
 
@@ -541,6 +558,281 @@ def write_acceptance_bundle_entry(
     archive.writestr(info, content)
 
 
+def verify_bundle(args: argparse.Namespace) -> int:
+    verification = verify_acceptance_bundle(args.path.expanduser())
+    print_bundle_verification(verification, args.format)
+    if not verification.get("valid"):
+        return ACCEPTANCE_EXIT_INVALID
+    if not verification.get("ready") and not args.allow_incomplete:
+        return ACCEPTANCE_EXIT_INCOMPLETE
+    return 0
+
+
+def verify_acceptance_bundle(path: Path) -> dict[str, object]:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            duplicate_entries = duplicate_zip_entries(archive)
+            index_bytes = archive.read("acceptance-bundle.json")
+            manifest_bytes = archive.read("acceptance-evidence.json")
+            bundle_index = json.loads(index_bytes.decode("utf-8"))
+            manifest_payload = json.loads(manifest_bytes.decode("utf-8"))
+            result = verify_acceptance_bundle_payload(
+                archive,
+                bundle_index=bundle_index,
+                manifest_payload=manifest_payload,
+                manifest_bytes=manifest_bytes,
+                duplicate_entries=duplicate_entries,
+            )
+    except KeyError as exc:
+        return acceptance_bundle_verification_error(
+            path,
+            f"missing_bundle_entry:{exc.args[0]}",
+        )
+    except (OSError, zipfile.BadZipFile) as exc:
+        return acceptance_bundle_verification_error(
+            path,
+            f"zip_error:{exc.__class__.__name__}",
+        )
+    except UnicodeDecodeError:
+        return acceptance_bundle_verification_error(path, "bundle_json_not_utf8")
+    except json.JSONDecodeError as exc:
+        return acceptance_bundle_verification_error(path, f"bundle_json_error:{exc.msg}")
+    result["path"] = str(path)
+    return result
+
+
+def verify_acceptance_bundle_payload(
+    archive: zipfile.ZipFile,
+    *,
+    bundle_index: object,
+    manifest_payload: object,
+    manifest_bytes: bytes,
+    duplicate_entries: list[str],
+) -> dict[str, object]:
+    errors: list[str] = []
+    if duplicate_entries:
+        errors.append("duplicate_zip_entries:" + ",".join(duplicate_entries))
+    if not isinstance(bundle_index, dict):
+        return acceptance_bundle_verification_payload_error("bundle_index_must_be_object")
+    if not isinstance(manifest_payload, dict):
+        return acceptance_bundle_verification_payload_error("manifest_must_be_object")
+    if bundle_index.get("schema_version") != ACCEPTANCE_BUNDLE_SCHEMA_VERSION:
+        errors.append("bundle_schema_version_mismatch")
+    if bundle_index.get("manifest") != "acceptance-evidence.json":
+        errors.append("bundle_manifest_entry_mismatch")
+    manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+    if bundle_index.get("manifest_sha256") != manifest_sha256:
+        errors.append("manifest_sha256_mismatch")
+    if manifest_payload.get("schema_version") != ACCEPTANCE_EVIDENCE_SCHEMA_VERSION:
+        errors.append("manifest_schema_version_mismatch")
+    artifact_entries = bundle_index.get("artifacts")
+    if not isinstance(artifact_entries, list):
+        errors.append("bundle_artifacts_must_be_list")
+        artifact_entries = []
+    summary = bundle_index.get("summary")
+    if not isinstance(summary, dict):
+        errors.append("bundle_summary_must_be_object")
+        summary = {}
+    artifact_index = verify_acceptance_bundle_artifacts(
+        archive,
+        artifact_entries=artifact_entries,
+        errors=errors,
+    )
+    ready = verify_acceptance_bundle_manifest(
+        manifest_payload,
+        artifact_index=artifact_index,
+        errors=errors,
+    )
+    if isinstance(summary.get("ready"), bool) and summary.get("ready") != ready:
+        errors.append("bundle_summary_ready_mismatch")
+    valid = not errors
+    return {
+        "schema_version": ACCEPTANCE_BUNDLE_SCHEMA_VERSION,
+        "valid": valid,
+        "ready": ready if valid else False,
+        "artifact_count": len(artifact_index),
+        "errors": errors,
+        "manifest_sha256": manifest_sha256,
+    }
+
+
+def acceptance_bundle_verification_error(path: Path, error: str) -> dict[str, object]:
+    return {
+        "schema_version": ACCEPTANCE_BUNDLE_SCHEMA_VERSION,
+        "valid": False,
+        "ready": False,
+        "path": str(path),
+        "artifact_count": 0,
+        "errors": [error],
+    }
+
+
+def acceptance_bundle_verification_payload_error(error: str) -> dict[str, object]:
+    return {
+        "schema_version": ACCEPTANCE_BUNDLE_SCHEMA_VERSION,
+        "valid": False,
+        "ready": False,
+        "artifact_count": 0,
+        "errors": [error],
+    }
+
+
+def duplicate_zip_entries(archive: zipfile.ZipFile) -> list[str]:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for name in archive.namelist():
+        if name in seen:
+            duplicates.add(name)
+        seen.add(name)
+    return sorted(duplicates)
+
+
+def verify_acceptance_bundle_artifacts(
+    archive: zipfile.ZipFile,
+    *,
+    artifact_entries: list[object],
+    errors: list[str],
+) -> dict[str, dict[str, str]]:
+    artifact_index: dict[str, dict[str, str]] = {}
+    for index, raw_artifact in enumerate(artifact_entries):
+        if not isinstance(raw_artifact, dict):
+            errors.append(f"artifact[{index}]_must_be_object")
+            continue
+        raw_path = raw_artifact.get("path")
+        raw_archive_path = raw_artifact.get("archive_path")
+        raw_sha256 = raw_artifact.get("sha256")
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            errors.append(f"artifact[{index}]_path_missing")
+            continue
+        if not acceptance_bundle_relative_path(raw_path):
+            errors.append(f"artifact[{index}]_path_unsafe")
+            continue
+        if not isinstance(raw_archive_path, str) or not acceptance_bundle_archive_path(
+            raw_archive_path,
+            required_prefix="artifacts",
+        ):
+            errors.append(f"artifact[{index}]_archive_path_unsafe")
+            continue
+        if not isinstance(raw_sha256, str) or not raw_sha256.strip():
+            errors.append(f"artifact[{index}]_sha256_missing")
+            continue
+        try:
+            artifact_bytes = archive.read(raw_archive_path)
+        except KeyError:
+            errors.append(f"artifact[{index}]_archive_entry_missing")
+            continue
+        actual_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+        expected_sha256 = raw_sha256.strip().lower()
+        if actual_sha256 != expected_sha256:
+            errors.append(f"artifact[{index}]_sha256_mismatch")
+            continue
+        existing = artifact_index.get(raw_path)
+        if existing is not None:
+            if existing["sha256"] != actual_sha256:
+                errors.append(f"artifact[{index}]_path_collision")
+            continue
+        artifact_index[raw_path] = {
+            "archive_path": raw_archive_path,
+            "sha256": actual_sha256,
+        }
+    return artifact_index
+
+
+def verify_acceptance_bundle_manifest(
+    manifest_payload: dict[str, object],
+    *,
+    artifact_index: dict[str, dict[str, str]],
+    errors: list[str],
+) -> bool:
+    sections = manifest_payload.get("sections")
+    if not isinstance(sections, dict):
+        errors.append("manifest_sections_must_be_object")
+        return False
+    ready = True
+    referenced_paths: set[str] = set()
+    for section_id in ACCEPTANCE_SECTIONS:
+        section = sections.get(section_id)
+        if not isinstance(section, dict):
+            ready = False
+            continue
+        raw_status = str(section.get("status") or "").strip().lower()
+        if raw_status not in ACCEPTANCE_SECTION_STATUSES:
+            errors.append(f"section_{section_id}_status_invalid")
+            ready = False
+        raw_artifacts = section.get("artifacts")
+        artifact_count = 0
+        if isinstance(raw_artifacts, list):
+            for raw_artifact in raw_artifacts:
+                reference = acceptance_artifact_reference(raw_artifact)
+                if reference is None:
+                    errors.append(f"section_{section_id}_artifact_reference_invalid")
+                    continue
+                artifact_path = reference["path"]
+                if not acceptance_bundle_relative_path(artifact_path):
+                    errors.append(f"section_{section_id}_artifact_path_unsafe")
+                    continue
+                indexed_artifact = artifact_index.get(artifact_path)
+                if indexed_artifact is None:
+                    errors.append(f"section_{section_id}_artifact_missing_from_bundle")
+                    continue
+                expected_sha256 = reference.get("sha256")
+                if expected_sha256 and expected_sha256.lower() != indexed_artifact["sha256"]:
+                    errors.append(f"section_{section_id}_artifact_sha256_mismatch")
+                    continue
+                referenced_paths.add(artifact_path)
+                artifact_count += 1
+        elif raw_artifacts is not None:
+            errors.append(f"section_{section_id}_artifacts_must_be_list")
+        if raw_status != "passed" or artifact_count <= 0:
+            ready = False
+    for artifact_path in artifact_index:
+        if artifact_path not in referenced_paths:
+            errors.append(f"bundle_artifact_unreferenced:{artifact_path}")
+    return ready
+
+
+def acceptance_bundle_relative_path(raw_path: str) -> bool:
+    candidate = PurePosixPath(raw_path)
+    return (
+        bool(raw_path.strip())
+        and not candidate.is_absolute()
+        and all(part not in {"", ".", ".."} for part in candidate.parts)
+    )
+
+
+def acceptance_bundle_archive_path(raw_path: str, *, required_prefix: str) -> bool:
+    candidate = PurePosixPath(raw_path)
+    return (
+        acceptance_bundle_relative_path(raw_path)
+        and bool(candidate.parts)
+        and candidate.parts[0] == required_prefix
+    )
+
+
+def print_bundle_verification(
+    verification: dict[str, object],
+    output_format: AcceptanceBundleOutputFormat,
+) -> None:
+    if output_format == "json":
+        print(json.dumps(verification, ensure_ascii=False, sort_keys=True))
+        return
+    errors = verification.get("errors")
+    error_count = len(errors) if isinstance(errors, list) else 0
+    print(
+        " ".join(
+            [
+                f"valid={str(bool(verification.get('valid'))).lower()}",
+                f"ready={str(bool(verification.get('ready'))).lower()}",
+                f"artifacts={int(verification.get('artifact_count') or 0)}",
+                f"errors={error_count}",
+            ]
+        )
+    )
+    if isinstance(errors, list):
+        for error in errors:
+            print(f"error={error}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -554,6 +846,8 @@ def main(argv: list[str] | None = None) -> int:
         return summarize_manifest(args)
     if args.command == "bundle":
         return bundle_manifest(args)
+    if args.command == "verify-bundle":
+        return verify_bundle(args)
     parser.error(f"unknown command {args.command}")
     return 1
 

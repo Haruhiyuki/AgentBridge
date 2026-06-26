@@ -369,6 +369,12 @@ def test_acceptance_cli_bundle_creates_portable_verified_zip(tmp_path, capsys):
     assert manifest_payload["sections"]["34.1"]["status"] == "passed"
     assert bundled_native == b'{"section":"34.1"}'
 
+    verify_result = main(["verify-bundle", str(bundle_path)])
+    verify_output = capsys.readouterr().out
+
+    assert verify_result == 0
+    assert "valid=true ready=true artifacts=8 errors=0" in verify_output
+
 
 def test_acceptance_cli_bundle_refuses_incomplete_evidence_by_default(tmp_path, capsys):
     manifest = tmp_path / "acceptance-evidence.json"
@@ -453,6 +459,72 @@ def test_acceptance_cli_bundle_allows_draft_incomplete_evidence(tmp_path, capsys
         bundle_index = json.loads(bundle.read("acceptance-bundle.json"))
     assert bundle_index["summary"]["ready"] is False
     assert len(bundle_index["artifacts"]) == 1
+
+    draft_verify_result = main(["verify-bundle", str(bundle_path)])
+    draft_verify_output = capsys.readouterr().out
+    allowed_draft_result = main(["verify-bundle", str(bundle_path), "--allow-incomplete"])
+    allowed_draft_output = capsys.readouterr().out
+
+    assert draft_verify_result == ACCEPTANCE_EXIT_INCOMPLETE
+    assert "valid=true ready=false artifacts=1 errors=0" in draft_verify_output
+    assert allowed_draft_result == 0
+    assert "valid=true ready=false artifacts=1 errors=0" in allowed_draft_output
+
+
+def test_acceptance_cli_verify_bundle_fails_for_tampered_artifact(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    bundle_path = tmp_path / "acceptance-bundle.zip"
+    tampered_bundle_path = tmp_path / "acceptance-bundle-tampered.zip"
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+    for section in ("34.1", "34.2", "34.3", "34.4", "34.5", "34.6", "34.7", "34.8"):
+        source = tmp_path / f"{section}.json"
+        source.write_text(f'{{"section":"{section}"}}', encoding="utf-8")
+        assert (
+            main(
+                [
+                    "attach-artifact",
+                    str(manifest),
+                    section,
+                    str(source),
+                    "--artifact-root",
+                    str(artifact_root),
+                    "--status",
+                    "passed",
+                ]
+            )
+            == 0
+        )
+    assert (
+        main(
+            [
+                "bundle",
+                str(manifest),
+                str(bundle_path),
+                "--artifact-root",
+                str(artifact_root),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    with zipfile.ZipFile(bundle_path) as original, zipfile.ZipFile(
+        tampered_bundle_path,
+        "w",
+    ) as tampered:
+        for info in original.infolist():
+            content = original.read(info.filename)
+            if info.filename == "artifacts/native_session/34.1.json":
+                content = b'{"section":"34.1","tampered":true}'
+            tampered.writestr(info, content)
+
+    result = main(["verify-bundle", str(tampered_bundle_path)])
+    output = capsys.readouterr().out
+
+    assert result == ACCEPTANCE_EXIT_INVALID
+    assert "valid=false ready=false" in output
+    assert "artifact[0]_sha256_mismatch" in output
 
 
 def test_acceptance_cli_bundle_fails_for_missing_artifact(tmp_path, capsys):

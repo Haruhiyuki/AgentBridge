@@ -1021,7 +1021,8 @@ device keys, managed devices, or client certificate fingerprints as failures. Se
 `attach-artifact` command copies files into the artifact root, computes sha256 digests,
 and writes digest-backed manifest references for release-candidate evidence; after all
 sections are signed off, `agentbridge-acceptance bundle` creates a portable ZIP with the
-manifest, bundle index, and verified artifact files. Set
+manifest, bundle index, and verified artifact files, and `agentbridge-acceptance
+verify-bundle` can validate the ZIP offline during release review. Set
 `AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS=true` and
 `AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT` when readiness should verify artifact files and
 optional sha256 digests instead of only checking artifact references. Use
