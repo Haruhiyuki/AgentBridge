@@ -218,6 +218,38 @@ def test_terminal_event_outbox_flushes_before_current_event(tmp_path):
     assert not outbox_path.exists()
 
 
+def test_lifecycle_monitor_flushes_terminal_event_outbox_without_new_event(tmp_path):
+    control = FlakyTerminalEventControl("terminal.started")
+    backend = FakeTerminalBackend()
+    outbox_path = tmp_path / "terminal-events.jsonl"
+    terminal = TerminalAgentService(
+        control,
+        backend=backend,
+        event_outbox_path=outbox_path,
+    )
+    _, session = create_session(control, tmp_path)
+    terminal.start_session(
+        session_id=session.id,
+        command="fake-cli",
+        trace_id="terminal-start",
+    )
+
+    assert terminal.terminal_event_outbox_status()["pending_count"] == 1
+
+    observed = terminal.run_lifecycle_monitor_once(trace_id="terminal-monitor-flush")
+
+    assert observed[session.id].started is True
+    assert [event.type for event in control.repository.list_events(session_id=session.id)] == [
+        "session.created",
+        "terminal.started",
+    ]
+    status = terminal.lifecycle_monitor_status()
+    assert status["event_outbox"]["pending_count"] == 0
+    assert status["event_outbox"]["last_flush_count"] == 1
+    assert status["event_outbox"]["last_flush_error"] is None
+    assert not outbox_path.exists()
+
+
 def test_terminal_lifecycle_status_reports_agent_launch_profiles(tmp_path, monkeypatch):
     codex_wrapper = tmp_path / "codex-agentbridge-wrapper"
     codex_wrapper.write_text("#!/bin/sh\n", encoding="utf-8")

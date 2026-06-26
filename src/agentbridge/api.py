@@ -386,6 +386,13 @@ class TerminalLifecycleRunOnceRequest(BaseModel):
     trace_id: str = "terminal-lifecycle-api"
 
 
+class TerminalEventOutboxFlushRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    trace_id: str = "terminal-event-outbox-flush-api"
+
+
 class AgentLaunchProbeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1977,6 +1984,27 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
                 session_id: status.to_payload()
                 for session_id, status in observed.items()
             },
+        }
+
+    @app.post("/api/v1/terminal/event-outbox/flush")
+    def flush_terminal_event_outbox(
+        payload: TerminalEventOutboxFlushRequest,
+        control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
+    ):
+        control.require_collection_permission(
+            payload.actor.to_actor(),
+            Permission.TERMINAL_CONTROL,
+            resource_type="terminal_lifecycle",
+            attributes={
+                "operation": "terminal_event_outbox_flush",
+                "trace_id": payload.trace_id,
+            },
+        )
+        flushed = terminal_service.flush_terminal_event_outbox()
+        return {
+            "flushed": flushed,
+            "event_outbox": terminal_service.terminal_event_outbox_status(),
         }
 
     @app.post("/api/v1/terminal/agent-launch/probe")
@@ -4357,6 +4385,7 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         return DeviceIdentityScope.TERMINAL_READ
     if path in {
         "/api/v1/terminal/lifecycle-monitor/run-once",
+        "/api/v1/terminal/event-outbox/flush",
         "/api/v1/terminal/agent-launch/probe",
         "/api/v1/terminal/agent-adapters/detect",
     }:

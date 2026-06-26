@@ -1699,6 +1699,8 @@ class TerminalAgentService:
         self._reported_auto_restart_blocks: set[tuple[str, int, str]] = set()
         self._auto_restart_attempts: dict[str, int] = {}
         self._auto_restart_last_block_reason: str | None = None
+        self._terminal_event_outbox_last_flush_count = 0
+        self._terminal_event_outbox_last_flush_error: str | None = None
         self._lifecycle_lock = RLock()
         self._lifecycle_stop_event = Event()
         self._lifecycle_thread: Thread | None = None
@@ -2084,6 +2086,10 @@ class TerminalAgentService:
             self._lifecycle_run_count += 1
         observed: dict[str, TerminalStatus] = {}
         errors: list[str] = []
+        try:
+            self.flush_terminal_event_outbox()
+        except Exception as exc:
+            errors.append(f"terminal_event_outbox: {exc}")
         for session_id in session_ids:
             try:
                 status = self.status(session_id=session_id, trace_id=trace_id)
@@ -2196,6 +2202,7 @@ class TerminalAgentService:
 
     def lifecycle_monitor_status(self) -> dict[str, object]:
         backend_supervision_status = getattr(self.backend, "supervision_status", None)
+        event_outbox_status = self.terminal_event_outbox_status()
         with self._lifecycle_lock:
             return {
                 "running": bool(self._lifecycle_thread and self._lifecycle_thread.is_alive()),
@@ -2222,15 +2229,58 @@ class TerminalAgentService:
                     else {"enabled": False}
                 ),
                 "agent_launch_profiles": self.agent_launch_profile_status(),
+                "event_outbox": event_outbox_status,
             }
 
     def flush_terminal_event_outbox(self) -> int:
         if self.event_outbox is None:
+            with self._lifecycle_lock:
+                self._terminal_event_outbox_last_flush_count = 0
+                self._terminal_event_outbox_last_flush_error = None
             return 0
-        return self.event_outbox.flush(
-            self._submit_terminal_event_payload,
-            is_transient_terminal_event_error,
-        )
+        try:
+            flushed = self.event_outbox.flush(
+                self._submit_terminal_event_payload,
+                is_transient_terminal_event_error,
+            )
+        except Exception as exc:
+            with self._lifecycle_lock:
+                self._terminal_event_outbox_last_flush_error = str(exc)
+            raise
+        with self._lifecycle_lock:
+            self._terminal_event_outbox_last_flush_count = flushed
+            self._terminal_event_outbox_last_flush_error = None
+        return flushed
+
+    def terminal_event_outbox_status(self) -> dict[str, object]:
+        if self.event_outbox is None:
+            return {
+                "enabled": False,
+                "path": None,
+                "pending_count": 0,
+                "read_error": None,
+                "last_flush_count": 0,
+                "last_flush_error": None,
+            }
+        pending_count: int | None
+        read_error: str | None
+        try:
+            pending_count = len(self.event_outbox.read_entries())
+            read_error = None
+        except Exception as exc:
+            pending_count = None
+            read_error = str(exc)
+        with self._lifecycle_lock:
+            last_flush_count = self._terminal_event_outbox_last_flush_count
+            last_flush_error = self._terminal_event_outbox_last_flush_error
+        return {
+            "enabled": True,
+            "path": str(self.event_outbox.path),
+            "pending_count": pending_count,
+            "read_error": read_error,
+            "last_flush_count": last_flush_count,
+            "last_flush_error": last_flush_error,
+        }
 
     def _emit_terminal_event(
         self,

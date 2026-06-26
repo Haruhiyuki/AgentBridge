@@ -69,6 +69,12 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
             assert lifecycle_status["ok"] is True
             assert lifecycle_status["data"]["running"] is False
             assert lifecycle_status["data"]["backend_supervision"] == {"enabled": False}
+            assert lifecycle_status["data"]["event_outbox"]["enabled"] is False
+
+            flushed = await client.request("flush_event_outbox")
+            assert flushed["ok"] is True
+            assert flushed["data"]["flushed"] == 0
+            assert flushed["data"]["event_outbox"]["enabled"] is False
 
             probe = await client.request(
                 "probe_agent_launch_profiles",

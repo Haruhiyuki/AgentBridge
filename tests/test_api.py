@@ -7369,6 +7369,14 @@ def test_terminal_lifecycle_monitor_status_and_run_once_api(tmp_path):
     status = status_response.json()
     assert status["tracked_sessions"] == 1
     assert status["backend_supervision"] == {"enabled": False}
+    assert status["event_outbox"] == {
+        "enabled": False,
+        "path": None,
+        "pending_count": 0,
+        "read_error": None,
+        "last_flush_count": 0,
+        "last_flush_error": None,
+    }
     assert set(status["agent_launch_profiles"]) == {"claude", "codex", "generic_tui"}
     assert status["agent_launch_profiles"]["claude"]["agent_type"] == "claude"
 
@@ -7377,6 +7385,12 @@ def test_terminal_lifecycle_monitor_status_and_run_once_api(tmp_path):
         json={"actor": {"id": "usr_member", "roles": ["member"]}},
     )
     assert denied_response.status_code == 403
+
+    denied_flush_response = client.post(
+        "/api/v1/terminal/event-outbox/flush",
+        json={"actor": {"id": "usr_member", "roles": ["member"]}},
+    )
+    assert denied_flush_response.status_code == 403
 
     run_response = client.post(
         "/api/v1/terminal/lifecycle-monitor/run-once",
@@ -7398,6 +7412,73 @@ def test_terminal_lifecycle_monitor_status_and_run_once_api(tmp_path):
         "output_base_cursor": 0,
         "output_retained_chars": 0,
     }
+
+    flush_response = client.post(
+        "/api/v1/terminal/event-outbox/flush",
+        json={
+            "actor": {"id": "usr_1", "roles": ["maintainer"]},
+            "trace_id": "terminal-event-outbox-flush",
+        },
+    )
+    assert flush_response.status_code == 200
+    assert flush_response.json()["flushed"] == 0
+    assert flush_response.json()["event_outbox"]["enabled"] is False
+
+
+def test_terminal_event_outbox_flush_api_flushes_configured_outbox(
+    tmp_path,
+    monkeypatch,
+):
+    outbox_path = tmp_path / "terminal-event-outbox.jsonl"
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_EVENT_OUTBOX", str(outbox_path))
+    control = ControlPlane()
+    app = create_app(control)
+    client = TestClient(app)
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-terminal-event-outbox",
+        prefix="terminal-event-outbox",
+        name="Terminal Event Outbox",
+    )
+    session = control.repository.get_session(session_id)
+    app.state.terminal.event_outbox.append(
+        {
+            "event_type": "terminal.started",
+            "source": "terminal_agent",
+            "trace_id": "queued-terminal-started",
+            "project_id": session.project_id,
+            "session_id": session.id,
+            "payload": {
+                "workspace_id": session.workspace_id,
+                "command": "fake-cli",
+                "generation": 1,
+                "agent_type": "claude",
+                "command_source": "explicit",
+            },
+            "idempotency_key": f"terminal-started:{session.id}:1",
+        }
+    )
+
+    status_response = client.get("/api/v1/terminal/lifecycle-monitor")
+    flush_response = client.post(
+        "/api/v1/terminal/event-outbox/flush",
+        json={
+            "actor": {"id": "usr_1", "roles": ["maintainer"]},
+            "trace_id": "terminal-event-outbox-flush-api",
+        },
+    )
+
+    assert status_response.status_code == 200
+    assert status_response.json()["event_outbox"]["pending_count"] == 1
+    assert flush_response.status_code == 200
+    assert flush_response.json()["flushed"] == 1
+    assert flush_response.json()["event_outbox"]["pending_count"] == 0
+    assert not outbox_path.exists()
+    assert [event.type for event in control.repository.list_events(session_id=session.id)] == [
+        "session.created",
+        "terminal.started",
+    ]
 
 
 def test_terminal_offline_protection_api_blocks_bot_claims(tmp_path):
@@ -7606,6 +7687,11 @@ def test_managed_device_identity_requires_terminal_control_scope_for_terminal_ht
         json={"actor": actor, "trace_id": "terminal-control-denied-run-once"},
         headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
     )
+    flush_response = client.post(
+        "/api/v1/terminal/event-outbox/flush",
+        json={"actor": actor, "trace_id": "terminal-control-denied-outbox-flush"},
+        headers=key_headers,
+    )
     probe_response = client.post(
         "/api/v1/terminal/agent-launch/probe",
         json={"actor": actor, "agent_types": ["claude"]},
@@ -7621,6 +7707,7 @@ def test_managed_device_identity_requires_terminal_control_scope_for_terminal_ht
     assert regular_http_response.status_code == 200
     assert start_response.status_code == 403
     assert run_once_response.status_code == 403
+    assert flush_response.status_code == 403
     assert probe_response.status_code == 403
     assert detect_response.status_code == 403
 
@@ -7809,6 +7896,11 @@ def test_managed_device_identity_terminal_control_scope_allows_terminal_http_api
         json={"actor": actor, "trace_id": "terminal-control-manager-run-once"},
         headers=headers,
     )
+    flush_response = client.post(
+        "/api/v1/terminal/event-outbox/flush",
+        json={"actor": actor, "trace_id": "terminal-control-manager-outbox-flush"},
+        headers=headers,
+    )
     probe_response = client.post(
         "/api/v1/terminal/agent-launch/probe",
         json={"actor": actor, "agent_types": ["claude"]},
@@ -7827,6 +7919,8 @@ def test_managed_device_identity_terminal_control_scope_allows_terminal_http_api
     assert input_response.json() == {"request_id": "terminal-control-manager-input"}
     assert run_once_response.status_code == 200
     assert run_once_response.json()["monitor"]["run_count"] == 1
+    assert flush_response.status_code == 200
+    assert flush_response.json()["flushed"] == 0
     assert probe_response.status_code == 200
     assert probe_response.json()["profiles"]["claude"]["agent_type"] == "claude"
     assert detect_response.status_code == 200

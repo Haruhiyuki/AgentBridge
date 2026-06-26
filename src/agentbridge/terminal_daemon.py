@@ -727,6 +727,12 @@ class LocalTerminalAgentServer:
                     for session_id, status in observed.items()
                 },
             }
+        if action == "flush_event_outbox":
+            flushed = self.terminal.flush_terminal_event_outbox()
+            return {
+                "flushed": flushed,
+                "event_outbox": self.terminal.terminal_event_outbox_status(),
+            }
         if action == "replay_events":
             session_id = required_str(payload, "session_id")
             self.control.repository.get_session(session_id)
@@ -948,7 +954,7 @@ class LocalTerminalAgentServer:
             f"未知本地 Terminal Agent action：{action}",
             next_step=(
                 "请使用 health、lifecycle_status、run_lifecycle_monitor_once、"
-                "replay_events、ack_events、probe_agent_launch_profiles、"
+                "flush_event_outbox、replay_events、ack_events、probe_agent_launch_profiles、"
                 "detect_agent_adapters、start_session、restart_session、"
                 "acquire_human_lease、release_lease、set_offline_protection、"
                 "claim_next_turn、submit_input、snapshot、status、read_output 或 "
