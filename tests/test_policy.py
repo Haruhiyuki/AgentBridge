@@ -519,6 +519,7 @@ def test_admin_home_and_terminal_lifecycle_ui_routes():
     assert "/api/v1/terminal/lifecycle-monitor" in system_html
     assert "/api/v1/bot-gateway/retry-worker" in system_html
     assert "/api/v1/device-identities/certificates/scan-worker" in system_html
+    assert "/api/v1/bot-gateway/capabilities" in system_html
     assert "/api/v1/bot-gateway/rate-limits" in system_html
     assert "/api/v1/device-identities?include_revoked=true" in system_html
     assert "async function refresh()" in system_html

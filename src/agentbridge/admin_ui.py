@@ -307,6 +307,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
         <div class="metric"><span>Tracked Terms</span><strong id="tracked">-</strong></div>
         <div class="metric"><span>Retry Worker</span><strong id="retry-worker">-</strong></div>
         <div class="metric"><span>Cert Scan</span><strong id="cert-scan-worker">-</strong></div>
+        <div class="metric"><span>Bot Platforms</span><strong id="bot-platforms">-</strong></div>
         <div class="metric"><span>Rate Policies</span><strong id="rate-policies">-</strong></div>
       </div>
     </section>
@@ -334,6 +335,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       ["Terminal Lifecycle", "/api/v1/terminal/lifecycle-monitor"],
       ["Bot Retry Worker", "/api/v1/bot-gateway/retry-worker"],
       ["Certificate Scan Worker", "/api/v1/device-identities/certificates/scan-worker"],
+      ["Bot Capabilities", "/api/v1/bot-gateway/capabilities"],
       ["Bot Rate Limits", "/api/v1/bot-gateway/rate-limits"],
       ["Device Identities", "/api/v1/device-identities?include_revoked=true"],
     ];
@@ -383,7 +385,9 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       const lifecycle = byName["Terminal Lifecycle"]?.data || {};
       const worker = byName["Bot Retry Worker"]?.data || {};
       const certificateWorker = byName["Certificate Scan Worker"]?.data || {};
+      const botCapabilities = byName["Bot Capabilities"]?.data || {};
       const rateLimits = byName["Bot Rate Limits"]?.data || {};
+      const platforms = botCapabilities.capabilities || [];
       const policies = rateLimits.policies || [];
       setText("health-status", health.status);
       setText("storage", health.storage);
@@ -398,6 +402,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
           ? (certificateWorker.running ? "running" : "idle")
           : "off",
       );
+      setText("bot-platforms", platforms.length);
       setText("rate-policies", policies.length);
     }
 
@@ -4571,8 +4576,15 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
         <div class="metric"><span>Worker Running</span><strong id="worker-running">-</strong></div>
         <div class="metric"><span>Run Count</span><strong id="worker-runs">-</strong></div>
         <div class="metric"><span>Last Records</span><strong id="worker-records">-</strong></div>
+        <div class="metric">
+          <span>Capability Platforms</span><strong id="cap-platforms">-</strong>
+        </div>
+        <div class="metric">
+          <span>OneBot Delete</span><strong id="cap-onebot-delete">-</strong>
+        </div>
       </div>
       <pre id="worker">{}</pre>
+      <pre id="capabilities">{}</pre>
       <pre id="rate-limits">{}</pre>
       <pre id="selected">{}</pre>
     </section>
@@ -4650,6 +4662,14 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
       $("worker").textContent = JSON.stringify(worker, null, 2);
     }
 
+    function renderCapabilities(capabilities) {
+      const platforms = capabilities.capabilities || [];
+      const onebot = platforms.find((item) => item.platform === "onebot.v11") || {};
+      setText("cap-platforms", platforms.length);
+      setText("cap-onebot-delete", onebot.deleteMessage);
+      $("capabilities").textContent = JSON.stringify(capabilities, null, 2);
+    }
+
     async function refreshRecords() {
       setStatus("Loading");
       const records = await requestJson(`/api/v1/bot-gateway/deliveries${deliveryQuery()}`);
@@ -4659,6 +4679,8 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
     async function refreshWorker() {
       const worker = await requestJson("/api/v1/bot-gateway/retry-worker");
       renderWorker(worker);
+      const capabilities = await requestJson("/api/v1/bot-gateway/capabilities");
+      renderCapabilities(capabilities);
       const limits = await requestJson("/api/v1/bot-gateway/rate-limits");
       $("rate-limits").textContent = JSON.stringify(limits, null, 2);
     }
