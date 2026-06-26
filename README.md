@@ -1037,10 +1037,12 @@ name with the same digest-backed manifest reference, and rejects mismatched desi
 sections unless `--allow-section-mismatch` is supplied; after all
 sections are signed off, `agentbridge-acceptance bundle` creates a portable ZIP with the
 manifest, bundle index, and verified artifact files, and `agentbridge-acceptance
-verify-bundle` can validate the ZIP offline during release review. Set
+verify-bundle` can validate the ZIP offline during release review while reporting
+artifact and checklist summary counts. Set
 `AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE` to make `/api/v1/readiness` require that the same
-bundle validates as portable release evidence and matches the configured acceptance
-manifest hash. Set
+bundle validates as portable release evidence, matches the configured acceptance
+manifest hash, and exposes the bundle summary counts in the readiness check evidence.
+Set
 `AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS=true` and
 `AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT` when readiness should verify artifact files and
 optional sha256 digests instead of only checking artifact references. Use

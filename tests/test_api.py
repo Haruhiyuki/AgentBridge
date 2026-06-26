@@ -788,6 +788,10 @@ def test_readiness_endpoint_passes_for_verified_acceptance_bundle(monkeypatch, t
     assert checks["acceptance.evidence_bundle"]["status"] == "pass"
     assert checks["acceptance.evidence_bundle"]["evidence"]["valid"] is True
     assert checks["acceptance.evidence_bundle"]["evidence"]["ready"] is True
+    bundle_summary = checks["acceptance.evidence_bundle"]["evidence"]["summary"]
+    assert bundle_summary["ready"] is True
+    assert bundle_summary["counts"]["passed"] == 8
+    assert bundle_summary["checklist_incomplete_count"] == 0
     assert (
         checks["acceptance.evidence_bundle"]["evidence"][
             "manifest_matches_configured_evidence"
@@ -832,6 +836,11 @@ def test_readiness_endpoint_warns_for_draft_acceptance_bundle(monkeypatch, tmp_p
     assert checks["acceptance.evidence_bundle"]["status"] == "warn"
     assert checks["acceptance.evidence_bundle"]["evidence"]["valid"] is True
     assert checks["acceptance.evidence_bundle"]["evidence"]["ready"] is False
+    bundle_summary = checks["acceptance.evidence_bundle"]["evidence"]["summary"]
+    assert bundle_summary["ready"] is False
+    assert bundle_summary["counts"]["passed"] == 1
+    assert bundle_summary["counts"]["not_run"] == 7
+    assert bundle_summary["checklist_incomplete_count"] == 21
     assert payload["sources"]["acceptance_bundle"]["artifact_count"] == 1
 
 

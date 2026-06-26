@@ -186,6 +186,50 @@ def test_readiness_cli_actions_output_reports_all_passed():
     )
 
 
+def test_readiness_cli_actions_output_includes_acceptance_bundle_summary():
+    assert readiness_action_text(
+        readiness_payload(
+            "degraded",
+            checks=[
+                {
+                    "id": "acceptance.evidence_bundle",
+                    "category": "acceptance",
+                    "status": "warn",
+                    "summary": "MVP acceptance evidence bundle is portable.",
+                    "next_step": "Complete all MVP acceptance sections.",
+                    "evidence": {
+                        "artifact_count": 1,
+                        "summary": {
+                            "ready": False,
+                            "counts": {
+                                "passed": 1,
+                                "failed": 0,
+                                "blocked": 0,
+                                "not_run": 7,
+                            },
+                            "artifact_error_count": 0,
+                            "checklist_incomplete_count": 24,
+                            "checklist_error_count": 0,
+                        },
+                    },
+                }
+            ],
+        )
+    ).splitlines() == [
+        "status=degraded pass=0 warn=1 fail=0",
+        (
+            "warn acceptance/acceptance.evidence_bundle: "
+            "MVP acceptance evidence bundle is portable."
+        ),
+        (
+            "  evidence: bundle_ready=false artifacts=1 passed=1 failed=0 "
+            "blocked=0 not_run=7 artifact_errors=0 checklist_incomplete=24 "
+            "checklist_errors=0"
+        ),
+        "  next: Complete all MVP acceptance sections.",
+    ]
+
+
 def test_readiness_cli_fail_on_fail_only_for_not_ready():
     assert (
         readiness_exit_code(

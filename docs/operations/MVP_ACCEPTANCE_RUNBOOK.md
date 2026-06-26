@@ -38,8 +38,9 @@ curl -H "Authorization: Bearer $AGENTBRIDGE_API_TOKEN" \
 ```
 
 `--format actions` prints only failing or degraded checks with the next operator action.
-Use `--fail-on-warn` for release gates and `--fail-on-fail` when warnings are acceptable
-in a staged environment.
+For a configured acceptance bundle, it also prints bundle artifact/checklist summary
+counts when that check is not passing. Use `--fail-on-warn` for release gates and
+`--fail-on-fail` when warnings are acceptable in a staged environment.
 
 Readiness security checks intentionally distinguish local development from product-like
 deployment. Missing HTTP API, Admin Web, WebSocket, device credential, or client

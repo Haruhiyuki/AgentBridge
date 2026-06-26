@@ -106,10 +106,39 @@ def readiness_action_text(payload: dict[str, object]) -> str:
         check_id = str(check.get("id") or "unknown")
         summary = str(check.get("summary") or "")
         lines.append(f"{status} {category}/{check_id}: {summary}")
+        evidence_text = readiness_action_evidence_text(check)
+        if evidence_text:
+            lines.append(f"  evidence: {evidence_text}")
         next_step = check.get("next_step")
         if next_step:
             lines.append(f"  next: {next_step}")
     return "\n".join(lines)
+
+
+def readiness_action_evidence_text(check: dict[str, object]) -> str | None:
+    if check.get("id") != "acceptance.evidence_bundle":
+        return None
+    evidence = check.get("evidence")
+    if not isinstance(evidence, dict):
+        return None
+    summary = evidence.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    counts = summary.get("counts")
+    counts_payload = counts if isinstance(counts, dict) else {}
+    return " ".join(
+        [
+            f"bundle_ready={str(bool(summary.get('ready'))).lower()}",
+            f"artifacts={evidence.get('artifact_count', 0)}",
+            f"passed={counts_payload.get('passed', 0)}",
+            f"failed={counts_payload.get('failed', 0)}",
+            f"blocked={counts_payload.get('blocked', 0)}",
+            f"not_run={counts_payload.get('not_run', 0)}",
+            f"artifact_errors={summary.get('artifact_error_count', 0)}",
+            f"checklist_incomplete={summary.get('checklist_incomplete_count', 0)}",
+            f"checklist_errors={summary.get('checklist_error_count', 0)}",
+        ]
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

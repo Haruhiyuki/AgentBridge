@@ -1370,6 +1370,9 @@ def readiness_acceptance_bundle_check(
     configured = bool(evidence.get("configured"))
     valid = bool(evidence.get("valid"))
     ready = bool(evidence.get("ready"))
+    bundle_summary = evidence.get("summary")
+    if not isinstance(bundle_summary, dict):
+        bundle_summary = {}
     bundle_manifest_sha256 = evidence.get("manifest_sha256")
     configured_manifest_sha256 = acceptance_evidence.get("manifest_sha256")
     manifest_matches_configured_evidence = None
@@ -1419,6 +1422,7 @@ def readiness_acceptance_bundle_check(
             "ready": ready,
             "path": evidence.get("path"),
             "artifact_count": evidence.get("artifact_count", 0),
+            "summary": bundle_summary,
             "errors": evidence.get("errors", []),
             "manifest_sha256": bundle_manifest_sha256,
             "configured_manifest_sha256": configured_manifest_sha256,
