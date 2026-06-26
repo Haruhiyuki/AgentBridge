@@ -161,8 +161,9 @@ Adapter processes can poll
 answers, approval decisions, cancellations, and expirations for interactions they created.
 The packaged `agentbridge-adapter-client` CLI and `agentbridge.agent_adapter_client`
 module provide the same bridge for native adapter processes, including standard
-handshake JSON, API-token or device-key headers, event submission, response polling, and
-blocking waits for adapter-originated interactions:
+handshake JSON with schema snapshots, API-token or device-key headers, event submission,
+response polling, blocking waits for adapter-originated interactions, and local schema
+matrix inspection:
 
 ```bash
 export AGENTBRIDGE_API_URL="http://127.0.0.1:8000"
@@ -171,6 +172,7 @@ export AGENTBRIDGE_DEVICE_ID="<adapter-device-id>"
 export AGENTBRIDGE_DEVICE_KEY="<adapter-device-key>"
 
 agentbridge-adapter-client handshake --agent claude
+agentbridge-adapter-client schemas --agent claude
 agentbridge-adapter-client emit \
   --agent claude \
   --event-type MessageDisplay \

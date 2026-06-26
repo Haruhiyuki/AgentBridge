@@ -2,6 +2,8 @@ import pytest
 
 from agentbridge.agent_adapter_events import (
     adapter_response_frames_from_events,
+    adapter_schema_behavior_matrix_for,
+    adapter_schema_snapshot_for,
     normalize_agent_adapter_event,
     validate_adapter_schema_version,
     validate_agent_adapter_event_context,
@@ -99,6 +101,49 @@ def test_validates_adapter_schema_and_session_agent_match():
         "schema_version": "codex-app-server.v999",
         "supported_schema_versions": ["codex-app-server.v1"],
     }
+
+
+def test_adapter_schema_snapshot_describes_versioned_mapping_and_extractors():
+    snapshot = adapter_schema_snapshot_for(AgentType.CLAUDE, "claude-hooks.v1")
+
+    assert snapshot["protocol"] == "agentbridge.adapter.v1"
+    assert snapshot["agent_type"] == "claude"
+    assert snapshot["adapter"] == "claude_hooks"
+    assert snapshot["schema_version"] == "claude-hooks.v1"
+    assert {
+        "adapter_event_type": "PermissionRequest",
+        "semantic_event_type": "approval.requested",
+        "interaction_request": True,
+    } in snapshot["adapter_event_types"]
+    assert "approval.requested" in snapshot["interaction_request_semantic_types"]
+    assert snapshot["payload_extractors"]["text_fields"] == [
+        "text",
+        "delta",
+        "message",
+        "content",
+        "output",
+    ]
+    assert snapshot["normalization"]["raw_event_policy"] == "preserve_under_raw_event"
+    assert snapshot["response_contract"]["matching_keys"] == [
+        "request_event_id",
+        "interaction_id",
+        "adapter_item_id",
+    ]
+
+
+def test_adapter_schema_behavior_matrix_lists_supported_versions():
+    matrix = adapter_schema_behavior_matrix_for(AgentType.CODEX)
+
+    assert matrix["agent_type"] == "codex"
+    assert matrix["adapter"] == "codex_app_server"
+    assert matrix["default_schema_version"] == "codex-app-server.v1"
+    assert matrix["supported_schema_versions"] == ["codex-app-server.v1"]
+    assert matrix["schemas"][0]["schema_version"] == "codex-app-server.v1"
+    assert {
+        "adapter_event_type": "item/commandExecution/requestApproval",
+        "semantic_event_type": "approval.requested",
+        "interaction_request": True,
+    } in matrix["schemas"][0]["adapter_event_types"]
 
 
 def test_filters_adapter_response_frames_to_adapter_originated_interactions():

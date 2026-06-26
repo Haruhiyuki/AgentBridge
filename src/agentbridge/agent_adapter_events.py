@@ -58,6 +58,14 @@ SUPPORTED_ADAPTER_SCHEMA_VERSIONS_BY_AGENT: dict[AgentType, set[str]] = {
     AgentType.CODEX: {"codex-app-server.v1"},
 }
 AGENT_ADAPTER_HANDSHAKE_PROTOCOL = "agentbridge.adapter.v1"
+ADAPTER_TEXT_FIELDS = ("text", "delta", "message", "content", "output")
+ADAPTER_PROMPT_FIELDS = ("prompt", "reason", "question", "description", "summary")
+ADAPTER_TOOL_NAME_FIELDS = ("tool_name", "toolName", "tool", "name", "command")
+ADAPTER_ITEM_TOOL_NAME_FIELDS = ("tool_name", "toolName", "name", "command")
+ADAPTER_ITEM_ID_FIELDS = ("item_id", "itemId", "id", "request_id", "requestId")
+ADAPTER_ERROR_FIELDS = ("error", "stderr")
+ADAPTER_OPTION_FIELDS = ("options", "choices")
+ADAPTER_RISK_FIELDS = ("risk_level", "riskLevel", "risk")
 
 ADAPTER_INTERACTION_REQUEST_TYPES = {
     "approval.requested",
@@ -192,14 +200,107 @@ def default_adapter_schema_version_for(agent_type: AgentType) -> str:
     return versions[-1]
 
 
-def adapter_semantic_event_type(*, agent_type: AgentType, adapter_event_type: str) -> str:
+def adapter_schema_snapshot_for(
+    agent_type: AgentType,
+    schema_version: str | None = None,
+) -> dict[str, object]:
+    normalized_schema_version = validate_adapter_schema_version(
+        agent_type=agent_type,
+        schema_version=schema_version or default_adapter_schema_version_for(agent_type),
+    )
+    event_map = adapter_event_type_map_for(agent_type)
+    return {
+        "protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+        "agent_type": agent_type.value,
+        "adapter": ADAPTER_NAME_BY_AGENT[agent_type],
+        "schema_version": normalized_schema_version,
+        "adapter_event_types": [
+            {
+                "adapter_event_type": adapter_event_type,
+                "semantic_event_type": semantic_event_type,
+                "interaction_request": semantic_event_type
+                in ADAPTER_INTERACTION_REQUEST_TYPES,
+            }
+            for adapter_event_type, semantic_event_type in sorted(event_map.items())
+        ],
+        "semantic_event_types": sorted(set(event_map.values())),
+        "interaction_request_semantic_types": sorted(
+            set(event_map.values()).intersection(ADAPTER_INTERACTION_REQUEST_TYPES)
+        ),
+        "interaction_response_semantic_types": sorted(ADAPTER_INTERACTION_RESPONSE_TYPES),
+        "payload_extractors": {
+            "text_fields": list(ADAPTER_TEXT_FIELDS),
+            "prompt_fields": list(ADAPTER_PROMPT_FIELDS),
+            "tool_name_fields": list(ADAPTER_TOOL_NAME_FIELDS),
+            "item_tool_name_fields": list(ADAPTER_ITEM_TOOL_NAME_FIELDS),
+            "adapter_item_id_fields": list(ADAPTER_ITEM_ID_FIELDS),
+            "error_fields": list(ADAPTER_ERROR_FIELDS),
+            "option_fields": list(ADAPTER_OPTION_FIELDS),
+            "risk_fields": list(ADAPTER_RISK_FIELDS),
+        },
+        "normalization": {
+            "raw_event_policy": "preserve_under_raw_event",
+            "schema_version_required": True,
+            "session_agent_type_match_required": True,
+            "unknown_adapter_event_type": "reject",
+            "interaction_idempotency": "adapter_event_idempotency_key",
+        },
+        "response_contract": {
+            "poll_endpoint": "/api/v1/sessions/{session_id}/agent-adapter/responses",
+            "matching_keys": [
+                "request_event_id",
+                "interaction_id",
+                "adapter_item_id",
+            ],
+            "ready_decisions": [
+                "answered",
+                "approved",
+                "denied",
+                "cancelled",
+                "expired",
+            ],
+            "pending_decision": "pending",
+        },
+    }
+
+
+def adapter_schema_behavior_matrix_for(agent_type: AgentType) -> dict[str, object]:
+    return {
+        "protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+        "agent_type": agent_type.value,
+        "adapter": ADAPTER_NAME_BY_AGENT[agent_type],
+        "default_schema_version": default_adapter_schema_version_for(agent_type),
+        "supported_schema_versions": sorted(supported_adapter_schema_versions_for(agent_type)),
+        "schemas": [
+            adapter_schema_snapshot_for(agent_type, schema_version)
+            for schema_version in sorted(supported_adapter_schema_versions_for(agent_type))
+        ],
+    }
+
+
+def all_adapter_schema_behavior_matrices() -> dict[str, object]:
+    return {
+        "protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+        "agents": {
+            agent_type.value: adapter_schema_behavior_matrix_for(agent_type)
+            for agent_type in sorted(
+                SUPPORTED_ADAPTER_SCHEMA_VERSIONS_BY_AGENT,
+                key=lambda item: item.value,
+            )
+        },
+    }
+
+
+def adapter_event_type_map_for(agent_type: AgentType) -> dict[str, str]:
     if agent_type == AgentType.CLAUDE:
-        mapping = CLAUDE_EVENT_TYPE_MAP
-    elif agent_type == AgentType.CODEX:
-        mapping = CODEX_EVENT_TYPE_MAP
-    else:
-        raise unsupported_agent_error(agent_type)
-    event_type = mapping.get(adapter_event_type)
+        return CLAUDE_EVENT_TYPE_MAP
+    if agent_type == AgentType.CODEX:
+        return CODEX_EVENT_TYPE_MAP
+    raise unsupported_agent_error(agent_type)
+
+
+def adapter_semantic_event_type(*, agent_type: AgentType, adapter_event_type: str) -> str:
+    event_type = adapter_event_type_map_for(agent_type).get(adapter_event_type)
     if event_type is None:
         raise AgentBridgeError(
             ErrorCode.COMMAND_ARGUMENT_INVALID,
@@ -214,7 +315,7 @@ def adapter_semantic_event_type(*, agent_type: AgentType, adapter_event_type: st
 
 
 def adapter_text(payload: dict[str, object]) -> str | None:
-    for key in ("text", "delta", "message", "content", "output"):
+    for key in ADAPTER_TEXT_FIELDS:
         value = payload.get(key)
         text = string_or_joined_text(value)
         if text:
@@ -223,7 +324,7 @@ def adapter_text(payload: dict[str, object]) -> str | None:
 
 
 def adapter_prompt(payload: dict[str, object]) -> str | None:
-    for key in ("prompt", "reason", "question", "description", "summary"):
+    for key in ADAPTER_PROMPT_FIELDS:
         value = payload.get(key)
         text = string_or_joined_text(value)
         if text:
@@ -235,13 +336,13 @@ def adapter_prompt(payload: dict[str, object]) -> str | None:
 
 
 def adapter_tool_name(payload: dict[str, object]) -> str | None:
-    for key in ("tool_name", "toolName", "tool", "name", "command"):
+    for key in ADAPTER_TOOL_NAME_FIELDS:
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
     item = payload.get("item")
     if isinstance(item, dict):
-        for key in ("tool_name", "toolName", "name", "command"):
+        for key in ADAPTER_ITEM_TOOL_NAME_FIELDS:
             value = item.get(key)
             if isinstance(value, str) and value.strip():
                 return value.strip()
@@ -249,7 +350,7 @@ def adapter_tool_name(payload: dict[str, object]) -> str | None:
 
 
 def adapter_item_id(payload: dict[str, object]) -> str | None:
-    for key in ("item_id", "itemId", "id", "request_id", "requestId"):
+    for key in ADAPTER_ITEM_ID_FIELDS:
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -262,7 +363,7 @@ def adapter_item_id(payload: dict[str, object]) -> str | None:
 
 
 def adapter_error(payload: dict[str, object]) -> str | None:
-    for key in ("error", "stderr"):
+    for key in ADAPTER_ERROR_FIELDS:
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -270,7 +371,11 @@ def adapter_error(payload: dict[str, object]) -> str | None:
 
 
 def adapter_options(payload: dict[str, object]) -> list[str]:
-    value = payload.get("options") or payload.get("choices")
+    value = None
+    for key in ADAPTER_OPTION_FIELDS:
+        value = payload.get(key)
+        if value is not None:
+            break
     if not isinstance(value, list):
         return []
     options: list[str] = []
@@ -285,7 +390,11 @@ def adapter_options(payload: dict[str, object]) -> list[str]:
 
 
 def adapter_risk_level(payload: dict[str, object]) -> str:
-    value = payload.get("risk_level") or payload.get("riskLevel") or payload.get("risk")
+    value = None
+    for key in ADAPTER_RISK_FIELDS:
+        value = payload.get(key)
+        if value is not None:
+            break
     if isinstance(value, str) and value.strip():
         return value.strip()
     return "medium"

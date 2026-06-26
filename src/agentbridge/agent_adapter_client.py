@@ -14,6 +14,9 @@ from urllib.request import Request, urlopen
 
 from agentbridge.agent_adapter_events import (
     AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+    adapter_schema_behavior_matrix_for,
+    adapter_schema_snapshot_for,
+    all_adapter_schema_behavior_matrices,
     default_adapter_schema_version_for,
     supported_adapter_schema_versions_for,
     validate_adapter_schema_version,
@@ -381,6 +384,7 @@ def handshake_payload_for_agent(
         "agent_type": agent_type.value,
         "schema_version": normalized_schema_version,
         "supported_schema_versions": sorted(supported_adapter_schema_versions_for(agent_type)),
+        "schema_snapshot": adapter_schema_snapshot_for(agent_type, normalized_schema_version),
         "capabilities": capabilities or default_adapter_capabilities(agent_type),
         "warnings": warnings or [],
     }
@@ -594,6 +598,17 @@ def build_parser() -> argparse.ArgumentParser:
     handshake.add_argument("--schema-version")
     handshake.add_argument("--capability", action="append", dest="capabilities")
     handshake.add_argument("--warning", action="append", dest="warnings")
+
+    schemas = subparsers.add_parser(
+        "schemas",
+        help="Print supported adapter schema snapshots and behavior matrices",
+    )
+    schemas.add_argument(
+        "--agent",
+        type=parse_agent_type,
+        choices=[AgentType.CLAUDE, AgentType.CODEX],
+    )
+    schemas.add_argument("--schema-version")
     return parser
 
 
@@ -608,6 +623,15 @@ def main(argv: list[str] | None = None) -> int:
                 capabilities=args.capabilities,
                 warnings=args.warnings,
             )
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.command == "schemas":
+            if args.agent is None:
+                payload = all_adapter_schema_behavior_matrices()
+            elif args.schema_version:
+                payload = adapter_schema_snapshot_for(args.agent, args.schema_version)
+            else:
+                payload = adapter_schema_behavior_matrix_for(args.agent)
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
             return 0
 
