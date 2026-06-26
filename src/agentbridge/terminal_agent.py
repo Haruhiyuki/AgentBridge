@@ -14,6 +14,7 @@ import struct
 import subprocess
 import termios
 import time
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -987,6 +988,99 @@ class TerminalLifecyclePolicy:
         )
 
 
+def is_transient_terminal_event_error(exc: Exception) -> bool:
+    if isinstance(exc, AgentBridgeError):
+        return exc.status_code in {408, 425, 429} or exc.status_code >= 500
+    return isinstance(exc, (TimeoutError, ConnectionError, OSError))
+
+
+class TerminalEventOutbox:
+    schema_version = "agentbridge.terminal_event_outbox.v1"
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def append(self, request_payload: Mapping[str, object]) -> int:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "schema_version": self.schema_version,
+            "payload": dict(request_payload),
+            "enqueued_at_monotonic": time.monotonic(),
+        }
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+        return len(self.read_entries())
+
+    def flush(
+        self,
+        sender: Callable[[dict[str, object]], object],
+        is_transient_error: Callable[[Exception], bool],
+    ) -> int:
+        entries = self.read_entries()
+        sent = 0
+        for index, entry in enumerate(entries):
+            payload = entry["payload"]
+            try:
+                sender(payload)
+            except Exception as exc:
+                if is_transient_error(exc):
+                    self.replace_entries(entries[index:])
+                    raise
+                raise
+            sent += 1
+        self.replace_entries([])
+        return sent
+
+    def read_entries(self) -> list[dict[str, dict[str, object]]]:
+        if not self.path.exists():
+            return []
+        entries: list[dict[str, dict[str, object]]] = []
+        with self.path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    decoded = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"terminal event outbox line {line_number} is not valid JSON"
+                    ) from exc
+                if not isinstance(decoded, dict):
+                    raise ValueError(
+                        f"terminal event outbox line {line_number} must be an object"
+                    )
+                payload = decoded.get("payload")
+                if not isinstance(payload, dict):
+                    raise ValueError(
+                        f"terminal event outbox line {line_number} must include payload"
+                    )
+                entries.append({"payload": {str(key): value for key, value in payload.items()}})
+        return entries
+
+    def replace_entries(self, entries: list[dict[str, dict[str, object]]]) -> None:
+        if not entries:
+            with suppress(FileNotFoundError):
+                self.path.unlink()
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.path.with_name(f"{self.path.name}.tmp")
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            for entry in entries:
+                handle.write(
+                    json.dumps(
+                        {
+                            "schema_version": self.schema_version,
+                            "payload": entry["payload"],
+                            "enqueued_at_monotonic": time.monotonic(),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+        os.replace(tmp_path, self.path)
+
+
 class TerminalBackend(Protocol):
     def start(self, *, session_id: str, cwd: str, command: str) -> None: ...
 
@@ -1590,11 +1684,15 @@ class TerminalAgentService:
         *,
         lifecycle_policy: TerminalLifecyclePolicy | None = None,
         agent_launch_config: AgentLaunchConfig | None = None,
+        event_outbox_path: Path | None = None,
     ) -> None:
         self.control = control
         self.backend = backend or FakeTerminalBackend()
         self.lifecycle_policy = lifecycle_policy or TerminalLifecyclePolicy()
         self.agent_launch_config = agent_launch_config or AgentLaunchConfig.from_env()
+        self.event_outbox = (
+            TerminalEventOutbox(event_outbox_path) if event_outbox_path is not None else None
+        )
         self._terminal_start_generations: dict[str, int] = {}
         self._reported_terminal_exits: set[tuple[str, int]] = set()
         self._reported_terminal_losses: set[tuple[str, int]] = set()
@@ -1641,13 +1739,13 @@ class TerminalAgentService:
             payload["restart_of_generation"] = restart_of_generation
         if restart_reason is not None:
             payload["restart_reason"] = restart_reason
-        self.control.emit_event(
+        self._emit_terminal_event(
             event_type="terminal.started",
-            source=SemanticEventSource.TERMINAL_AGENT,
             trace_id=trace_id,
             project_id=session.project_id,
             session_id=session_id,
             payload=payload,
+            idempotency_key=f"terminal-started:{session_id}:{generation}",
         )
         self._disable_terminal_offline_protection_if_needed(
             session_id=session_id,
@@ -2126,6 +2224,83 @@ class TerminalAgentService:
                 "agent_launch_profiles": self.agent_launch_profile_status(),
             }
 
+    def flush_terminal_event_outbox(self) -> int:
+        if self.event_outbox is None:
+            return 0
+        return self.event_outbox.flush(
+            self._submit_terminal_event_payload,
+            is_transient_terminal_event_error,
+        )
+
+    def _emit_terminal_event(
+        self,
+        *,
+        event_type: str,
+        trace_id: str,
+        project_id: str | None,
+        session_id: str | None,
+        payload: Mapping[str, object] | None = None,
+        idempotency_key: str | None = None,
+    ) -> object | None:
+        request_payload: dict[str, object] = {
+            "event_type": event_type,
+            "source": SemanticEventSource.TERMINAL_AGENT.value,
+            "trace_id": trace_id,
+            "payload": dict(payload or {}),
+        }
+        if project_id is not None:
+            request_payload["project_id"] = project_id
+        if session_id is not None:
+            request_payload["session_id"] = session_id
+        if idempotency_key is not None:
+            request_payload["idempotency_key"] = idempotency_key
+
+        if self.event_outbox is None:
+            return self._submit_terminal_event_payload(request_payload)
+
+        try:
+            self.flush_terminal_event_outbox()
+            return self._submit_terminal_event_payload(request_payload)
+        except Exception as exc:
+            if not is_transient_terminal_event_error(exc):
+                raise
+            self.event_outbox.append(request_payload)
+            return None
+
+    def _submit_terminal_event_payload(
+        self,
+        request_payload: Mapping[str, object],
+    ) -> object:
+        payload = request_payload.get("payload") or {}
+        if not isinstance(payload, Mapping):
+            raise ValueError("terminal event payload must be an object")
+        return self.control.emit_event(
+            event_type=str(request_payload["event_type"]),
+            source=SemanticEventSource(
+                str(
+                    request_payload.get("source")
+                    or SemanticEventSource.TERMINAL_AGENT.value
+                )
+            ),
+            trace_id=str(request_payload["trace_id"]),
+            project_id=(
+                str(request_payload["project_id"])
+                if request_payload.get("project_id") is not None
+                else None
+            ),
+            session_id=(
+                str(request_payload["session_id"])
+                if request_payload.get("session_id") is not None
+                else None
+            ),
+            payload={str(key): value for key, value in payload.items()},
+            idempotency_key=(
+                str(request_payload["idempotency_key"])
+                if request_payload.get("idempotency_key") is not None
+                else None
+            ),
+        )
+
     def _run_lifecycle_monitor_loop(self) -> None:
         while not self._lifecycle_stop_event.is_set():
             self.run_lifecycle_monitor_once()
@@ -2149,9 +2324,8 @@ class TerminalAgentService:
                 or exit_key in self._reported_terminal_losses
             ):
                 return
-        self.control.emit_event(
+        self._emit_terminal_event(
             event_type="terminal.exited",
-            source=SemanticEventSource.TERMINAL_AGENT,
             trace_id=trace_id,
             project_id=session.project_id,
             session_id=session.id,
@@ -2181,9 +2355,8 @@ class TerminalAgentService:
                 or loss_key in self._reported_terminal_exits
             ):
                 return
-        self.control.emit_event(
+        self._emit_terminal_event(
             event_type="terminal.lost",
-            source=SemanticEventSource.TERMINAL_AGENT,
             trace_id=trace_id,
             project_id=session.project_id,
             session_id=session.id,
@@ -2252,9 +2425,8 @@ class TerminalAgentService:
         with self._lifecycle_lock:
             if block_key in self._reported_auto_restart_blocks:
                 return
-        self.control.emit_event(
+        self._emit_terminal_event(
             event_type="terminal.auto_restart.skipped",
-            source=SemanticEventSource.TERMINAL_AGENT,
             trace_id=trace_id,
             project_id=session.project_id,
             session_id=session_id,

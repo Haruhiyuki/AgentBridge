@@ -43,6 +43,7 @@ from agentbridge.terminal_agent import (
     FakeTerminalBackend,
     PtyTerminalBackend,
     TerminalAgentService,
+    TerminalEventOutbox,
     TerminalInputKind,
     TerminalLifecyclePolicy,
     TerminalOutputChunk,
@@ -56,11 +57,12 @@ def create_session(
     tmp_path,
     *,
     agent_type: AgentType | None = None,
+    project_name: str = "Backend",
 ):
     maintainer = Actor(id="usr_1", roles={"maintainer"})
     project = control.create_project(
         actor=maintainer,
-        name="Backend",
+        name=project_name,
         default_agent=agent_type or AgentType.CLAUDE,
         trace_id="project",
     )
@@ -82,6 +84,19 @@ def create_session(
         trace_id="session",
     )
     return maintainer, session
+
+
+class FlakyTerminalEventControl(ControlPlane):
+    def __init__(self, fail_event_type: str) -> None:
+        super().__init__()
+        self.fail_event_type = fail_event_type
+        self.failed = False
+
+    def emit_event(self, **kwargs):
+        if kwargs.get("event_type") == self.fail_event_type and not self.failed:
+            self.failed = True
+            raise ConnectionError("control plane unavailable")
+        return super().emit_event(**kwargs)
 
 
 def test_terminal_agent_uses_session_agent_launch_command(tmp_path, monkeypatch):
@@ -128,6 +143,79 @@ def test_terminal_agent_uses_configured_codex_launch_command(tmp_path, monkeypat
         str(tmp_path),
         "codex-agentbridge-wrapper",
     )
+
+
+def test_terminal_event_outbox_spools_transient_lifecycle_event(tmp_path):
+    control = FlakyTerminalEventControl("terminal.started")
+    backend = FakeTerminalBackend()
+    outbox_path = tmp_path / "terminal-events.jsonl"
+    terminal = TerminalAgentService(
+        control,
+        backend=backend,
+        event_outbox_path=outbox_path,
+    )
+    _, session = create_session(control, tmp_path)
+
+    generation = terminal.start_session(
+        session_id=session.id,
+        command="fake-cli",
+        trace_id="terminal-start",
+    )
+
+    assert generation == 1
+    assert backend.started[session.id] == (str(tmp_path), "fake-cli")
+    assert [event.type for event in control.repository.list_events(session_id=session.id)] == [
+        "session.created"
+    ]
+    entries = TerminalEventOutbox(outbox_path).read_entries()
+    assert len(entries) == 1
+    assert entries[0]["payload"]["event_type"] == "terminal.started"
+    assert entries[0]["payload"]["idempotency_key"] == (
+        f"terminal-started:{session.id}:1"
+    )
+
+    assert terminal.flush_terminal_event_outbox() == 1
+
+    assert not outbox_path.exists()
+    assert [event.type for event in control.repository.list_events(session_id=session.id)] == [
+        "session.created",
+        "terminal.started",
+    ]
+
+
+def test_terminal_event_outbox_flushes_before_current_event(tmp_path):
+    control = FlakyTerminalEventControl("terminal.started")
+    backend = FakeTerminalBackend()
+    outbox_path = tmp_path / "terminal-events.jsonl"
+    terminal = TerminalAgentService(
+        control,
+        backend=backend,
+        event_outbox_path=outbox_path,
+    )
+    _, first_session = create_session(control, tmp_path)
+    _, second_session = create_session(control, tmp_path, project_name="Frontend")
+
+    terminal.start_session(
+        session_id=first_session.id,
+        command="first-cli",
+        trace_id="terminal-start-first",
+    )
+    terminal.start_session(
+        session_id=second_session.id,
+        command="second-cli",
+        trace_id="terminal-start-second",
+    )
+
+    terminal_events = [
+        event
+        for event in control.repository.list_semantic_events_chronological(limit=100)
+        if event.type == "terminal.started"
+    ]
+    assert [event.session_id for event in terminal_events] == [
+        first_session.id,
+        second_session.id,
+    ]
+    assert not outbox_path.exists()
 
 
 def test_terminal_lifecycle_status_reports_agent_launch_profiles(tmp_path, monkeypatch):

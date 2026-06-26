@@ -26,6 +26,7 @@ from agentbridge.api import (
     start_terminal_backend_supervision,
     stop_terminal_backend_supervision,
     terminal_auto_restart_command_allowlist_from_env,
+    terminal_event_outbox_path_from_env,
 )
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import Actor, AgentBridgeError, AgentType, ErrorCode, LeaseOwnerType
@@ -1242,6 +1243,7 @@ async def async_main() -> None:
             auto_restart_max_attempts=config.terminal_auto_restart_max_attempts,
             auto_restart_command_allowlist=config.terminal_auto_restart_command_allowlist,
         ),
+        event_outbox_path=terminal_event_outbox_path_from_env(),
     )
     server = LocalTerminalAgentServer(
         control=control,

@@ -669,6 +669,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         control,
         backend=create_terminal_backend_from_env(),
         lifecycle_policy=create_terminal_lifecycle_policy_from_env(),
+        event_outbox_path=terminal_event_outbox_path_from_env(),
     )
     bot_gateway = BotGatewayService(
         control,
@@ -5065,6 +5066,11 @@ def create_terminal_lifecycle_policy_from_env() -> TerminalLifecyclePolicy:
         ),
         auto_restart_command_allowlist=terminal_auto_restart_command_allowlist_from_env(),
     )
+
+
+def terminal_event_outbox_path_from_env() -> Path | None:
+    raw_path = os.environ.get("AGENTBRIDGE_TERMINAL_EVENT_OUTBOX", "").strip()
+    return Path(raw_path).expanduser() if raw_path else None
 
 
 def terminal_auto_restart_command_allowlist_from_env() -> tuple[str, ...]:
