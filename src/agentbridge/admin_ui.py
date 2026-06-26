@@ -3461,6 +3461,21 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
         </table>
       </div>
       <pre id="agent-probe">{}</pre>
+      <div class="table-wrap">
+        <table aria-label="Agent adapter verification">
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>Status</th>
+              <th>Schema</th>
+              <th>Provider Version</th>
+              <th>Verification</th>
+              <th>Capabilities</th>
+            </tr>
+          </thead>
+          <tbody id="agent-adapter-summary"></tbody>
+        </table>
+      </div>
       <pre id="agent-adapters">{}</pre>
     </section>
     <section>
@@ -3566,6 +3581,35 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
       tbody.replaceChildren(...rows);
     }
 
+    function renderAgentAdapters(adapters) {
+      const tbody = $("agent-adapter-summary");
+      const rows = Object.values(adapters || {}).map((adapter) => {
+        const gate = adapter.schema_gate || {};
+        const provider = gate.provider_version_verification || {};
+        const capabilities = adapter.capabilities || [];
+        const providerVersion = provider.provider_version_text || provider.provider_version || "-";
+        const verification = provider.status
+          ? `${provider.status}${provider.reason ? `:${provider.reason}` : ""}`
+          : "-";
+        const tr = document.createElement("tr");
+        for (const value of [
+          adapter.agent_type,
+          adapter.status,
+          gate.schema_version || adapter.handshake_probe?.schema_version || "-",
+          providerVersion,
+          verification,
+          capabilities.length,
+        ]) {
+          const td = document.createElement("td");
+          td.textContent = String(value ?? "");
+          tr.appendChild(td);
+        }
+        tr.title = adapter.next_step || gate.next_step || "";
+        return tr;
+      });
+      tbody.replaceChildren(...rows);
+    }
+
     function renderObserved(observed) {
       const tbody = $("observed");
       const rows = Object.entries(observed || {}).map(([sessionId, item]) => {
@@ -3632,7 +3676,9 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
         method: "POST",
         body: JSON.stringify(payload),
       });
-      $("agent-adapters").textContent = JSON.stringify(result.adapters || {}, null, 2);
+      const adapters = result.adapters || {};
+      renderAgentAdapters(adapters);
+      $("agent-adapters").textContent = JSON.stringify(adapters, null, 2);
       setStatus("Adapter detect complete");
     }
 

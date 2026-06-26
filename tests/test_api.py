@@ -6825,6 +6825,12 @@ def test_terminal_agent_adapter_detect_api_requires_control_and_reports_gate(
     adapter = detect_response.json()["adapters"]["claude"]
     assert adapter["status"] == "ready"
     assert adapter["schema_gate"]["status"] == "ready"
+    assert adapter["schema_gate"]["provider_version_verification"]["status"] == (
+        "unverified"
+    )
+    assert adapter["schema_gate"]["provider_version_verification"]["provider_version"] == (
+        "2.0.0"
+    )
     assert adapter["version_probe"]["version_text"] == "Claude API 2.0.0"
     assert adapter["handshake_probe"]["protocol"] == "agentbridge.adapter.v1"
     assert adapter["capabilities"] == ["claude.hooks.session_start"]

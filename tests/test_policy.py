@@ -536,11 +536,14 @@ def test_admin_home_and_terminal_lifecycle_ui_routes():
     assert 'id="agent-profiles"' in html
     assert 'id="probe-agents"' in html
     assert 'id="detect-adapters"' in html
+    assert 'id="agent-adapter-summary"' in html
     assert 'id="agent-adapters"' in html
     assert 'id="allowlist"' in html
     assert 'id="blocks"' in html
     assert "async function probeAgents()" in html
     assert "async function detectAdapters()" in html
+    assert "function renderAgentAdapters(adapters)" in html
+    assert "provider_version_verification" in html
     assert "async function runOnce()" in html
 
 
