@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,9 +66,13 @@ class AgentAdapterControlClient:
         config: AgentAdapterClientConfig,
         *,
         transport: JsonTransport | None = None,
+        clock: Callable[[], float] | None = None,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self.config = config
         self.transport = transport or urllib_json_transport
+        self.clock = clock or time.monotonic
+        self.sleep = sleep or time.sleep
 
     def ingest_event(
         self,
@@ -126,6 +131,69 @@ class AgentAdapterControlClient:
             f"{self._session_path('agent-adapter/responses')}?{urlencode(query)}",
             payload=None,
         )
+
+    def wait_for_response(
+        self,
+        request_event: Mapping[str, object],
+        *,
+        timeout_seconds: float = 300.0,
+        poll_interval_seconds: float = 1.0,
+        ready_only: bool = True,
+        limit: int = 100,
+    ) -> dict[str, object]:
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        if poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be positive")
+        request_event_id = string_value(request_event.get("id"))
+        request_seq = int_value(request_event.get("seq"))
+        request_payload = request_event.get("payload")
+        adapter_item_id = None
+        if isinstance(request_payload, Mapping):
+            adapter_item_id = string_value(request_payload.get("adapter_item_id"))
+        interaction_id = string_value(request_event.get("interaction_id"))
+        if request_event_id is None and adapter_item_id is None and interaction_id is None:
+            raise ValueError("request_event must include id, interaction_id, or adapter_item_id")
+
+        after_seq = request_seq
+        deadline = self.clock() + timeout_seconds
+        last_response: dict[str, object] | None = None
+        while True:
+            response_payload = self.poll_responses(after_seq=after_seq, limit=limit)
+            responses = response_payload.get("responses")
+            if not isinstance(responses, list):
+                raise AgentAdapterClientError("poll response payload must include responses list")
+            for response in responses:
+                if not isinstance(response, dict):
+                    continue
+                response_seq = int_value(response.get("seq"))
+                if response_seq is not None and (after_seq is None or response_seq > after_seq):
+                    after_seq = response_seq
+                if not adapter_response_matches_request(
+                    response,
+                    request_event_id=request_event_id,
+                    interaction_id=interaction_id,
+                    adapter_item_id=adapter_item_id,
+                ):
+                    continue
+                last_response = {str(key): value for key, value in response.items()}
+                if not ready_only or response.get("ready") is True:
+                    return last_response
+
+            now = self.clock()
+            if now >= deadline:
+                raise AgentAdapterClientError(
+                    "timed out waiting for adapter response",
+                    payload={
+                        "request_event_id": request_event_id,
+                        "request_seq": request_seq,
+                        "interaction_id": interaction_id,
+                        "adapter_item_id": adapter_item_id,
+                        "timeout_seconds": timeout_seconds,
+                        "last_response": last_response,
+                    },
+                )
+            self.sleep(min(poll_interval_seconds, max(deadline - now, 0.0)))
 
     def _request_json(
         self,
@@ -192,6 +260,35 @@ class NativeAgentAdapterClient:
     ) -> dict[str, object]:
         return self.control_client.poll_responses(after_seq=after_seq, limit=limit)
 
+    def emit_and_wait(
+        self,
+        adapter_event_type: str,
+        payload: Mapping[str, object],
+        *,
+        trace_id: str = "agent-adapter-client",
+        idempotency_key: str | None = None,
+        turn_id: str | None = None,
+        interaction_id: str | None = None,
+        timeout_seconds: float = 300.0,
+        poll_interval_seconds: float = 1.0,
+        ready_only: bool = True,
+    ) -> dict[str, object]:
+        event = self.emit(
+            adapter_event_type,
+            payload,
+            trace_id=trace_id,
+            idempotency_key=idempotency_key,
+            turn_id=turn_id,
+            interaction_id=interaction_id,
+        )
+        response = self.control_client.wait_for_response(
+            event,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            ready_only=ready_only,
+        )
+        return {"event": event, "response": response}
+
 
 class ClaudeHookAdapterClient(NativeAgentAdapterClient):
     def __init__(
@@ -232,6 +329,39 @@ def adapter_client_for_agent(
     if agent_type == AgentType.CODEX:
         return CodexAppServerAdapterClient(control_client, schema_version=schema_version)
     raise ValueError(f"structured adapter client is not supported for {agent_type.value}")
+
+
+def adapter_response_matches_request(
+    response: Mapping[str, object],
+    *,
+    request_event_id: str | None = None,
+    interaction_id: str | None = None,
+    adapter_item_id: str | None = None,
+) -> bool:
+    if request_event_id is not None and response.get("request_event_id") == request_event_id:
+        return True
+    if interaction_id is not None and response.get("interaction_id") == interaction_id:
+        return True
+    return adapter_item_id is not None and response.get("adapter_item_id") == adapter_item_id
+
+
+def string_value(value: object) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def int_value(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
 
 
 def handshake_payload_for_agent(
@@ -403,27 +533,45 @@ def add_auth_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
 
 
+def add_emit_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--agent",
+        type=parse_agent_type,
+        required=True,
+        choices=[AgentType.CLAUDE, AgentType.CODEX],
+    )
+    parser.add_argument("--schema-version")
+    parser.add_argument("--event-type", required=True)
+    parser.add_argument("--trace-id", default="agent-adapter-client")
+    parser.add_argument("--idempotency-key")
+    parser.add_argument("--turn-id")
+    parser.add_argument("--interaction-id")
+    payload = parser.add_mutually_exclusive_group()
+    payload.add_argument("--payload-json")
+    payload.add_argument("--payload-file", type=Path)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Bridge native Agent adapters to AgentBridge.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     emit = subparsers.add_parser("emit", help="Post one native adapter event")
     add_auth_arguments(emit)
-    emit.add_argument(
-        "--agent",
-        type=parse_agent_type,
-        required=True,
-        choices=[AgentType.CLAUDE, AgentType.CODEX],
+    add_emit_arguments(emit)
+
+    emit_and_wait = subparsers.add_parser(
+        "emit-and-wait",
+        help="Post one adapter event and wait for its interaction response",
     )
-    emit.add_argument("--schema-version")
-    emit.add_argument("--event-type", required=True)
-    emit.add_argument("--trace-id", default="agent-adapter-client")
-    emit.add_argument("--idempotency-key")
-    emit.add_argument("--turn-id")
-    emit.add_argument("--interaction-id")
-    payload = emit.add_mutually_exclusive_group()
-    payload.add_argument("--payload-json")
-    payload.add_argument("--payload-file", type=Path)
+    add_auth_arguments(emit_and_wait)
+    add_emit_arguments(emit_and_wait)
+    emit_and_wait.add_argument("--wait-timeout-seconds", type=float, default=300.0)
+    emit_and_wait.add_argument("--poll-interval-seconds", type=float, default=1.0)
+    emit_and_wait.add_argument(
+        "--include-pending",
+        action="store_true",
+        help="Return the first matching response, even if it is not ready",
+    )
 
     poll = subparsers.add_parser(
         "poll-responses",
@@ -477,6 +625,23 @@ def main(argv: list[str] | None = None) -> int:
                 idempotency_key=args.idempotency_key,
                 turn_id=args.turn_id,
                 interaction_id=args.interaction_id,
+            )
+        elif args.command == "emit-and-wait":
+            adapter_client = adapter_client_for_agent(
+                args.agent,
+                control_client,
+                schema_version=args.schema_version,
+            )
+            result = adapter_client.emit_and_wait(
+                args.event_type,
+                load_payload_from_args(args),
+                trace_id=args.trace_id,
+                idempotency_key=args.idempotency_key,
+                turn_id=args.turn_id,
+                interaction_id=args.interaction_id,
+                timeout_seconds=args.wait_timeout_seconds,
+                poll_interval_seconds=args.poll_interval_seconds,
+                ready_only=not args.include_pending,
             )
         elif args.command == "poll-responses":
             result = control_client.poll_responses(
