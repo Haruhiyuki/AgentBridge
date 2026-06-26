@@ -4563,10 +4563,12 @@ def create_repository_from_env() -> InMemoryRepository:
     if not database_url:
         return InMemoryRepository()
     auto_create_schema = os.environ.get("AGENTBRIDGE_AUTO_CREATE_SCHEMA", "false").lower()
+    write_lock_path = os.environ.get("AGENTBRIDGE_DATABASE_WRITE_LOCK_PATH", "").strip()
     return SQLAlchemyRepository(
         database_url,
         create_schema=auto_create_schema in {"1", "true", "yes", "on"},
         engine_options=database_engine_options_from_env(),
+        write_lock_path=write_lock_path or None,
     )
 
 

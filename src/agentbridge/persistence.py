@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
+from threading import local
 from typing import Any, ClassVar
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - POSIX-only write lock support.
+    fcntl = None
 
 from sqlalchemy import (
     JSON,
@@ -287,7 +295,7 @@ def apply_json_field_candidate_filter(
 
 
 class SQLAlchemyRepository(InMemoryRepository):
-    """Write-through SQLAlchemy repository for single-process MVP persistence."""
+    """Write-through SQLAlchemy repository with optional single-writer snapshot locking."""
 
     storage_label = "sqlalchemy"
     _mutating_methods: ClassVar[set[str]] = {
@@ -334,6 +342,7 @@ class SQLAlchemyRepository(InMemoryRepository):
         create_schema: bool = False,
         engine: Engine | None = None,
         engine_options: dict[str, Any] | None = None,
+        write_lock_path: str | Path | None = None,
     ) -> None:
         self.engine = engine or create_engine(
             database_url,
@@ -343,6 +352,12 @@ class SQLAlchemyRepository(InMemoryRepository):
         if create_schema:
             metadata.create_all(self.engine)
         super().__init__()
+        self._write_lock_path = Path(write_lock_path).expanduser() if write_lock_path else None
+        if self._write_lock_path is not None and fcntl is None:
+            raise RuntimeError(
+                "SQLAlchemy write locking requires POSIX fcntl support on this platform."
+            )
+        self._persistence_local = local()
         self._persisting_enabled = False
         self._load_state()
         self._persisting_enabled = True
@@ -355,12 +370,45 @@ class SQLAlchemyRepository(InMemoryRepository):
 
     def _with_persistence(self, method: Callable[..., Any]) -> Callable[..., Any]:
         def wrapped(*args: Any, **kwargs: Any) -> Any:
-            result = method(*args, **kwargs)
-            if self._persisting_enabled:
-                self._persist_state()
-            return result
+            if not self._persisting_enabled:
+                return method(*args, **kwargs)
+
+            depth = getattr(self._persistence_local, "depth", 0)
+            if depth > 0:
+                return method(*args, **kwargs)
+
+            with self._write_lock(), self._lock:
+                self._persistence_local.depth = depth + 1
+                try:
+                    if self._write_lock_path is not None:
+                        self._load_state()
+                    result = method(*args, **kwargs)
+                    self._persist_state()
+                    return result
+                finally:
+                    self._persistence_local.depth = depth
 
         return wrapped
+
+    @property
+    def write_lock_path(self) -> str | None:
+        if self._write_lock_path is None:
+            return None
+        return str(self._write_lock_path)
+
+    @contextmanager
+    def _write_lock(self):
+        if self._write_lock_path is None:
+            yield
+            return
+
+        self._write_lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._write_lock_path.open("a+", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _load_state(self) -> None:
         with self.engine.connect() as connection:

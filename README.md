@@ -76,9 +76,12 @@ on startup. Production deployments should run Alembic migrations explicitly and 
 SQLAlchemy pool with `AGENTBRIDGE_DATABASE_POOL_SIZE`,
 `AGENTBRIDGE_DATABASE_MAX_OVERFLOW`, `AGENTBRIDGE_DATABASE_POOL_TIMEOUT_SECONDS`,
 `AGENTBRIDGE_DATABASE_POOL_RECYCLE_SECONDS`, and
-`AGENTBRIDGE_DATABASE_POOL_PRE_PING`. See
+`AGENTBRIDGE_DATABASE_POOL_PRE_PING`. Set
+`AGENTBRIDGE_DATABASE_WRITE_LOCK_PATH` for same-host API/daemon processes that share the
+current snapshot repository; each writer will take that lock, reload database state, and
+then write its updated snapshot. See
 `docs/operations/DATABASE_DEPLOYMENT.md` for SQLite/PostgreSQL deployment notes and the
-current single-process persistence boundary.
+current snapshot persistence boundary.
 
 ## Terminal Backend
 

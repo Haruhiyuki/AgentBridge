@@ -279,6 +279,35 @@ def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
     assert len(second_repo.sessions) == 1
 
 
+def test_sqlalchemy_repository_write_lock_reloads_stale_state_before_snapshot(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'write-lock.db'}"
+    write_lock_path = tmp_path / "agentbridge.write.lock"
+    maintainer = Actor(id="usr_lock", roles={"maintainer"})
+
+    first_repo = SQLAlchemyRepository(
+        database_url,
+        create_schema=True,
+        write_lock_path=write_lock_path,
+    )
+    stale_repo = SQLAlchemyRepository(database_url, write_lock_path=write_lock_path)
+
+    project = first_repo.create_project(
+        actor=maintainer,
+        name="Locked Persistence",
+        slug="locked-persistence",
+    )
+    context = stale_repo.get_or_create_chat_context(
+        bot_instance_id="bot-lock",
+        platform="onebot.v11",
+        chat_space_id="group-lock",
+    )
+
+    restored = SQLAlchemyRepository(database_url, write_lock_path=write_lock_path)
+
+    assert restored.get_project(project.id) == project
+    assert restored.get_chat_context(context.id) == context
+
+
 def test_sqlalchemy_repository_lists_filtered_audit_events(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'audit-query.db'}"
     maintainer = Actor(id="usr_audit", roles={"maintainer"})
@@ -959,6 +988,20 @@ def test_api_sqlalchemy_repository_uses_pool_environment_options(tmp_path, monke
     assert repository.engine.pool._timeout == 5
     assert repository.engine.pool._recycle == 6
     assert repository.engine.pool._pre_ping is True
+
+
+def test_api_sqlalchemy_repository_uses_write_lock_environment(tmp_path, monkeypatch):
+    database_url = f"sqlite:///{tmp_path / 'api-write-lock.db'}"
+    write_lock_path = tmp_path / "api.write.lock"
+    monkeypatch.setenv("AGENTBRIDGE_DATABASE_URL", database_url)
+    monkeypatch.setenv("AGENTBRIDGE_AUTO_CREATE_SCHEMA", "true")
+    monkeypatch.setenv("AGENTBRIDGE_DATABASE_WRITE_LOCK_PATH", str(write_lock_path))
+
+    app = create_app()
+    repository = app.state.control.repository
+
+    assert isinstance(repository, SQLAlchemyRepository)
+    assert repository.write_lock_path == str(write_lock_path)
 
 
 def test_interaction_cancellation_survives_repository_restart(tmp_path):

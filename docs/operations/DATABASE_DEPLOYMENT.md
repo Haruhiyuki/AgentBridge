@@ -15,6 +15,7 @@ For SQLite:
 
 ```bash
 export AGENTBRIDGE_DATABASE_URL=sqlite:///./agentbridge.db
+export AGENTBRIDGE_DATABASE_WRITE_LOCK_PATH=./agentbridge.db.write.lock
 uv run alembic upgrade head
 uv run uvicorn agentbridge.api:create_app --factory
 ```
@@ -51,6 +52,10 @@ Install the matching SQLAlchemy DBAPI driver for the selected URL scheme. For Po
   checkout.
 - `AGENTBRIDGE_DATABASE_ECHO`: enables SQL logging for local diagnostics. Keep it disabled
   in normal production logs because payloads may include operational metadata.
+- `AGENTBRIDGE_DATABASE_WRITE_LOCK_PATH`: optional POSIX file lock path for the current
+  snapshot repository. When set on every same-host API/daemon writer, each mutating
+  operation takes the lock, reloads the latest database state, applies the mutation, and
+  writes the updated snapshot back while holding the lock.
 
 Unset pool variables use SQLAlchemy defaults for the selected dialect and pool class.
 
@@ -69,8 +74,16 @@ Recommended deployment shape:
 
 ## Current Persistence Boundary
 
-The current SQLAlchemy repository is a single-process write-through snapshot repository.
-It is suitable for restart recovery and product-contract testing, but it rewrites broad
-state snapshots after mutating operations. Product-grade multi-process deployments still
-need row-level writes, stronger transaction boundaries, and explicit concurrency policy
-before multiple API/daemon writers share one database.
+The current SQLAlchemy repository is still a write-through snapshot repository. It is
+suitable for restart recovery and product-contract testing, but it rewrites broad state
+snapshots after mutating operations.
+
+For same-host deployments with more than one API/daemon writer, set the same
+`AGENTBRIDGE_DATABASE_WRITE_LOCK_PATH` in every process before sharing one database. This
+enforces a conservative single-writer policy around snapshot writes and prevents a stale
+repository instance from overwriting state committed by another locked writer.
+
+This lock is a bridge for the current snapshot model, not the final persistence
+architecture. Product-grade multi-process deployments that need high write throughput or
+cross-host writers still need row-level writes and stronger database transaction
+boundaries.
