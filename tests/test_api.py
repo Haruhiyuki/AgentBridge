@@ -335,6 +335,58 @@ def test_readiness_endpoint_flags_incomplete_acceptance_section(monkeypatch, tmp
     assert checks["acceptance.recovery"]["status"] == "fail"
 
 
+def test_readiness_endpoint_fails_for_missing_verified_acceptance_artifact(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_file = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    sections = {
+        section: {
+            "status": "passed",
+            "artifacts": [f"{section.replace('.', '_')}.json"],
+        }
+        for section in (
+            "34.1",
+            "34.2",
+            "34.3",
+            "34.4",
+            "34.5",
+            "34.6",
+            "34.7",
+            "34.8",
+        )
+    }
+    evidence_file.write_text(
+        json.dumps(
+            {
+                "schema_version": ACCEPTANCE_EVIDENCE_SCHEMA_VERSION,
+                "sections": sections,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", str(evidence_file))
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT", str(artifact_root))
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS", "true")
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    assert payload["status"] == "not_ready"
+    assert checks["acceptance.evidence_manifest"]["status"] == "pass"
+    assert checks["acceptance.native_session"]["status"] == "fail"
+    assert checks["acceptance.native_session"]["evidence"]["artifact_error_count"] == 1
+    assert (
+        payload["sources"]["acceptance_evidence"]["artifact_verification"]["enabled"]
+        is True
+    )
+
+
 def test_api_token_gate_protects_rest_api_when_configured(monkeypatch):
     monkeypatch.setenv("AGENTBRIDGE_API_TOKEN", "api-secret")
     client = TestClient(create_app())

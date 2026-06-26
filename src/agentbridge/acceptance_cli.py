@@ -42,11 +42,20 @@ def build_parser() -> argparse.ArgumentParser:
     set_parser.add_argument("section", choices=sorted(ACCEPTANCE_SECTIONS))
     set_parser.add_argument("--status", choices=sorted(ACCEPTANCE_SECTION_STATUSES), required=True)
     set_parser.add_argument("--artifact", action="append", default=[])
+    set_parser.add_argument(
+        "--artifact-sha256",
+        action="append",
+        default=[],
+        metavar="PATH=SHA256",
+        help="Add an artifact reference with an expected sha256 digest",
+    )
     set_parser.add_argument("--notes")
     set_parser.add_argument("--replace-artifacts", action="store_true")
 
     summary_parser = subparsers.add_parser("summary", help="Summarize acceptance status")
     summary_parser.add_argument("path", type=Path)
+    summary_parser.add_argument("--artifact-root", type=Path)
+    summary_parser.add_argument("--verify-artifacts", action="store_true")
     summary_parser.add_argument(
         "--format",
         choices=["json", "summary"],
@@ -97,10 +106,32 @@ def set_section(args: argparse.Namespace) -> int:
     current_section = sections.get(args.section)
     section_payload = current_section if isinstance(current_section, dict) else {}
     existing_artifacts = section_payload.get("artifacts")
-    artifacts = [] if args.replace_artifacts or not isinstance(existing_artifacts, list) else [
-        artifact for artifact in existing_artifacts if isinstance(artifact, str)
-    ]
+    artifacts = (
+        []
+        if args.replace_artifacts or not isinstance(existing_artifacts, list)
+        else [
+            artifact
+            for artifact in existing_artifacts
+            if isinstance(artifact, str | dict)
+        ]
+    )
     artifacts.extend(artifact for artifact in args.artifact if artifact.strip())
+    for artifact_sha256 in args.artifact_sha256:
+        try:
+            artifact_path, sha256 = artifact_sha256.split("=", 1)
+        except ValueError:
+            print(
+                "acceptance manifest update failed: --artifact-sha256 must use PATH=SHA256",
+                file=sys.stderr,
+            )
+            return 1
+        if not artifact_path.strip() or not sha256.strip():
+            print(
+                "acceptance manifest update failed: --artifact-sha256 requires path and digest",
+                file=sys.stderr,
+            )
+            return 1
+        artifacts.append({"path": artifact_path.strip(), "sha256": sha256.strip().lower()})
     section_payload = {
         **section_payload,
         "status": args.status,
@@ -127,6 +158,7 @@ def acceptance_summary_text(evidence: dict[str, object]) -> str:
                 f"not_run={counts.get('not_run', 0)}",
                 f"missing={counts.get('missing', 0)}",
                 f"invalid={counts.get('invalid', 0)}",
+                f"artifact_errors={summary.get('artifact_error_count', 0)}",
             ]
         )
     ]
@@ -139,7 +171,11 @@ def acceptance_summary_text(evidence: dict[str, object]) -> str:
             section_payload = section if isinstance(section, dict) else {}
             status = section_payload.get("status", "missing")
             artifacts = section_payload.get("artifact_count", 0)
-            lines.append(f"{section_id} status={status} artifacts={artifacts}")
+            artifact_errors = section_payload.get("artifact_error_count", 0)
+            lines.append(
+                f"{section_id} status={status} artifacts={artifacts} "
+                f"artifact_errors={artifact_errors}"
+            )
     return "\n".join(lines)
 
 
@@ -181,13 +217,19 @@ def summary_exit_code(
                 break
     if failed:
         return ACCEPTANCE_EXIT_INVALID if fail_on_fail or fail_on_warn else 0
+    if int(summary.get("artifact_error_count") or 0) > 0:
+        return ACCEPTANCE_EXIT_INVALID if fail_on_fail or fail_on_warn else 0
     if not summary.get("ready") and fail_on_warn:
         return ACCEPTANCE_EXIT_INCOMPLETE
     return 0
 
 
 def summarize_manifest(args: argparse.Namespace) -> int:
-    evidence = read_acceptance_evidence(args.path)
+    evidence = read_acceptance_evidence(
+        args.path,
+        artifact_root=args.artifact_root,
+        verify_artifacts=args.verify_artifacts,
+    )
     print_summary(evidence, args.format)
     return summary_exit_code(
         evidence,

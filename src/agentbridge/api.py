@@ -1257,8 +1257,15 @@ def readiness_acceptance_checks(
         section_status = str(section_evidence.get("status") or "missing")
         artifact_count = int(section_evidence.get("artifact_count") or 0)
         if section_status == "passed" and artifact_count > 0:
-            status = "pass"
-            next_step = None
+            if int(section_evidence.get("artifact_error_count") or 0) > 0:
+                status = "fail"
+                next_step = (
+                    f"Fix missing, invalid, or hash-mismatched artifacts for "
+                    f"design-document section {section_id}."
+                )
+            else:
+                status = "pass"
+                next_step = None
         elif section_status == "failed":
             status = "fail"
             next_step = (
@@ -1290,8 +1297,14 @@ def readiness_acceptance_checks(
 
 
 def readiness_acceptance_evidence() -> dict[str, object]:
+    artifact_root = os.environ.get("AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT", "").strip()
     return read_acceptance_evidence(
-        os.environ.get("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", "").strip()
+        os.environ.get("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", "").strip(),
+        artifact_root=artifact_root or None,
+        verify_artifacts=env_bool(
+            "AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS",
+            default=bool(artifact_root),
+        ),
     )
 
 

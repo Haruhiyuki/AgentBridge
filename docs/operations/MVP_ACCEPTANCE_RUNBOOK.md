@@ -17,6 +17,8 @@ export AGENTBRIDGE_WS_TOKEN=...
 export AGENTBRIDGE_DEVICE_KEYS='{"readiness-runner":"..."}'
 export AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS_FILE=/etc/agentbridge/client-fingerprints.txt
 export AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE=/var/lib/agentbridge/acceptance-evidence.json
+export AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT=/var/lib/agentbridge/acceptance-artifacts
+export AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS=true
 export AGENTBRIDGE_TERMINAL_EVENT_OUTBOX=/var/lib/agentbridge/terminal-events.jsonl
 export AGENTBRIDGE_BOT_RETRY_WORKER_ENABLED=true
 export AGENTBRIDGE_DEVICE_CERT_SCAN_WORKER_ENABLED=true
@@ -48,13 +50,17 @@ schema. Start from `docs/operations/templates/acceptance_evidence.example.json`,
 each design-document section `34.1` through `34.8` to `passed`, and attach at least one
 artifact reference per section. Readiness treats a missing manifest as a warning, an
 unreadable or malformed manifest as a failure, and any failed section as a failure.
+When `AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS=true`, artifact paths are resolved under
+`AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT` or the manifest directory, and missing files,
+root escapes, non-files, or sha256 mismatches fail the relevant section.
 
 ```bash
 uv run agentbridge-acceptance init "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
   --environment staging
 uv run agentbridge-acceptance set-section "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
-  34.1 --status passed --artifact artifacts/native-session-run.json
+  34.1 --status passed --artifact native-session-run.json
 uv run agentbridge-acceptance summary "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
+  --verify-artifacts --artifact-root "$AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT" \
   --fail-on-warn
 ```
 
