@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from fastapi.testclient import TestClient
 
+from agentbridge.acceptance_cli import main as acceptance_main
 from agentbridge.api import ACCEPTANCE_EVIDENCE_SCHEMA_VERSION, create_app
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
@@ -126,6 +127,68 @@ def _device_csr_pem(device_id: str) -> str:
     return csr.public_bytes(serialization.Encoding.PEM).decode("utf-8")
 
 
+def create_acceptance_bundle_fixture(
+    tmp_path,
+    *,
+    complete: bool = True,
+):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "acceptance-artifacts"
+    bundle = tmp_path / "acceptance-bundle.zip"
+    assert (
+        acceptance_main(
+            [
+                "init",
+                str(manifest),
+                "--checked-at",
+                "2026-06-27T00:00:00Z",
+            ]
+        )
+        == 0
+    )
+    sections = (
+        "34.1",
+        "34.2",
+        "34.3",
+        "34.4",
+        "34.5",
+        "34.6",
+        "34.7",
+        "34.8",
+    )
+    if not complete:
+        sections = ("34.1",)
+    for section in sections:
+        source = tmp_path / f"{section}.json"
+        source.write_text(f'{{"section":"{section}"}}', encoding="utf-8")
+        assert (
+            acceptance_main(
+                [
+                    "attach-artifact",
+                    str(manifest),
+                    section,
+                    str(source),
+                    "--artifact-root",
+                    str(artifact_root),
+                    "--status",
+                    "passed",
+                ]
+            )
+            == 0
+        )
+    bundle_args = [
+        "bundle",
+        str(manifest),
+        str(bundle),
+        "--artifact-root",
+        str(artifact_root),
+    ]
+    if not complete:
+        bundle_args.append("--allow-incomplete")
+    assert acceptance_main(bundle_args) == 0
+    return manifest, bundle
+
+
 def test_health_endpoint_reports_memory_storage():
     client = TestClient(create_app())
 
@@ -147,6 +210,7 @@ def test_readiness_endpoint_reports_mvp_operational_checks(monkeypatch):
     monkeypatch.delenv("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS_FILE", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_DATABASE_URL", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_TERMINAL_EVENT_OUTBOX", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_BOT_RETRY_WORKER_ENABLED", raising=False)
@@ -177,9 +241,11 @@ def test_readiness_endpoint_reports_mvp_operational_checks(monkeypatch):
     assert checks["security.device_credentials"]["status"] == "warn"
     assert checks["security.client_certificate_gate"]["status"] == "warn"
     assert checks["acceptance.evidence_manifest"]["status"] == "warn"
+    assert checks["acceptance.evidence_bundle"]["status"] == "warn"
     assert "terminal_lifecycle" in payload["sources"]
     assert "security_gates" in payload["sources"]
     assert "acceptance_evidence" in payload["sources"]
+    assert "acceptance_bundle" in payload["sources"]
 
 
 def test_readiness_endpoint_reports_configured_security_gates(monkeypatch):
@@ -385,6 +451,56 @@ def test_readiness_endpoint_fails_for_missing_verified_acceptance_artifact(
         payload["sources"]["acceptance_evidence"]["artifact_verification"]["enabled"]
         is True
     )
+
+
+def test_readiness_endpoint_passes_for_verified_acceptance_bundle(monkeypatch, tmp_path):
+    _manifest, bundle = create_acceptance_bundle_fixture(tmp_path)
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE", str(bundle))
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    assert checks["acceptance.evidence_bundle"]["status"] == "pass"
+    assert checks["acceptance.evidence_bundle"]["evidence"]["valid"] is True
+    assert checks["acceptance.evidence_bundle"]["evidence"]["ready"] is True
+    assert payload["sources"]["acceptance_bundle"]["artifact_count"] == 8
+
+
+def test_readiness_endpoint_fails_for_invalid_acceptance_bundle(monkeypatch, tmp_path):
+    missing_bundle = tmp_path / "missing-acceptance-bundle.zip"
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE", str(missing_bundle))
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    assert payload["status"] == "not_ready"
+    assert checks["acceptance.evidence_bundle"]["status"] == "fail"
+    assert checks["acceptance.evidence_bundle"]["evidence"]["valid"] is False
+    assert checks["acceptance.evidence_bundle"]["evidence"]["errors"][0].startswith(
+        "zip_error:"
+    )
+
+
+def test_readiness_endpoint_warns_for_draft_acceptance_bundle(monkeypatch, tmp_path):
+    _manifest, bundle = create_acceptance_bundle_fixture(tmp_path, complete=False)
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE", str(bundle))
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    assert checks["acceptance.evidence_bundle"]["status"] == "warn"
+    assert checks["acceptance.evidence_bundle"]["evidence"]["valid"] is True
+    assert checks["acceptance.evidence_bundle"]["evidence"]["ready"] is False
+    assert payload["sources"]["acceptance_bundle"]["artifact_count"] == 1
 
 
 def test_api_token_gate_protects_rest_api_when_configured(monkeypatch):

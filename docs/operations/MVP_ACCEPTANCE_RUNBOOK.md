@@ -19,6 +19,7 @@ export AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS_FILE=/etc/agentbridge/client-fingerp
 export AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE=/var/lib/agentbridge/acceptance-evidence.json
 export AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT=/var/lib/agentbridge/acceptance-artifacts
 export AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS=true
+export AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE=/var/lib/agentbridge/agentbridge-mvp-acceptance-bundle.zip
 export AGENTBRIDGE_TERMINAL_EVENT_OUTBOX=/var/lib/agentbridge/terminal-events.jsonl
 export AGENTBRIDGE_BOT_RETRY_WORKER_ENABLED=true
 export AGENTBRIDGE_DEVICE_CERT_SCAN_WORKER_ENABLED=true
@@ -58,7 +59,9 @@ the source file into the artifact root, computes the sha256 digest, and writes t
 digest-backed manifest reference in one step. After all sections are signed off,
 `agentbridge-acceptance bundle` packages the manifest, a bundle index, and verified
 artifact files into a portable ZIP for release review; `agentbridge-acceptance
-verify-bundle` validates the ZIP offline without extracting it.
+verify-bundle` validates the ZIP offline without extracting it. Readiness warns when
+`AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE` is unset, fails invalid bundles, warns for verified
+draft bundles, and passes only when the configured bundle validates with `ready=true`.
 
 ```bash
 uv run agentbridge-acceptance init "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
@@ -71,9 +74,9 @@ uv run agentbridge-acceptance summary "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
   --verify-artifacts --artifact-root "$AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT" \
   --fail-on-warn
 uv run agentbridge-acceptance bundle "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
-  ./agentbridge-mvp-acceptance-bundle.zip \
+  "$AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE" \
   --artifact-root "$AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT"
-uv run agentbridge-acceptance verify-bundle ./agentbridge-mvp-acceptance-bundle.zip
+uv run agentbridge-acceptance verify-bundle "$AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE"
 ```
 
 ## Acceptance Evidence Matrix

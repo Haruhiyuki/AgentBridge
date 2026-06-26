@@ -25,6 +25,7 @@ from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from agentbridge.acceptance_cli import verify_acceptance_bundle
 from agentbridge.acceptance_evidence import (
     ACCEPTANCE_EVIDENCE_SCHEMA_VERSION,
     ACCEPTANCE_SECTIONS,
@@ -770,6 +771,8 @@ def build_readiness_report(
     checks.extend(readiness_security_checks(security_evidence))
     acceptance_evidence = readiness_acceptance_evidence()
     checks.extend(readiness_acceptance_checks(acceptance_evidence))
+    acceptance_bundle = readiness_acceptance_bundle()
+    checks.append(readiness_acceptance_bundle_check(acceptance_bundle))
 
     status = readiness_overall_status(checks)
     return {
@@ -786,6 +789,7 @@ def build_readiness_report(
             "certificate_scan_worker": certificate_worker_status,
             "security_gates": security_evidence,
             "acceptance_evidence": acceptance_evidence,
+            "acceptance_bundle": acceptance_bundle,
         },
     }
 
@@ -1305,6 +1309,67 @@ def readiness_acceptance_evidence() -> dict[str, object]:
             "AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS",
             default=bool(artifact_root),
         ),
+    )
+
+
+def readiness_acceptance_bundle() -> dict[str, object]:
+    raw_path = os.environ.get("AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE", "").strip()
+    if not raw_path:
+        return {
+            "configured": False,
+            "valid": False,
+            "ready": False,
+            "path": None,
+            "artifact_count": 0,
+            "errors": [],
+        }
+    verification = verify_acceptance_bundle(Path(raw_path).expanduser())
+    return {
+        "configured": True,
+        **verification,
+    }
+
+
+def readiness_acceptance_bundle_check(evidence: dict[str, object]) -> dict[str, object]:
+    configured = bool(evidence.get("configured"))
+    valid = bool(evidence.get("valid"))
+    ready = bool(evidence.get("ready"))
+    if not configured:
+        status = "warn"
+        next_step = (
+            "Set AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE to a verified MVP acceptance bundle "
+            "before product release."
+        )
+    elif not valid:
+        status = "fail"
+        next_step = (
+            "Rebuild or replace AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE so "
+            "agentbridge-acceptance verify-bundle reports valid=true."
+        )
+    elif not ready:
+        status = "warn"
+        next_step = (
+            "Complete all MVP acceptance sections and rebuild the bundle so "
+            "verify-bundle reports ready=true."
+        )
+    else:
+        status = "pass"
+        next_step = None
+    return readiness_check(
+        "acceptance.evidence_bundle",
+        "acceptance",
+        status,
+        "MVP acceptance evidence bundle is portable and verifiable.",
+        evidence={
+            "configured": configured,
+            "valid": valid,
+            "ready": ready,
+            "path": evidence.get("path"),
+            "artifact_count": evidence.get("artifact_count", 0),
+            "errors": evidence.get("errors", []),
+            "manifest_sha256": evidence.get("manifest_sha256"),
+        },
+        next_step=next_step,
     )
 
 
