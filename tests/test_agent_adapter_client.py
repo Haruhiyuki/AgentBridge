@@ -425,6 +425,8 @@ def test_cli_parser_accepts_codex_app_server_proxy_command():
             "bridge.jsonl",
             "--bridge-output-format",
             "json-rpc",
+            "--inject-responses",
+            "--forward-injected-requests",
             "--",
             "codex",
             "app-server",
@@ -437,6 +439,8 @@ def test_cli_parser_accepts_codex_app_server_proxy_command():
     assert args.session_id == "ses_1"
     assert str(args.bridge_output_file) == "bridge.jsonl"
     assert args.bridge_output_format == "json-rpc"
+    assert args.inject_responses is True
+    assert args.forward_injected_requests is True
     assert args.app_server_command == [
         "--",
         "codex",
@@ -948,6 +952,8 @@ def test_codex_app_server_stdio_proxy_forwards_stdout_and_collects_events(tmp_pa
         "processed": 2,
         "skipped": 1,
         "emitted": 1,
+        "injected": 0,
+        "suppressed": 0,
         "errors": 0,
     }
     forwarded_lines = downstream_output.getvalue().splitlines()
@@ -975,6 +981,107 @@ def test_codex_app_server_stdio_proxy_forwards_stdout_and_collects_events(tmp_pa
     }
     assert error_file.getvalue() == ""
     assert [call[0] for call in calls] == ["POST", "POST", "GET"]
+
+
+def test_codex_app_server_stdio_proxy_injects_agentbridge_response(tmp_path):
+    script = tmp_path / "fake_codex_app_server.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json",
+                "import sys",
+                "request = {",
+                "    'method': 'item/commandExecution/requestApproval',",
+                "    'id': 42,",
+                "    'params': {",
+                "        'item': {'id': 'cmd-1', 'command': 'pytest'},",
+                "        'reason': 'Run tests',",
+                "    },",
+                "}",
+                "print(json.dumps(request), flush=True)",
+                "response = sys.stdin.readline()",
+                "print(response.strip(), file=sys.stderr, flush=True)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def transport(method, url, headers, payload, timeout_seconds):
+        calls.append((method, url, payload))
+        if method == "POST":
+            return {
+                "id": "evt_request",
+                "seq": 4,
+                "interaction_id": "int_1",
+                "payload": {"adapter_item_id": "cmd-1"},
+            }
+        return {
+            "responses": [
+                {
+                    "seq": 5,
+                    "request_event_id": "evt_request",
+                    "interaction_id": "int_1",
+                    "adapter_event_type": "item/commandExecution/requestApproval",
+                    "adapter_item_id": "cmd-1",
+                    "ready": True,
+                    "decision": "approved",
+                    "approve": True,
+                }
+            ]
+        }
+
+    control_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(base_url="http://bridge.local", session_id="ses_1"),
+        transport=transport,
+    )
+    downstream_output = StringIO()
+    bridge_output = StringIO()
+    error_file = StringIO()
+
+    summary = bridge_codex_app_server_stdio_proxy(
+        control_client=control_client,
+        command_args=[sys.executable, str(script)],
+        upstream_input=StringIO(),
+        downstream_output=downstream_output,
+        bridge_output=bridge_output,
+        error_file=error_file,
+        poll_interval_seconds=0.01,
+        inject_responses=True,
+    )
+
+    expected_response = {
+        "id": 42,
+        "result": {
+            "agentbridge": {
+                "action": "approval_decision",
+                "decision": "approved",
+                "approve": True,
+                "answer": None,
+                "reason": None,
+                "adapter_item_id": "cmd-1",
+                "interaction_id": "int_1",
+                "request_event_id": "evt_request",
+                "request_seq": None,
+                "payload": None,
+            }
+        },
+    }
+    assert summary == {
+        "command": [sys.executable, str(script)],
+        "return_code": 0,
+        "processed": 1,
+        "skipped": 0,
+        "emitted": 1,
+        "injected": 1,
+        "suppressed": 1,
+        "errors": 0,
+    }
+    assert downstream_output.getvalue() == ""
+    assert json.loads(bridge_output.getvalue()) == expected_response
+    assert json.loads(error_file.getvalue()) == expected_response
+    assert [call[0] for call in calls] == ["POST", "GET"]
 
 
 def test_cli_format_response_prints_native_stdout_json(capsys):

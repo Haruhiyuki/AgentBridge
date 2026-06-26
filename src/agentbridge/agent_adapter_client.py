@@ -619,6 +619,8 @@ def bridge_codex_app_server_stdio_proxy(
     wait_timeout_seconds: float = 300.0,
     poll_interval_seconds: float = 1.0,
     bridge_output_format: str = "json-rpc",
+    inject_responses: bool = False,
+    forward_injected_requests: bool = False,
     strict: bool = False,
 ) -> dict[str, object]:
     if not command_args:
@@ -637,10 +639,11 @@ def bridge_codex_app_server_stdio_proxy(
     )
     if process.stdin is None or process.stdout is None or process.stderr is None:
         raise RuntimeError("Codex app-server proxy failed to open process pipes")
+    stdin_lock = threading.Lock()
     stdin_thread = threading.Thread(
         target=forward_text_stream,
         args=(upstream_input, process.stdin),
-        kwargs={"close_output": True},
+        kwargs={"close_output": not inject_responses, "lock": stdin_lock},
         daemon=True,
     )
     stderr_thread = threading.Thread(
@@ -654,11 +657,13 @@ def bridge_codex_app_server_stdio_proxy(
     processed = 0
     skipped = 0
     emitted = 0
+    injected = 0
+    suppressed = 0
     errors = 0
     for line_number, raw_line in enumerate(process.stdout, start=1):
-        downstream_output.write(raw_line)
-        downstream_output.flush()
         if not raw_line.strip():
+            downstream_output.write(raw_line)
+            downstream_output.flush()
             skipped += 1
             continue
         try:
@@ -667,6 +672,8 @@ def bridge_codex_app_server_stdio_proxy(
                 raise ValueError("Codex app-server JSONL message must be a JSON object")
             message = {str(key): value for key, value in decoded.items()}
         except (json.JSONDecodeError, ValueError) as exc:
+            downstream_output.write(raw_line)
+            downstream_output.flush()
             errors += 1
             if strict:
                 process.terminate()
@@ -680,25 +687,65 @@ def bridge_codex_app_server_stdio_proxy(
             )
             continue
         if "method" not in message:
+            downstream_output.write(raw_line)
+            downstream_output.flush()
             skipped += 1
             continue
+        adapter_event_type = string_value(message.get("method")) or ""
+        request_id = codex_app_server_message_id(message)
+        should_suppress = (
+            inject_responses
+            and not forward_injected_requests
+            and adapter_event_type in CODEX_INTERACTION_APP_SERVER_EVENTS
+            and request_id is not None
+        )
+        if should_suppress:
+            suppressed += 1
+        else:
+            downstream_output.write(raw_line)
+            downstream_output.flush()
         processed += 1
-        payload = codex_app_server_stream_message_output(
+        payloads = codex_app_server_stream_message_payloads(
             control_client=control_client,
             message=message,
             schema_version=schema_version,
             trace_id=trace_id,
             wait_timeout_seconds=wait_timeout_seconds,
             poll_interval_seconds=poll_interval_seconds,
-            output_format=bridge_output_format,
             strict=strict,
             error_file=error_file,
             line_number=line_number,
         )
-        if payload is None or bridge_output is None:
-            continue
-        write_json_line(bridge_output, payload)
-        emitted += 1
+        payload = payloads.get(bridge_output_format)
+        if payload is not None and bridge_output is not None:
+            write_json_line(bridge_output, payload)
+            emitted += 1
+        injection_payload = payloads.get("json-rpc")
+        if inject_responses and injection_payload is not None:
+            try:
+                write_json_line(process.stdin, injection_payload, lock=stdin_lock)
+            except (BrokenPipeError, OSError, ValueError) as exc:
+                errors += 1
+                if strict:
+                    process.terminate()
+                    message = (
+                        f"Codex app-server stdout line {line_number} "
+                        f"response injection failed: {exc}"
+                    )
+                    raise RuntimeError(message) from exc
+                if should_suppress:
+                    downstream_output.write(raw_line)
+                    downstream_output.flush()
+                    suppressed -= 1
+                write_codex_app_server_stream_error(
+                    error_file,
+                    line_number=line_number,
+                    error=f"response injection failed: {exc}",
+                )
+            else:
+                injected += 1
+    if inject_responses:
+        close_text_output(process.stdin, lock=stdin_lock)
     return_code = process.wait()
     stdin_thread.join(timeout=1.0)
     stderr_thread.join(timeout=1.0)
@@ -708,6 +755,8 @@ def bridge_codex_app_server_stdio_proxy(
         "processed": processed,
         "skipped": skipped,
         "emitted": emitted,
+        "injected": injected,
+        "suppressed": suppressed,
         "errors": errors,
     }
 
@@ -717,16 +766,19 @@ def forward_text_stream(
     output_file: TextIO | None,
     *,
     close_output: bool = False,
+    lock: threading.Lock | None = None,
 ) -> None:
     try:
         for line in input_file:
             if output_file is None:
                 continue
-            output_file.write(line)
-            output_file.flush()
+            try:
+                write_text(output_file, line, lock=lock)
+            except (BrokenPipeError, OSError, ValueError):
+                return
     finally:
         if close_output and output_file is not None:
-            output_file.close()
+            close_text_output(output_file, lock=lock)
 
 
 def codex_app_server_stream_message_output(
@@ -742,6 +794,32 @@ def codex_app_server_stream_message_output(
     error_file: TextIO | None,
     line_number: int,
 ) -> dict[str, object] | None:
+    payloads = codex_app_server_stream_message_payloads(
+        control_client=control_client,
+        message=message,
+        schema_version=schema_version,
+        trace_id=trace_id,
+        wait_timeout_seconds=wait_timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        strict=strict,
+        error_file=error_file,
+        line_number=line_number,
+    )
+    return payloads.get(output_format)
+
+
+def codex_app_server_stream_message_payloads(
+    *,
+    control_client: AgentAdapterControlClient,
+    message: Mapping[str, object],
+    schema_version: str | None,
+    trace_id: str,
+    wait_timeout_seconds: float,
+    poll_interval_seconds: float,
+    strict: bool,
+    error_file: TextIO | None,
+    line_number: int,
+) -> dict[str, dict[str, object] | None]:
     try:
         result = handle_codex_app_server_message(
             control_client=control_client,
@@ -760,18 +838,24 @@ def codex_app_server_stream_message_output(
                 error=str(exc),
             )
             request_id = codex_app_server_message_id(message)
-            if output_format == "bridge-json":
-                return {
-                    "adapter_event_type": adapter_event_type,
-                    "action": action,
-                    "error": str(exc),
-                }
-            if output_format == "json-rpc" and request_id is not None:
-                return {
+            bridge_payload = {
+                "adapter_event_type": adapter_event_type,
+                "action": action,
+                "error": str(exc),
+            }
+            json_rpc_payload = (
+                {
                     "id": request_id,
                     "result": {"agentbridge": action},
                 }
-            return action
+                if request_id is not None
+                else None
+            )
+            return {
+                "bridge-json": bridge_payload,
+                "json-rpc": json_rpc_payload,
+                "action": action,
+            }
         if strict:
             raise
         write_codex_app_server_stream_error(
@@ -779,14 +863,14 @@ def codex_app_server_stream_message_output(
             line_number=line_number,
             error=str(exc),
         )
-        return None
-    if output_format == "bridge-json":
-        return result
-    if output_format == "json-rpc":
-        payload = result.get("json_rpc_response")
-        return payload if isinstance(payload, dict) else None
-    payload = result.get("action")
-    return payload if isinstance(payload, dict) else None
+        return {"bridge-json": None, "json-rpc": None, "action": None}
+    json_rpc_payload = result.get("json_rpc_response")
+    action_payload = result.get("action")
+    return {
+        "bridge-json": result,
+        "json-rpc": json_rpc_payload if isinstance(json_rpc_payload, dict) else None,
+        "action": action_payload if isinstance(action_payload, dict) else None,
+    }
 
 
 def write_codex_app_server_stream_error(
@@ -803,10 +887,47 @@ def write_codex_app_server_stream_error(
     )
 
 
-def write_json_line(output_file: TextIO, payload: Mapping[str, object]) -> None:
-    output_file.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-    output_file.write("\n")
-    output_file.flush()
+def write_json_line(
+    output_file: TextIO,
+    payload: Mapping[str, object],
+    *,
+    lock: threading.Lock | None = None,
+) -> None:
+    write_text(
+        output_file,
+        json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+        lock=lock,
+    )
+
+
+def write_text(
+    output_file: TextIO,
+    text: str,
+    *,
+    lock: threading.Lock | None = None,
+) -> None:
+    if lock is None:
+        output_file.write(text)
+        output_file.flush()
+        return
+    with lock:
+        output_file.write(text)
+        output_file.flush()
+
+
+def close_text_output(
+    output_file: TextIO,
+    *,
+    lock: threading.Lock | None = None,
+) -> None:
+    try:
+        if lock is None:
+            output_file.close()
+            return
+        with lock:
+            output_file.close()
+    except OSError:
+        return
 
 
 def codex_app_server_event_type_from_message(message: Mapping[str, object]) -> str:
@@ -1917,6 +2038,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Append AgentBridge response JSONL to this side-channel file; '-' writes stderr",
     )
     codex_app_server_proxy.add_argument(
+        "--inject-responses",
+        action="store_true",
+        help="Write AgentBridge JSON-RPC interaction responses back to the child stdin",
+    )
+    codex_app_server_proxy.add_argument(
+        "--forward-injected-requests",
+        action="store_true",
+        help=(
+            "Forward interaction requests to downstream stdout even when "
+            "AgentBridge injects a response"
+        ),
+    )
+    codex_app_server_proxy.add_argument(
         "--strict",
         action="store_true",
         help="Terminate on invalid child stdout lines or non-interaction delivery failures",
@@ -2080,6 +2214,8 @@ def main(argv: list[str] | None = None) -> int:
                     wait_timeout_seconds=args.wait_timeout_seconds,
                     poll_interval_seconds=args.poll_interval_seconds,
                     bridge_output_format=args.bridge_output_format,
+                    inject_responses=args.inject_responses,
+                    forward_injected_requests=args.forward_injected_requests,
                     strict=args.strict,
                 )
             finally:
