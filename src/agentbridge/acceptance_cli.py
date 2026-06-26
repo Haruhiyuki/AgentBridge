@@ -705,7 +705,10 @@ def summary_exit_code(
                 break
     if failed:
         return ACCEPTANCE_EXIT_INVALID if fail_on_fail or fail_on_warn else 0
-    if int(summary.get("artifact_error_count") or 0) > 0:
+    if (
+        int(summary.get("artifact_error_count") or 0) > 0
+        or int(summary.get("checklist_error_count") or 0) > 0
+    ):
         return ACCEPTANCE_EXIT_INVALID if fail_on_fail or fail_on_warn else 0
     if not summary.get("ready") and fail_on_warn:
         return ACCEPTANCE_EXIT_INCOMPLETE
@@ -752,6 +755,9 @@ def bundle_manifest(args: argparse.Namespace) -> int:
         return ACCEPTANCE_EXIT_INVALID
     if int(summary.get("artifact_error_count") or 0) > 0:
         print("acceptance bundle failed: fix artifact verification errors", file=sys.stderr)
+        return ACCEPTANCE_EXIT_INVALID
+    if int(summary.get("checklist_error_count") or 0) > 0:
+        print("acceptance bundle failed: fix invalid checklist entries", file=sys.stderr)
         return ACCEPTANCE_EXIT_INVALID
     if not summary.get("ready") and not args.allow_incomplete:
         print(

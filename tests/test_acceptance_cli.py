@@ -29,6 +29,21 @@ def mark_section_checklist_passed(manifest, section: str) -> None:
     )
 
 
+def append_unknown_checklist_item(manifest, section: str = "34.1") -> None:
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["sections"][section]["checklist"].append(
+        {
+            "id": "unexpected_manual_item",
+            "status": "passed",
+            "notes": "This item is not part of the design acceptance checklist.",
+        }
+    )
+    manifest.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_acceptance_cli_init_creates_manifest(tmp_path, capsys):
     manifest = tmp_path / "acceptance-evidence.json"
 
@@ -344,6 +359,23 @@ def test_acceptance_cli_summary_verifies_artifact_hashes(tmp_path, capsys):
     assert "artifact_errors=0" in output
 
 
+def test_acceptance_cli_summary_fails_for_invalid_checklist_item(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+    append_unknown_checklist_item(manifest)
+
+    result = main(["summary", str(manifest), "--show-checklist", "--fail-on-fail"])
+    output = capsys.readouterr().out
+
+    assert result == ACCEPTANCE_EXIT_INVALID
+    assert "checklist_errors=1" in output
+    assert (
+        "34.1 checklist id=unexpected_manual_item status=unknown "
+        "expected=false status_valid=false"
+    ) in output
+
+
 def test_acceptance_cli_bundle_creates_portable_verified_zip(tmp_path, capsys):
     manifest = tmp_path / "acceptance-evidence.json"
     artifact_root = tmp_path / "artifacts"
@@ -499,6 +531,48 @@ def test_acceptance_cli_bundle_allows_draft_incomplete_evidence(tmp_path, capsys
     assert "valid=true ready=false artifacts=1 errors=0" in draft_verify_output
     assert allowed_draft_result == 0
     assert "valid=true ready=false artifacts=1 errors=0" in allowed_draft_output
+
+
+def test_acceptance_cli_bundle_rejects_invalid_checklist_even_for_draft(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    bundle_path = tmp_path / "acceptance-draft.zip"
+    source = tmp_path / "native-session-run.json"
+    source.write_text("{}", encoding="utf-8")
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "attach-artifact",
+                str(manifest),
+                "34.1",
+                str(source),
+                "--artifact-root",
+                str(artifact_root),
+                "--status",
+                "passed",
+            ]
+        )
+        == 0
+    )
+    append_unknown_checklist_item(manifest)
+    capsys.readouterr()
+
+    result = main(
+        [
+            "bundle",
+            str(manifest),
+            str(bundle_path),
+            "--artifact-root",
+            str(artifact_root),
+            "--allow-incomplete",
+        ]
+    )
+
+    assert result == ACCEPTANCE_EXIT_INVALID
+    assert "fix invalid checklist entries" in capsys.readouterr().err
+    assert not bundle_path.exists()
 
 
 def test_acceptance_cli_verify_bundle_fails_for_tampered_artifact(tmp_path, capsys):
