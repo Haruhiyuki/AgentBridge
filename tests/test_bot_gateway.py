@@ -1196,6 +1196,61 @@ def test_bot_gateway_notification_websocket_streams_cross_stream_delivery():
     assert idle == {"type": "idle_timeout", "last_seq": frame["seq"]}
 
 
+def test_bot_gateway_notification_websocket_replays_after_event_id(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    system_event = control.emit_event(
+        event_type="device_identity.certificates_scanned",
+        source=SemanticEventSource.CONTROL_PLANE,
+        trace_id="notification-ws-replay-system",
+        payload={
+            "total_device_count": 1,
+            "action_required_count": 1,
+            "status_counts": {"expired": 1},
+            "warning_days": 14,
+            "scanned_at": "2026-06-26T00:00:00Z",
+        },
+    )
+    gateway = BotGatewayService(control, transport=InMemoryBotTransport())
+    gateway.deliver_events(
+        chat_context_id=context.id,
+        event_type="device_identity.certificates_scanned",
+        trace_id=system_event.trace_id,
+    )
+    gateway.deliver_events(
+        chat_context_id=context.id,
+        session_id=session_id,
+        event_type="turn.queued",
+    )
+    notifications = [
+        event for event in control.repository.semantic_events if event.type == "bot.notification"
+    ]
+    app = create_app(control)
+    app.state.bot_gateway = gateway
+    client = TestClient(app)
+
+    with client.websocket_connect(
+        "/api/v1/bot-gateway/notifications/ws"
+        f"?chat_context_id={context.id}"
+        f"&after_event_id={notifications[0].id}"
+        "&idle_timeout_seconds=0"
+    ) as websocket:
+        frame = websocket.receive_json()
+        idle = websocket.receive_json()
+
+    assert len(notifications) == 2
+    assert notifications[0].payload["source_event_type"] == (
+        "device_identity.certificates_scanned"
+    )
+    assert notifications[1].payload["source_event_type"] == "turn.queued"
+    assert frame["type"] == "bot.notification"
+    assert frame["event_id"] == notifications[1].id
+    assert frame["session_id"] == session_id
+    assert frame["chat_context_id"] == context.id
+    assert frame["event"]["payload"]["source_event_type"] == "turn.queued"
+    assert idle == {"type": "idle_timeout", "last_seq": frame["seq"]}
+
+
 def test_bot_gateway_api_delivers_filtered_semantic_events():
     control = ControlPlane()
     context = control.get_or_create_chat_context(

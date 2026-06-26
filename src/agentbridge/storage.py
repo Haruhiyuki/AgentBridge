@@ -2186,6 +2186,36 @@ class InMemoryRepository:
                         break
             return events
 
+    def list_semantic_events_chronological(
+        self,
+        *,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        event_type: str | None = None,
+        after_seq: int | None = None,
+        after_event_id: str | None = None,
+        limit: int = 100,
+    ) -> list[SemanticEvent]:
+        max_results = self._clamp_event_search_limit(limit)
+        with self._lock:
+            events: list[SemanticEvent] = []
+            found_after_event = after_event_id is None
+            for event in self.semantic_events:
+                if not found_after_event:
+                    if event.id == after_event_id:
+                        found_after_event = True
+                    continue
+                if (
+                    (project_id is None or event.project_id == project_id)
+                    and (session_id is None or event.session_id == session_id)
+                    and (event_type is None or event.type == event_type)
+                    and (after_seq is None or event.seq > after_seq)
+                ):
+                    events.append(event)
+                    if len(events) >= max_results:
+                        break
+            return events
+
     @staticmethod
     def _clamp_event_search_limit(limit: int) -> int:
         return max(1, min(limit, 1000))

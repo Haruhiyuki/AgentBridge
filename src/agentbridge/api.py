@@ -2139,6 +2139,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         project_id: str | None = None,
         session_id: str | None = None,
         after_seq: int | None = None,
+        after_event_id: str | None = None,
         limit: int = 100,
         poll_interval_seconds: float = 0.25,
         idle_timeout_seconds: float | None = None,
@@ -2153,6 +2154,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             project_id=project_id,
             session_id=session_id,
             after_seq=after_seq,
+            after_event_id=after_event_id,
             limit=limit,
             poll_interval_seconds=poll_interval_seconds,
             idle_timeout_seconds=idle_timeout_seconds,
@@ -3328,6 +3330,7 @@ async def stream_bot_gateway_notifications(
     project_id: str | None,
     session_id: str | None,
     after_seq: int | None,
+    after_event_id: str | None,
     limit: int,
     poll_interval_seconds: float,
     idle_timeout_seconds: float | None,
@@ -3361,18 +3364,23 @@ async def stream_bot_gateway_notifications(
     poll_interval = clamp_poll_interval(poll_interval_seconds)
     idle_timeout = normalize_idle_timeout(idle_timeout_seconds)
     last_seq = max(after_seq or 0, 0)
+    last_event_id = after_event_id
     idle_started_at = monotonic()
 
     try:
         while True:
-            events = control.repository.list_events(
+            events = control.repository.list_semantic_events_chronological(
                 project_id=project_id,
                 session_id=session_id,
-                after_seq=last_seq,
+                event_type="bot.notification",
+                after_seq=None if last_event_id else last_seq,
+                after_event_id=last_event_id,
                 limit=batch_limit,
             )
             if events:
+                sent_any = False
                 for event in events:
+                    last_event_id = event.id
                     last_seq = max(last_seq, event.seq)
                     if not bot_notification_matches(
                         event,
@@ -3381,10 +3389,11 @@ async def stream_bot_gateway_notifications(
                     ):
                         continue
                     idle_started_at = monotonic()
+                    sent_any = True
                     document = document_from_event(event)
                     await websocket.send_json(
                         bot_gateway_render_frame(
-                            session_id=session_id or "",
+                            session_id=session_id or event.session_id or "",
                             chat_context=chat_context,
                             platform=platform,
                             event=event,
@@ -3392,6 +3401,8 @@ async def stream_bot_gateway_notifications(
                             text_messages=bot_gateway_service.renderer.render(document),
                         )
                     )
+                if sent_any:
+                    continue
                 continue
 
             if idle_timeout is not None and monotonic() - idle_started_at >= idle_timeout:
