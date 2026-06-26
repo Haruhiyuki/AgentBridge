@@ -5041,6 +5041,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
     <section>
       <div class="toolbar">
         <button id="refresh" type="button">Refresh</button>
+        <button id="bot-delivery-export-json" type="button">Export JSON</button>
         <button class="primary" id="retry-due" type="button">Retry Due</button>
         <label class="compact">
           Chat Context
@@ -5126,6 +5127,14 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
   <script>
     const $ = (id) => document.getElementById(id);
     let selectedKey = "";
+    let currentRecords = [];
+    let selectedRecord = null;
+    let recordsLoaded = false;
+    let latestWorker = {};
+    let latestCapabilities = {};
+    let latestRateLimits = {};
+    let latestCommandRegistrationResults = [];
+    let latestBotDeliveryAction = null;
 
     function setStatus(text) {
       $("status").textContent = text;
@@ -5158,6 +5167,8 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
     }
 
     function renderRecords(records) {
+      currentRecords = records;
+      selectedRecord = records.find((record) => record.idempotency_key === selectedKey) || null;
       const rows = records.map((record) => {
         const tr = document.createElement("tr");
         tr.dataset.key = record.idempotency_key;
@@ -5177,6 +5188,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
         }
         tr.addEventListener("click", () => {
           selectedKey = record.idempotency_key;
+          selectedRecord = record;
           $("edit-text").value = record.text || "";
           $("selected").textContent = JSON.stringify(record, null, 2);
           document.querySelectorAll("#records tr").forEach((row) => {
@@ -5190,6 +5202,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
     }
 
     function renderWorker(worker) {
+      latestWorker = worker || {};
       setText("worker-enabled", worker.enabled);
       setText("worker-running", worker.running);
       setText("worker-runs", worker.run_count);
@@ -5198,6 +5211,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
     }
 
     function renderCapabilities(capabilities) {
+      latestCapabilities = capabilities || {};
       const platforms = capabilities.capabilities || [];
       const onebot = platforms.find((item) => item.platform === "onebot.v11") || {};
       setText("cap-platforms", platforms.length);
@@ -5208,6 +5222,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
 
     function renderCommandRegistrations(events) {
       const results = events || [];
+      latestCommandRegistrationResults = results;
       const failed = results.filter((event) => {
         return (event.payload || {}).status === "failed";
       });
@@ -5221,6 +5236,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
     async function refreshRecords() {
       setStatus("Loading");
       const records = await requestJson(`/api/v1/bot-gateway/deliveries${deliveryQuery()}`);
+      recordsLoaded = true;
       renderRecords(records);
     }
 
@@ -5231,7 +5247,58 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
       renderCapabilities(capabilities);
       await refreshCommandRegistrations();
       const limits = await requestJson("/api/v1/bot-gateway/rate-limits");
+      latestRateLimits = limits;
       $("rate-limits").textContent = JSON.stringify(limits, null, 2);
+    }
+
+    function recordBotDeliveryAction(type, result) {
+      latestBotDeliveryAction = {
+        type,
+        recorded_at: new Date().toISOString(),
+        result,
+      };
+    }
+
+    function botDeliveryExportPayload() {
+      return {
+        schema_version: "agentbridge.admin_bot_delivery_export.v1",
+        exported_at: new Date().toISOString(),
+        filters: {
+          chat_context_id: $("chat-context-id").value.trim() || null,
+          status: $("status-filter").value || null,
+          limit: Number.parseInt($("limit").value || "100", 10),
+        },
+        record_count: currentRecords.length,
+        selected_idempotency_key: selectedKey || null,
+        records: currentRecords,
+        selected_record: selectedRecord,
+        retry_worker: latestWorker,
+        capabilities: latestCapabilities,
+        rate_limits: latestRateLimits,
+        command_registration_results: latestCommandRegistrationResults,
+        latest_action: latestBotDeliveryAction,
+      };
+    }
+
+    function downloadBotDeliveryJson() {
+      if (!recordsLoaded) {
+        setStatus("Refresh before export");
+        return;
+      }
+      const payload = botDeliveryExportPayload();
+      const blob = new Blob(
+        [JSON.stringify(payload, null, 2) + "\n"],
+        {type: "application/json"},
+      );
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "agentbridge-bot-delivery.json";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setStatus("Bot delivery JSON exported");
     }
 
     async function refreshCommandRegistrations() {
@@ -5251,6 +5318,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
         method: "POST",
         body: JSON.stringify(payload),
       });
+      recordBotDeliveryAction("retry_due", records);
       setStatus(`Retried ${records.length} records`);
       await refreshRecords();
     }
@@ -5264,6 +5332,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
         method: "POST",
         body: JSON.stringify(payload),
       });
+      recordBotDeliveryAction("run_worker", result);
       renderWorker(result.worker);
       setStatus(`Worker retried ${result.records.length} records`);
       await refreshRecords();
@@ -5279,6 +5348,8 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
           payload: {source: "admin"},
         }),
       });
+      selectedRecord = updated;
+      recordBotDeliveryAction("edit_delivery", updated);
       $("selected").textContent = JSON.stringify(updated, null, 2);
       setStatus(`Edited ${selectedKey}`);
       await refreshRecords();
@@ -5293,6 +5364,8 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
           payload: {source: "admin"},
         }),
       });
+      selectedRecord = deleted;
+      recordBotDeliveryAction("delete_delivery", deleted);
       $("selected").textContent = JSON.stringify(deleted, null, 2);
       setStatus(`Deleted ${selectedKey}`);
       await refreshRecords();
@@ -5307,6 +5380,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
     }
 
     $("refresh").addEventListener("click", () => run(refreshRecords));
+    $("bot-delivery-export-json").addEventListener("click", downloadBotDeliveryJson);
     $("status-filter").addEventListener("change", () => run(refreshRecords));
     $("retry-due").addEventListener("click", () => run(retryDue));
     $("worker-refresh").addEventListener("click", () => run(refreshWorker));

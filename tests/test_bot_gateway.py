@@ -1453,6 +1453,9 @@ def test_bot_delivery_admin_ui_serves_dashboard():
     assert "/api/v1/bot-gateway/capabilities" in html
     assert "/api/v1/bot-gateway/rate-limits" in html
     assert "/api/v1/events?event_type=bot.command_registration.result&limit=20" in html
+    assert 'id="bot-delivery-export-json"' in html
+    assert "agentbridge.admin_bot_delivery_export.v1" in html
+    assert "function downloadBotDeliveryJson()" in html
     assert "async function retryDue()" in html
     assert "async function editSelected()" in html
     assert "async function deleteSelected()" in html
