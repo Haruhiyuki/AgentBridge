@@ -662,6 +662,10 @@ callback events must carry the clicking `user_id` so the command actor can be
 re-authorized through RBAC/access policy instead of trusting the button payload.
 Successful action, select, and modal submissions return an `ack_event` and append the
 same `bot.interaction.ack` event idempotently, keyed by the platform event id.
+Inbound OneBot events are also recorded as Bot Gateway upstream semantic events,
+including `bot.message.received`, `bot.command.received`, `bot.action.clicked`,
+`bot.selection.submitted`, and `bot.modal.submitted`; ignored non-command messages are
+still captured as received events for operational review.
 Managed device credentials need `onebot_event_ingest` to call this endpoint.
 
 For text-only fallback, users may reply to a Bot-rendered question or approval message

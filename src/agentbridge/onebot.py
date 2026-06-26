@@ -264,6 +264,39 @@ class OneBotInboundCommand(BaseModel):
     original_event: dict[str, Any] = Field(default_factory=dict)
 
 
+class OneBotInboundEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    raw_text: str
+    is_command: bool
+    gateway_event_type: str
+    actor: Actor
+    bot_instance_id: str
+    platform: BotPlatform = BotPlatform.ONEBOT_V11
+    chat_space_id: str
+    user_id: str | None = None
+    thread_id: str | None = None
+    idempotency_key: str
+    trace_id: str
+    reply_message_id: str | None = None
+    original_event: dict[str, Any] = Field(default_factory=dict)
+
+    def to_command(self) -> OneBotInboundCommand:
+        return OneBotInboundCommand(
+            raw_text=self.raw_text,
+            actor=self.actor,
+            bot_instance_id=self.bot_instance_id,
+            platform=self.platform,
+            chat_space_id=self.chat_space_id,
+            user_id=self.user_id,
+            thread_id=self.thread_id,
+            idempotency_key=self.idempotency_key,
+            trace_id=self.trace_id,
+            reply_message_id=self.reply_message_id,
+            original_event=self.original_event,
+        )
+
+
 class OneBotInboundAdapter:
     def __init__(
         self,
@@ -277,16 +310,21 @@ class OneBotInboundAdapter:
         self.command_prefixes = command_prefixes
 
     def command_from_event(self, event: dict[str, Any]) -> OneBotInboundCommand | None:
-        raw_text = self._command_text(event)
-        if not self._is_command(raw_text):
+        inbound_event = self.inbound_event_from_event(event)
+        if not inbound_event.is_command:
             return None
+        return inbound_event.to_command()
+
+    def inbound_event_from_event(self, event: dict[str, Any]) -> OneBotInboundEvent:
+        raw_text = self._command_text(event)
+        is_command = self._is_command(raw_text)
         message_type = self._message_type(event)
         user_id = self._string_field(event, "user_id")
         if user_id is None:
             raise AgentBridgeError(
                 ErrorCode.COMMAND_ARGUMENT_INVALID,
-                "OneBot 命令事件缺少字段：user_id",
-                next_step="按钮回调和消息事件都必须携带点击者或发送者 user_id。",
+                "OneBot 入站事件缺少字段：user_id",
+                next_step="消息、按钮回调和提交事件都必须携带发送者或操作者 user_id。",
             )
         if message_type == "group":
             chat_space_id = self._required_string_field(event, "group_id")
@@ -302,8 +340,13 @@ class OneBotInboundAdapter:
             )
         message_id = self._event_id(event)
         actor = Actor(id=f"onebot:{user_id}", roles=set(self.default_roles))
-        return OneBotInboundCommand(
+        return OneBotInboundEvent(
             raw_text=raw_text,
+            is_command=is_command,
+            gateway_event_type=bot_gateway_upstream_event_type(
+                event,
+                is_command=is_command,
+            ),
             actor=actor,
             bot_instance_id=self.bot_instance_id,
             chat_space_id=chat_space_id,
@@ -474,6 +517,38 @@ def modal_payload_scalar_value(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def bot_gateway_upstream_event_type(
+    event: dict[str, Any],
+    *,
+    is_command: bool,
+) -> str:
+    if event.get("post_type") == "message":
+        if is_command:
+            return "bot.command.received"
+        if onebot_message_has_attachment(event):
+            return "bot.attachment.received"
+        return "bot.message.received"
+    interaction_kind = bot_interaction_kind(event)
+    if interaction_kind == "selection":
+        return "bot.selection.submitted"
+    if interaction_kind == "modal":
+        return "bot.modal.submitted"
+    if interaction_kind == "action":
+        return "bot.action.clicked"
+    return "bot.command.received" if is_command else "bot.message.received"
+
+
+def onebot_message_has_attachment(event: dict[str, Any]) -> bool:
+    message = event.get("message")
+    if not isinstance(message, list):
+        return False
+    return any(
+        isinstance(segment, dict)
+        and segment.get("type") in {"image", "file", "record", "video"}
+        for segment in message
+    )
+
+
 def nested_string_field(payload: dict[str, Any], key: str, *, depth: int = 0) -> str | None:
     if depth > 4:
         return None
@@ -509,6 +584,16 @@ def execute_onebot_inbound_command(
         chat_context_id=context.id,
         control=control,
     )
+    emit_bot_inbound_event(
+        inbound=inbound,
+        chat_context_id=context.id,
+        raw_text=raw_text,
+        event_type=bot_gateway_upstream_event_type(
+            inbound.original_event,
+            is_command=True,
+        ),
+        control=control,
+    )
     invocation = command_service.parse(
         raw_text=raw_text,
         actor=inbound.actor,
@@ -532,6 +617,38 @@ def execute_onebot_inbound_command(
     if ack_event is not None:
         response["ack_event"] = ack_event.model_dump(mode="json")
     return response
+
+
+def emit_bot_inbound_event(
+    *,
+    inbound: OneBotInboundCommand | OneBotInboundEvent,
+    chat_context_id: str,
+    raw_text: str,
+    event_type: str,
+    control: Any,
+) -> SemanticEvent:
+    platform_user_id = inbound.original_event.get("user_id")
+    payload = {
+        "platform": inbound.platform.value,
+        "bot_instance_id": inbound.bot_instance_id,
+        "chat_context_id": chat_context_id,
+        "chat_space_id": inbound.chat_space_id,
+        "thread_id": inbound.thread_id,
+        "user_id": str(platform_user_id) if platform_user_id is not None else None,
+        "actor_id": inbound.actor.id,
+        "platform_event_id": platform_event_id_from_inbound(inbound),
+        "raw_text": raw_text,
+        "reply_message_id": inbound.reply_message_id,
+        "post_type": inbound.original_event.get("post_type"),
+        "message_type": inbound.original_event.get("message_type"),
+    }
+    return control.emit_event(
+        event_type=event_type,
+        source=SemanticEventSource.BOT_GATEWAY,
+        trace_id=inbound.trace_id,
+        payload=payload,
+        idempotency_key=f"{inbound.idempotency_key}:{event_type}",
+    )
 
 
 def emit_bot_interaction_ack(
@@ -594,7 +711,9 @@ def bot_interaction_kind(event: dict[str, Any]) -> str | None:
     return None
 
 
-def platform_event_id_from_inbound(inbound: OneBotInboundCommand) -> str:
+def platform_event_id_from_inbound(
+    inbound: OneBotInboundCommand | OneBotInboundEvent,
+) -> str:
     return inbound.idempotency_key.removeprefix("onebot:")
 
 

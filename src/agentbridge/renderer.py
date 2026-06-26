@@ -449,6 +449,29 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 ),
             )
         )
+    elif event.type in {
+        "bot.message.received",
+        "bot.command.received",
+        "bot.slash_command.received",
+        "bot.action.clicked",
+        "bot.selection.submitted",
+        "bot.modal.submitted",
+        "bot.attachment.received",
+    }:
+        visibility = RenderVisibility.OPERATORS
+        blocks.append(
+            text_block(
+                "Bot 上行事件",
+                (
+                    f"类型：{event.type}\n"
+                    f"平台：{payload.get('platform')}\n"
+                    f"Chat Context：{payload.get('chat_context_id')}\n"
+                    f"Actor：{payload.get('actor_id')}\n"
+                    f"平台事件：{payload.get('platform_event_id')}\n"
+                    f"原文：{payload.get('raw_text') or '-'}"
+                ),
+            )
+        )
     else:
         blocks.append(text_block("事件", event.type))
         if payload:

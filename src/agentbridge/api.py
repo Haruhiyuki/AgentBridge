@@ -88,6 +88,7 @@ from agentbridge.domain import (
 from agentbridge.onebot import (
     OneBotInboundAdapter,
     OneBotV11HTTPTransport,
+    emit_bot_inbound_event,
     execute_onebot_inbound_command,
 )
 from agentbridge.persistence import SQLAlchemyRepository
@@ -2172,11 +2173,25 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             bot_instance_id=payload.bot_instance_id,
             default_roles=payload.default_roles,
         )
-        inbound = adapter.command_from_event(dict(payload.event))
-        if inbound is None:
+        inbound_event = adapter.inbound_event_from_event(dict(payload.event))
+        if not inbound_event.is_command:
+            context = control.get_or_create_chat_context(
+                bot_instance_id=inbound_event.bot_instance_id,
+                platform=inbound_event.platform.value,
+                chat_space_id=inbound_event.chat_space_id,
+                thread_id=inbound_event.thread_id,
+                user_id=inbound_event.user_id,
+            )
+            emit_bot_inbound_event(
+                inbound=inbound_event,
+                chat_context_id=context.id,
+                raw_text=inbound_event.raw_text,
+                event_type=inbound_event.gateway_event_type,
+                control=control,
+            )
             return {"handled": False}
         return execute_onebot_inbound_command(
-            inbound,
+            inbound_event.to_command(),
             command_service=command_service,
             control=control,
         )

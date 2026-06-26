@@ -288,6 +288,27 @@ def test_bot_interaction_ack_event_renders_operator_status():
     assert "命令：interaction.answer" in messages[0]
 
 
+def test_bot_inbound_event_renders_operator_status():
+    event = make_event(
+        "bot.action.clicked",
+        {
+            "platform": "onebot.v11",
+            "chat_context_id": "ctx_1",
+            "actor_id": "onebot:20002",
+            "platform_event_id": "callback-1",
+            "raw_text": "/agent approve int_1 once",
+        },
+    )
+
+    document = document_from_event(event)
+    messages = OneBotV11TextRenderer().render(document)
+
+    assert document.visibility == "operators"
+    assert "Bot 上行事件" in messages[0]
+    assert "类型：bot.action.clicked" in messages[0]
+    assert "原文：/agent approve int_1 once" in messages[0]
+
+
 def test_code_blocks_actions_and_message_splitting_are_stable():
     document = RenderDocument(
         id="rend_1",

@@ -380,7 +380,8 @@ def test_onebot_inbound_adapter_ignores_non_command_message():
 
 
 def test_onebot_events_api_ignores_non_commands_and_executes_commands():
-    client = TestClient(create_app())
+    app = create_app()
+    client = TestClient(app)
 
     ignored = client.post(
         "/api/v1/onebot/events",
@@ -408,12 +409,49 @@ def test_onebot_events_api_ignores_non_commands_and_executes_commands():
             }
         },
     )
+    attachment = client.post(
+        "/api/v1/onebot/events",
+        json={
+            "event": {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 10001,
+                "user_id": 20002,
+                "message_id": 30005,
+                "message": [
+                    {"type": "image", "data": {"file": "screenshot.png"}},
+                ],
+            }
+        },
+    )
 
     assert ignored.status_code == 200
     assert ignored.json() == {"handled": False}
     assert handled.status_code == 200
     assert handled.json()["handled"] is True
     assert handled.json()["result"]["canonical_command"] == "health"
+    assert attachment.status_code == 200
+    assert attachment.json() == {"handled": False}
+    message_events = app.state.control.repository.list_semantic_events(
+        event_type="bot.message.received",
+        trace_id="onebot:30003",
+    )
+    command_events = app.state.control.repository.list_semantic_events(
+        event_type="bot.command.received",
+        trace_id="onebot:30004",
+    )
+    attachment_events = app.state.control.repository.list_semantic_events(
+        event_type="bot.attachment.received",
+        trace_id="onebot:30005",
+    )
+    assert len(message_events) == 1
+    assert message_events[0].payload["raw_text"] == "hello"
+    assert message_events[0].payload["actor_id"] == "onebot:20002"
+    assert len(command_events) == 1
+    assert command_events[0].payload["raw_text"] == "/agent health"
+    assert command_events[0].payload["chat_space_id"] == "10001"
+    assert len(attachment_events) == 1
+    assert attachment_events[0].payload["platform_event_id"] == "30005"
 
 
 def test_onebot_events_api_executes_action_callback_with_click_actor(tmp_path):
@@ -484,6 +522,13 @@ def test_onebot_events_api_executes_action_callback_with_click_actor(tmp_path):
     assert ack_event["payload"]["canonical_command"] == "approval.vote"
     assert stored.status == InteractionStatus.RESOLVED
     assert stored.votes == {"onebot:20002": True}
+    action_events = control.repository.list_semantic_events(
+        event_type="bot.action.clicked",
+        trace_id="onebot:callback-approve-1",
+    )
+    assert len(action_events) == 1
+    assert action_events[0].payload["raw_text"] == f"/agent approve {interaction.id} once"
+    assert action_events[0].payload["chat_context_id"] == context.id
 
     repeated = client.post(
         "/api/v1/onebot/events",
@@ -549,6 +594,14 @@ def test_onebot_events_api_executes_modal_plan_revision(tmp_path):
     assert response.json()["ack_event"]["payload"]["interaction_kind"] == "modal"
     assert stored.status == InteractionStatus.RESOLVED
     assert stored.answer == "Use expand-contract migration first"
+    modal_events = control.repository.list_semantic_events(
+        event_type="bot.modal.submitted",
+        trace_id="onebot:modal-plan-1",
+    )
+    assert len(modal_events) == 1
+    assert modal_events[0].payload["raw_text"] == (
+        f"/agent plan revise {interaction.id} 'Use expand-contract migration first'"
+    )
 
 
 def test_onebot_events_api_executes_selection_answer(tmp_path):
@@ -590,6 +643,14 @@ def test_onebot_events_api_executes_selection_answer(tmp_path):
     assert response.json()["ack_event"]["payload"]["interaction_kind"] == "selection"
     assert stored.status == InteractionStatus.RESOLVED
     assert stored.answer == "production"
+    selection_events = control.repository.list_semantic_events(
+        event_type="bot.selection.submitted",
+        trace_id="onebot:selection-question-1",
+    )
+    assert len(selection_events) == 1
+    assert selection_events[0].payload["raw_text"] == (
+        f"/agent answer {interaction.id} production"
+    )
 
 
 def test_onebot_reply_to_approval_delivery_infers_interaction_for_text_fallback(tmp_path):
