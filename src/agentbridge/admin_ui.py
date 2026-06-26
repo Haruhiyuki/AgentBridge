@@ -2563,6 +2563,7 @@ INTERACTION_ADMIN_HTML = """<!doctype html>
     <section>
       <div class="toolbar">
         <button id="refresh" type="button">Refresh</button>
+        <button id="interaction-export-json" type="button">Export JSON</button>
         <label class="compact">
           Session ID
           <input id="filter-session-id" autocomplete="off" placeholder="optional">
@@ -2681,6 +2682,9 @@ INTERACTION_ADMIN_HTML = """<!doctype html>
   <script>
     const $ = (id) => document.getElementById(id);
     let selectedInteractionId = "";
+    let currentInteractions = [];
+    let selectedInteraction = null;
+    let interactionsLoaded = false;
 
     function csv(value) {
       return value.split(",").map((item) => item.trim()).filter(Boolean);
@@ -2754,6 +2758,7 @@ INTERACTION_ADMIN_HTML = """<!doctype html>
     }
 
     function renderInteractions(interactions) {
+      currentInteractions = interactions;
       const rows = interactions.map((interaction) => {
         const tr = document.createElement("tr");
         tr.dataset.interactionId = interaction.id;
@@ -2778,6 +2783,7 @@ INTERACTION_ADMIN_HTML = """<!doctype html>
     async function refreshInteractions() {
       setStatus("Loading");
       const interactions = await requestJson(`/api/v1/interactions${querySuffix()}`);
+      interactionsLoaded = true;
       renderInteractions(interactions);
       if (
         selectedInteractionId &&
@@ -2792,6 +2798,7 @@ INTERACTION_ADMIN_HTML = """<!doctype html>
       const interaction = await requestJson(
         `/api/v1/interactions/${encodeURIComponent(interactionId)}`,
       );
+      selectedInteraction = interaction;
       $("selected").textContent = JSON.stringify(interaction, null, 2);
       $("create-session-id").value = interaction.session_id;
       $("answer-text").value = interaction.answer || "";
@@ -2799,6 +2806,44 @@ INTERACTION_ADMIN_HTML = """<!doctype html>
         row.classList.toggle("selected", row.dataset.interactionId === interactionId);
       });
       setStatus(`Selected ${interactionId}`);
+    }
+
+    function interactionExportPayload() {
+      return {
+        schema_version: "agentbridge.admin_interaction_export.v1",
+        exported_at: new Date().toISOString(),
+        filters: {
+          session_id: $("filter-session-id").value.trim() || null,
+          status: $("filter-status").value || null,
+        },
+        actor: actor(),
+        chat_context_id: optional($("chat-context-id").value),
+        interaction_count: currentInteractions.length,
+        selected_interaction_id: selectedInteractionId || null,
+        interactions: currentInteractions,
+        selected_interaction: selectedInteraction,
+      };
+    }
+
+    function downloadInteractionJson() {
+      if (!interactionsLoaded) {
+        setStatus("Refresh before export");
+        return;
+      }
+      const payload = interactionExportPayload();
+      const blob = new Blob(
+        [JSON.stringify(payload, null, 2) + "\n"],
+        {type: "application/json"},
+      );
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "agentbridge-interactions.json";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setStatus("Interaction JSON exported");
     }
 
     function interactionPayload() {
@@ -2832,6 +2877,7 @@ INTERACTION_ADMIN_HTML = """<!doctype html>
         },
       );
       selectedInteractionId = interaction.id;
+      selectedInteraction = interaction;
       $("selected").textContent = JSON.stringify(interaction, null, 2);
       await refreshInteractions();
       setStatus(`Created ${interaction.id}`);
@@ -2851,6 +2897,7 @@ INTERACTION_ADMIN_HTML = """<!doctype html>
           }),
         },
       );
+      selectedInteraction = interaction;
       $("selected").textContent = JSON.stringify(interaction, null, 2);
       await refreshInteractions();
       setStatus(`Answered ${interaction.id}`);
@@ -2871,6 +2918,7 @@ INTERACTION_ADMIN_HTML = """<!doctype html>
           }),
         },
       );
+      selectedInteraction = interaction;
       $("selected").textContent = JSON.stringify(interaction, null, 2);
       await refreshInteractions();
       setStatus(`${approve ? "Approved" : "Denied"} ${interaction.id}`);
@@ -2890,6 +2938,7 @@ INTERACTION_ADMIN_HTML = """<!doctype html>
           }),
         },
       );
+      selectedInteraction = interaction;
       $("selected").textContent = JSON.stringify(interaction, null, 2);
       await refreshInteractions();
       setStatus(`Cancelled ${interaction.id}`);
@@ -2906,6 +2955,7 @@ INTERACTION_ADMIN_HTML = """<!doctype html>
     }
 
     $("refresh").addEventListener("click", () => run(refreshInteractions));
+    $("interaction-export-json").addEventListener("click", downloadInteractionJson);
     $("filter-status").addEventListener("change", () => run(refreshInteractions));
     $("create-interaction").addEventListener("click", () => run(createInteraction));
     $("answer").addEventListener("click", () => run(answerInteraction));

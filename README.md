@@ -936,7 +936,8 @@ sessions, and surfaces active Turn, queue, pending approval, and lease status th
 the same REST APIs used by external clients, with JSON export for project/session
 acceptance evidence. The interaction
 page lists and filters questions/approvals, creates new interactions, answers questions,
-votes on approvals, and cancels pending items. The audit/event page filters audit
+votes on approvals, cancels pending items, and exports the filtered/selected interaction
+snapshot as JSON evidence. The audit/event page filters audit
 records, searches semantic events across streams, supports `q` text search over audit
 details and event payloads, exports filtered audit records as JSON, CSV, or a signed
 archive, replays

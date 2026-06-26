@@ -109,6 +109,9 @@ Collect these artifacts for a release candidate:
   The Project/Session page's `Export JSON` action captures project inventory,
   workspaces, chat bindings, session queue state, writer leases, and pending approvals
   for multi-project and multi-session evidence.
+  The Interaction page's `Export JSON` action captures filtered question, approval,
+  and plan records plus selected details, actor context, chat context, votes, answers,
+  cancellations, and expiry state for Bot and permission-flow evidence.
   The Terminal Lifecycle page's `Export JSON` action captures monitor state,
   backend supervision, event-outbox state, run-once observed sessions, launch probe
   results, and adapter detection summaries for terminal recovery evidence.

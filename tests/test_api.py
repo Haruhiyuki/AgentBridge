@@ -3702,6 +3702,9 @@ def test_interaction_admin_ui_serves_dashboard():
     assert "/interactions/${encodeURIComponent(selectedInteractionId)}/answer" in html
     assert "/interactions/${encodeURIComponent(selectedInteractionId)}/vote" in html
     assert "/interactions/${encodeURIComponent(selectedInteractionId)}/cancel" in html
+    assert 'id="interaction-export-json"' in html
+    assert "agentbridge.admin_interaction_export.v1" in html
+    assert "function downloadInteractionJson()" in html
     assert "async function createInteraction()" in html
     assert "async function answerInteraction()" in html
     assert "async function voteInteraction(approve)" in html
