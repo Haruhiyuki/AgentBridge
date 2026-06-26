@@ -3,10 +3,20 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from agentbridge.bot_gateway import BotGatewayService
+from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, InteractionStatus, InteractionType, Visibility
+from agentbridge.domain import (
+    Actor,
+    BotPlatform,
+    ChatContext,
+    InteractionStatus,
+    InteractionType,
+    Visibility,
+)
 from agentbridge.nonebot_plugin import (
     NoneBotAgentBridgePlugin,
+    NoneBotTransport,
     nonebot_event_to_onebot_event,
     register_nonebot_command_registration,
     register_nonebot_matcher,
@@ -183,6 +193,132 @@ def test_nonebot_plugin_async_handler_wraps_sync_bridge():
 
     assert result["handled"] is True
     assert result["result"]["canonical_command"] == "health"
+
+
+def create_nonebot_delivery_session(control: ControlPlane, tmp_path):
+    commands = CommandService(control)
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    context = control.get_or_create_chat_context(
+        bot_instance_id="nonebot-main",
+        platform="onebot.v11",
+        chat_space_id="10001",
+    )
+    commands.execute(
+        commands.parse(
+            raw_text=(
+                f"/agent project create --name Backend --path {tmp_path} "
+                f"--root {tmp_path}"
+            ),
+            actor=maintainer,
+            chat_context_id=context.id,
+            idempotency_key="nonebot-project",
+            trace_id="nonebot-project",
+        )
+    )
+    session_result = commands.execute(
+        commands.parse(
+            raw_text="/agent session new NoneBot Delivery",
+            actor=maintainer,
+            chat_context_id=context.id,
+            idempotency_key="nonebot-session",
+            trace_id="nonebot-session",
+        )
+    )
+    commands.execute(
+        commands.parse(
+            raw_text="/agent ask render through nonebot",
+            actor=maintainer,
+            chat_context_id=context.id,
+            idempotency_key="nonebot-turn",
+            trace_id="nonebot-turn",
+        )
+    )
+    return context, session_result.data["session_id"]
+
+
+def test_nonebot_transport_delivers_gateway_text_through_send_to(tmp_path):
+    class FakeBot:
+        def __init__(self) -> None:
+            self.sent = []
+
+        def send_to(self, target, message):
+            self.sent.append({"target": target, "message": message})
+            return {"message_id": 9001}
+
+    control = ControlPlane()
+    context, session_id = create_nonebot_delivery_session(control, tmp_path)
+    bot = FakeBot()
+    gateway = BotGatewayService(control, transport=NoneBotTransport(bot))
+
+    records = gateway.deliver_session_events(
+        session_id=session_id,
+        chat_context_id=context.id,
+        after_seq=1,
+    )
+
+    assert len(records) == 1
+    assert records[0].platform_message_id == "onebot:9001"
+    assert len(bot.sent) == 1
+    assert bot.sent[0]["target"]["scope"] == "group"
+    assert bot.sent[0]["target"]["group_id"] == "10001"
+    assert "任务已排队" in bot.sent[0]["message"]
+
+
+def test_nonebot_transport_uses_async_call_api_fallback_for_onebot_payloads():
+    class FakeAsyncBot:
+        def __init__(self) -> None:
+            self.calls = []
+
+        async def call_api(self, action, **payload):
+            self.calls.append((action, payload))
+            return {"retcode": 0, "data": {"message_id": len(self.calls)}}
+
+    bot = FakeAsyncBot()
+    transport = NoneBotTransport(bot)
+    group_context = ChatContext(
+        id="ctx_group",
+        bot_instance_id="nonebot-main",
+        platform="onebot.v11",
+        chat_space_id="10001",
+    )
+    private_context = ChatContext(
+        id="ctx_private",
+        bot_instance_id="nonebot-main",
+        platform="onebot.v11",
+        chat_space_id="private",
+        user_id="20002",
+    )
+
+    group_message_id = transport.send_text(
+        platform=BotPlatform.ONEBOT_V11,
+        chat_context_id=group_context.id,
+        chat_context=group_context,
+        text="hello group",
+        idempotency_key="nonebot-group-send",
+    )
+    private_message_id = transport.send_text(
+        platform=BotPlatform.ONEBOT_V11,
+        chat_context_id=private_context.id,
+        chat_context=private_context,
+        text="hello private",
+        idempotency_key="nonebot-private-send",
+    )
+    deleted = transport.delete_message(
+        platform=BotPlatform.ONEBOT_V11,
+        chat_context_id=private_context.id,
+        chat_context=private_context,
+        platform_message_id=private_message_id,
+        idempotency_key="nonebot-delete",
+    )
+
+    assert group_message_id == "onebot:1"
+    assert private_message_id == "onebot:2"
+    assert deleted["response"]["retcode"] == 0
+    assert bot.calls == [
+        ("send_group_msg", {"group_id": "10001", "message": "hello group"}),
+        ("send_private_msg", {"user_id": "20002", "message": "hello private"}),
+        ("delete_msg", {"message_id": 2}),
+    ]
 
 
 def test_nonebot_matcher_registration_helper_registers_async_handler():

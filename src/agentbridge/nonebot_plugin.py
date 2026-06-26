@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -12,10 +13,13 @@ from agentbridge.bot_command_registration import (
 )
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
+from agentbridge.domain import AgentBridgeError, BotPlatform, ChatContext, ErrorCode
 from agentbridge.onebot import (
     OneBotInboundAdapter,
     command_text_from_action_payload,
+    ensure_onebot_success,
     execute_onebot_inbound_command,
+    onebot_raw_message_id,
 )
 
 KNOWN_EVENT_FIELDS = (
@@ -211,6 +215,272 @@ class NoneBotAgentBridgePlugin:
             trace_id=trace_id,
         )
         return {"event": event.model_dump(mode="json")}
+
+
+class NoneBotTransport:
+    """Dependency-free Bot Gateway transport for a NoneBot-like bot object."""
+
+    def __init__(self, bot: Any) -> None:
+        self.bot = bot
+
+    def send_text(
+        self,
+        *,
+        platform: BotPlatform,
+        chat_context_id: str,
+        chat_context: ChatContext,
+        text: str,
+        idempotency_key: str,
+    ) -> str:
+        ensure_nonebot_platform_supported(platform)
+        target = nonebot_target_from_chat_context(chat_context)
+        response = call_nonebot_text_sender(
+            self.bot,
+            target=target,
+            chat_context=chat_context,
+            text=text,
+            idempotency_key=idempotency_key,
+        )
+        return nonebot_platform_message_id(response, platform=platform)
+
+    def delete_message(
+        self,
+        *,
+        platform: BotPlatform,
+        chat_context_id: str,
+        chat_context: ChatContext,
+        platform_message_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        ensure_nonebot_platform_supported(platform)
+        raw_message_id = onebot_raw_message_id(platform_message_id)
+        response = call_nonebot_delete_message(
+            self.bot,
+            chat_context=chat_context,
+            raw_message_id=raw_message_id,
+            platform_message_id=platform_message_id,
+            idempotency_key=idempotency_key,
+        )
+        if isinstance(response, dict):
+            ensure_onebot_success(response, action_label="删除")
+        return {
+            "platform_message_id": platform_message_id,
+            "chat_context_id": chat_context_id,
+            "chat_space_id": chat_context.chat_space_id,
+            "response": response,
+        }
+
+
+def ensure_nonebot_platform_supported(platform: BotPlatform) -> None:
+    if platform != BotPlatform.ONEBOT_V11:
+        raise AgentBridgeError(
+            ErrorCode.PLATFORM_CAPABILITY_MISSING,
+            f"NoneBot transport 不支持平台：{platform.value}",
+            next_step="请使用 onebot.v11 平台或选择其他 Bot transport。",
+        )
+
+
+def nonebot_target_from_chat_context(chat_context: ChatContext) -> dict[str, str]:
+    target = {
+        "chat_context_id": chat_context.id,
+        "bot_instance_id": chat_context.bot_instance_id,
+        "platform": chat_context.platform,
+        "chat_space_id": chat_context.chat_space_id,
+    }
+    if chat_context.thread_id:
+        target["thread_id"] = chat_context.thread_id
+    if chat_context.user_id:
+        target["scope"] = "private"
+        target["user_id"] = chat_context.user_id
+    else:
+        target["scope"] = "group"
+        target["group_id"] = chat_context.chat_space_id
+        target["channel_id"] = chat_context.chat_space_id
+    return target
+
+
+def call_nonebot_text_sender(
+    bot: Any,
+    *,
+    target: dict[str, str],
+    chat_context: ChatContext,
+    text: str,
+    idempotency_key: str,
+) -> Any:
+    send_to = getattr(bot, "send_to", None)
+    if callable(send_to):
+        return resolve_maybe_awaitable(
+            call_with_signature_fallbacks(
+                send_to,
+                attempts=[
+                    (
+                        (),
+                        {
+                            "target": target,
+                            "message": text,
+                            "idempotency_key": idempotency_key,
+                        },
+                    ),
+                    ((target, text), {}),
+                ],
+                capability="NoneBot send_to",
+            )
+        )
+
+    call_api = getattr(bot, "call_api", None)
+    if callable(call_api):
+        action, payload = nonebot_onebot_text_payload(chat_context, text)
+        return resolve_maybe_awaitable(call_api(action, **payload))
+
+    send = getattr(bot, "send", None)
+    if callable(send):
+        return resolve_maybe_awaitable(
+            call_with_signature_fallbacks(
+                send,
+                attempts=[
+                    ((), {"target": target, "message": text}),
+                    ((target, text), {}),
+                    ((text,), {}),
+                ],
+                capability="NoneBot send",
+            )
+        )
+
+    raise AgentBridgeError(
+        ErrorCode.PLATFORM_CAPABILITY_MISSING,
+        "NoneBot bot 对象缺少可用的发送能力。",
+        next_step="请提供带 send_to()、send() 或 call_api() 的 bot 对象。",
+        details={"bot_type": type(bot).__name__},
+    )
+
+
+def call_nonebot_delete_message(
+    bot: Any,
+    *,
+    chat_context: ChatContext,
+    raw_message_id: int | str,
+    platform_message_id: str,
+    idempotency_key: str,
+) -> Any:
+    delete_message = getattr(bot, "delete_message", None)
+    if callable(delete_message):
+        return resolve_maybe_awaitable(
+            call_with_signature_fallbacks(
+                delete_message,
+                attempts=[
+                    (
+                        (),
+                        {
+                            "message_id": raw_message_id,
+                            "platform_message_id": platform_message_id,
+                            "idempotency_key": idempotency_key,
+                        },
+                    ),
+                    ((raw_message_id,), {}),
+                ],
+                capability="NoneBot delete_message",
+            )
+        )
+
+    call_api = getattr(bot, "call_api", None)
+    if callable(call_api):
+        return resolve_maybe_awaitable(
+            call_api("delete_msg", message_id=raw_message_id)
+        )
+
+    raise AgentBridgeError(
+        ErrorCode.PLATFORM_CAPABILITY_MISSING,
+        "NoneBot bot 对象缺少可用的删除能力。",
+        next_step="请提供带 delete_message() 或 call_api() 的 bot 对象。",
+        details={
+            "bot_type": type(bot).__name__,
+            "chat_context_id": chat_context.id,
+            "platform_message_id": platform_message_id,
+        },
+    )
+
+
+def call_with_signature_fallbacks(
+    func: Any,
+    *,
+    attempts: list[tuple[tuple[Any, ...], dict[str, Any]]],
+    capability: str,
+) -> Any:
+    errors: list[str] = []
+    for args, kwargs in attempts:
+        try:
+            return func(*args, **kwargs)
+        except TypeError as exc:
+            errors.append(str(exc))
+    raise AgentBridgeError(
+        ErrorCode.PLATFORM_CAPABILITY_MISSING,
+        f"{capability} 调用签名不兼容。",
+        next_step="请提供兼容 AgentBridge transport 调用约定的适配函数。",
+        details={"errors": errors},
+    )
+
+
+def resolve_maybe_awaitable(value: Any) -> Any:
+    if not inspect.isawaitable(value):
+        return value
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(value)
+    if inspect.iscoroutine(value):
+        value.close()
+    raise AgentBridgeError(
+        ErrorCode.PLATFORM_CAPABILITY_MISSING,
+        "同步 Bot Gateway delivery 不能在已运行事件循环中等待 NoneBot 异步调用。",
+        next_step=(
+            "请从同步工作线程调用 BotGatewayService，或使用 Bot Gateway WebSocket "
+            "订阅并在 NoneBot 事件循环内发送。"
+        ),
+    )
+
+
+def nonebot_onebot_text_payload(
+    chat_context: ChatContext,
+    text: str,
+) -> tuple[str, dict[str, Any]]:
+    if chat_context.user_id:
+        return "send_private_msg", {"user_id": chat_context.user_id, "message": text}
+    return "send_group_msg", {"group_id": chat_context.chat_space_id, "message": text}
+
+
+def nonebot_platform_message_id(response: Any, *, platform: BotPlatform) -> str:
+    if platform == BotPlatform.ONEBOT_V11 and isinstance(response, dict):
+        ensure_onebot_success(response, action_label="发送")
+    message_id = message_id_from_nonebot_response(response)
+    prefix = "onebot" if platform == BotPlatform.ONEBOT_V11 else "nonebot"
+    if message_id is None:
+        return f"{prefix}:unknown"
+    value = str(message_id)
+    if value.startswith(("onebot:", "nonebot:")):
+        return value
+    return f"{prefix}:{value}"
+
+
+def message_id_from_nonebot_response(response: Any) -> Any:
+    if isinstance(response, dict):
+        containers = [response]
+        for key in ("data", "result"):
+            value = response.get(key)
+            if isinstance(value, dict):
+                containers.append(value)
+        for container in containers:
+            for key in ("message_id", "messageId", "id"):
+                value = container.get(key)
+                if value is not None:
+                    return value
+        return None
+    for attr in ("message_id", "messageId", "id"):
+        value = getattr(response, attr, None)
+        if value is not None:
+            return value
+    if isinstance(response, (str, int)):
+        return response
+    return None
 
 
 def register_nonebot_matcher(

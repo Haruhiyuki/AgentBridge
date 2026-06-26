@@ -23,7 +23,7 @@ This repository currently contains the first executable backend slice:
 - Local Console Client with line-mode, scripted input, raw TTY passthrough, and cursor-based output observation through the lease gateway.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
 - Bot Gateway delivery service with persistent idempotent delivery records, WebSocket render subscriptions, in-memory text transport, and OneBot V11 HTTP transport.
-- Optional NoneBot wrapper that normalizes message and action callback events into the existing `/agent` command path.
+- Optional NoneBot wrapper and transport that normalize message/action callback events into the existing `/agent` command path and deliver outbound OneBot V11 text through NoneBot-style bot objects.
 - Background Bot delivery retry worker with configurable interval and batch-size guardrails.
 - Platform-scoped Bot delivery rate-limit policies that schedule unsent messages for retry.
 - Interaction and approval flow APIs with `/agent answer`, `/agent approve`, `/agent deny`, `/agent approvals`, `/agent question`, and `/agent plan`.
@@ -709,8 +709,10 @@ replying `onebot:<user_id>` actor.
 For NoneBot deployments, register a matcher from application setup code:
 
 ```python
+from agentbridge.bot_gateway import BotGatewayService
 from agentbridge.control_plane import ControlPlane
 from agentbridge.nonebot_plugin import (
+    NoneBotTransport,
     register_nonebot_command_registration,
     register_nonebot_matcher,
 )
@@ -730,6 +732,8 @@ register_nonebot_command_registration(
     bot_instance_id="nonebot-main",
     registration_id="commands-v1",
 )
+
+bot_gateway = BotGatewayService(control, transport=NoneBotTransport(bot))
 ```
 
 The wrapper has no hard NoneBot dependency. The helper only expects a matcher object
@@ -741,7 +745,9 @@ command path. `command_registration_manifest()` exposes the same Bot Gateway com
 manifest for NoneBot startup code, `register_command_registration_startup()` wires a
 `driver.on_startup()` hook around a sync or async registrar, and
 `record_command_registration_result()` records native menu/command registration outcomes
-as `bot.command_registration.result` events.
+as `bot.command_registration.result` events. `NoneBotTransport` can be attached to
+`BotGatewayService` for outbound OneBot V11 text delivery and deletion; it accepts a
+bot/application wrapper with `send_to()`, `send()`, or a NoneBot-style `call_api()`.
 
 ## Interactions And Approvals
 
