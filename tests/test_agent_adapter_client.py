@@ -291,6 +291,11 @@ def test_handshake_payload_for_agent_uses_supported_schema_and_capabilities():
     ]
     assert payload["warnings"] == []
     assert payload["schema_snapshot"]["schema_version"] == "codex-app-server.v1"
+    compatibility = payload["schema_snapshot"]["compatibility"]
+    assert compatibility["verification_status"] == "provider_snapshot_verified"
+    assert compatibility["provider_version_matrix"]["verified_provider_versions"][0][
+        "provider_version"
+    ] == "0.141.0"
     assert {
         "adapter_event_type": "tool/requestUserInput",
         "semantic_event_type": "question.requested",
@@ -318,7 +323,13 @@ def test_cli_schemas_prints_selected_agent_matrix(capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["agent_type"] == "codex"
     assert payload["default_schema_version"] == "codex-app-server.v1"
+    assert payload["compatibility_matrices"][0]["verification_status"] == (
+        "provider_snapshot_verified"
+    )
     assert payload["schemas"][0]["response_contract"]["pending_decision"] == "pending"
+    assert payload["schemas"][0]["compatibility"]["provider_version_matrix"][
+        "verified_provider_versions"
+    ][0]["provider_version_text"] == "codex-cli 0.141.0"
 
 
 def test_cli_schemas_prints_specific_snapshot(capsys):

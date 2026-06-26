@@ -208,6 +208,91 @@ def test_terminal_agent_detects_adapter_capabilities_from_handshake(
     assert "claude.hooks.permission_request" in report["expected_capabilities"]
 
 
+def test_terminal_agent_reports_verified_provider_version_from_matrix(
+    tmp_path,
+    monkeypatch,
+):
+    codex_wrapper = tmp_path / "codex-agentbridge-wrapper"
+    codex_wrapper.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"--version\" ]; then\n"
+        "  printf 'codex-cli 0.141.0\\n'\n"
+        "else\n"
+        "  printf 'Codex Test\\n'\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    codex_wrapper.chmod(0o755)
+    handshake = tmp_path / "codex-agentbridge-handshake"
+    handshake.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' "
+        '\'{"protocol":"agentbridge.adapter.v1",'
+        '"schema_version":"codex-app-server.v1",'
+        '"capabilities":["codex.app_server.json_rpc"],'
+        '"compatible":true}\'\n',
+        encoding="utf-8",
+    )
+    handshake.chmod(0o755)
+    monkeypatch.setenv("AGENTBRIDGE_AGENT_CODEX_COMMAND", str(codex_wrapper))
+    monkeypatch.setenv("AGENTBRIDGE_AGENT_CODEX_HANDSHAKE_COMMAND", str(handshake))
+
+    terminal = TerminalAgentService(ControlPlane(), backend=FakeTerminalBackend())
+
+    reports = terminal.detect_agent_adapter_capabilities(agent_types=[AgentType.CODEX])
+
+    gate = reports["codex"]["schema_gate"]
+    provider_version = gate["provider_version_verification"]
+    assert gate["status"] == "ready"
+    assert provider_version["status"] == "verified"
+    assert provider_version["provider_version"] == "0.141.0"
+    assert provider_version["matched_provider_version"]["provider_version_text"] == (
+        "codex-cli 0.141.0"
+    )
+
+
+def test_terminal_agent_reports_unverified_provider_version_from_matrix(
+    tmp_path,
+    monkeypatch,
+):
+    codex_wrapper = tmp_path / "codex-agentbridge-wrapper"
+    codex_wrapper.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"--version\" ]; then\n"
+        "  printf 'codex-cli 0.999.0\\n'\n"
+        "else\n"
+        "  printf 'Codex Test\\n'\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    codex_wrapper.chmod(0o755)
+    handshake = tmp_path / "codex-agentbridge-handshake"
+    handshake.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' "
+        '\'{"protocol":"agentbridge.adapter.v1",'
+        '"schema_version":"codex-app-server.v1",'
+        '"capabilities":["codex.app_server.json_rpc"],'
+        '"compatible":true}\'\n',
+        encoding="utf-8",
+    )
+    handshake.chmod(0o755)
+    monkeypatch.setenv("AGENTBRIDGE_AGENT_CODEX_COMMAND", str(codex_wrapper))
+    monkeypatch.setenv("AGENTBRIDGE_AGENT_CODEX_HANDSHAKE_COMMAND", str(handshake))
+
+    terminal = TerminalAgentService(ControlPlane(), backend=FakeTerminalBackend())
+
+    reports = terminal.detect_agent_adapter_capabilities(agent_types=[AgentType.CODEX])
+
+    provider_version = reports["codex"]["schema_gate"][
+        "provider_version_verification"
+    ]
+    assert reports["codex"]["status"] == "ready"
+    assert provider_version["status"] == "unverified"
+    assert provider_version["reason"] == "provider_version_not_in_matrix"
+    assert provider_version["provider_version"] == "0.999.0"
+
+
 def test_terminal_agent_blocks_structured_adapter_without_handshake(
     tmp_path,
     monkeypatch,

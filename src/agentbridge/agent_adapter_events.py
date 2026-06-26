@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from agentbridge.agent_adapter_provider_schemas import provider_schema_snapshot_for
@@ -82,6 +83,7 @@ ADAPTER_INTERACTION_RESPONSE_TYPES = {
     "interaction.cancelled",
     "interaction.expired",
 }
+VERSION_NUMBER_PATTERN = re.compile(r"\d+(?:\.\d+)+")
 
 
 def normalize_agent_adapter_event(
@@ -273,6 +275,10 @@ def adapter_schema_snapshot_for(
             "pending_decision": "pending",
         },
         "response_application": adapter_response_application_for(agent_type),
+        "compatibility": adapter_schema_compatibility_for(
+            agent_type,
+            normalized_schema_version,
+        ),
         "provider_schema_snapshot": provider_schema_snapshot,
         "provider_schema_coverage": provider_schema_coverage,
     }
@@ -315,6 +321,10 @@ def adapter_schema_behavior_matrix_for(agent_type: AgentType) -> dict[str, objec
         "adapter": ADAPTER_NAME_BY_AGENT[agent_type],
         "default_schema_version": default_adapter_schema_version_for(agent_type),
         "supported_schema_versions": sorted(supported_adapter_schema_versions_for(agent_type)),
+        "compatibility_matrices": [
+            adapter_schema_compatibility_for(agent_type, schema_version)
+            for schema_version in sorted(supported_adapter_schema_versions_for(agent_type))
+        ],
         "schemas": [
             adapter_schema_snapshot_for(agent_type, schema_version)
             for schema_version in sorted(supported_adapter_schema_versions_for(agent_type))
@@ -333,6 +343,222 @@ def all_adapter_schema_behavior_matrices() -> dict[str, object]:
             )
         },
     }
+
+
+def adapter_schema_compatibility_for(
+    agent_type: AgentType,
+    schema_version: str,
+) -> dict[str, object]:
+    normalized_schema_version = validate_adapter_schema_version(
+        agent_type=agent_type,
+        schema_version=schema_version,
+    )
+    if agent_type == AgentType.CODEX:
+        provider_schema_snapshot = provider_schema_snapshot_for(
+            agent_type_value=agent_type.value,
+            schema_version=normalized_schema_version,
+        )
+        return codex_app_server_compatibility_matrix(
+            schema_version=normalized_schema_version,
+            provider_schema_snapshot=provider_schema_snapshot,
+        )
+    if agent_type == AgentType.CLAUDE:
+        return claude_hooks_compatibility_matrix(
+            schema_version=normalized_schema_version,
+        )
+    raise unsupported_agent_error(agent_type)
+
+
+def codex_app_server_compatibility_matrix(
+    *,
+    schema_version: str,
+    provider_schema_snapshot: dict[str, object] | None,
+) -> dict[str, object]:
+    captured_from = (
+        provider_schema_snapshot.get("captured_from")
+        if isinstance(provider_schema_snapshot, dict)
+        else None
+    )
+    provider_version = (
+        captured_from.get("codex_cli_version")
+        if isinstance(captured_from, dict)
+        else None
+    )
+    verified_provider_versions: list[dict[str, object]] = []
+    if isinstance(provider_version, str) and provider_version.strip():
+        verified_provider_versions.append(
+            {
+                "provider_version_text": provider_version,
+                "provider_version": version_number_from_text(provider_version),
+                "captured_at": provider_schema_snapshot.get("captured_at"),
+                "evidence": {
+                    "command": captured_from.get("command")
+                    if isinstance(captured_from, dict)
+                    else None,
+                    "root_bundle_sha256": nested_string(
+                        provider_schema_snapshot,
+                        "bundle",
+                        "root_bundle_sha256",
+                    ),
+                    "jsonrpc_schema_sha256": nested_string(
+                        provider_schema_snapshot,
+                        "schema_hashes",
+                        "JSONRPCMessage.json",
+                    ),
+                },
+            }
+        )
+    return {
+        "agent_type": AgentType.CODEX.value,
+        "adapter": ADAPTER_NAME_BY_AGENT[AgentType.CODEX],
+        "schema_version": schema_version,
+        "provider": "openai.codex_app_server",
+        "verification_status": (
+            "provider_snapshot_verified"
+            if verified_provider_versions
+            else "schema_contract_only"
+        ),
+        "version_policy": "warn_when_unverified",
+        "provider_version_matrix": {
+            "observed_version_source": "version_probe.version_text",
+            "verified_provider_versions": verified_provider_versions,
+        },
+        "notes": [
+            (
+                "Schema behavior is generated from the captured provider JSON schema "
+                "bundle when available."
+            ),
+            (
+                "Unknown provider versions stay usable behind the schema handshake but "
+                "are marked unverified in capability detection."
+            ),
+        ],
+    }
+
+
+def claude_hooks_compatibility_matrix(*, schema_version: str) -> dict[str, object]:
+    return {
+        "agent_type": AgentType.CLAUDE.value,
+        "adapter": ADAPTER_NAME_BY_AGENT[AgentType.CLAUDE],
+        "schema_version": schema_version,
+        "provider": "anthropic.claude_code_hooks",
+        "verification_status": "schema_contract_only",
+        "version_policy": "warn_when_unverified",
+        "provider_version_matrix": {
+            "observed_version_source": "version_probe.version_text",
+            "verified_provider_versions": [],
+        },
+        "notes": [
+            (
+                "Claude Hook support is currently verified at the AgentBridge "
+                "contract level; provider-version captures still need to be added."
+            ),
+            (
+                "Unknown provider versions stay usable behind the schema handshake but "
+                "are marked unverified in capability detection."
+            ),
+        ],
+    }
+
+
+def adapter_provider_version_verification(
+    *,
+    agent_type: AgentType,
+    schema_version: str | None,
+    provider_version_text: str | None,
+) -> dict[str, object]:
+    if not schema_version:
+        return {
+            "status": "unknown",
+            "reason": "schema_version_missing",
+            "provider_version_text": provider_version_text,
+        }
+    if not adapter_schema_version_supported(
+        agent_type=agent_type,
+        schema_version=schema_version,
+    ):
+        return {
+            "status": "unknown",
+            "reason": "schema_version_unsupported",
+            "schema_version": schema_version,
+            "provider_version_text": provider_version_text,
+            "supported_schema_versions": sorted(
+                supported_adapter_schema_versions_for(agent_type)
+            ),
+        }
+    compatibility = adapter_schema_compatibility_for(agent_type, schema_version)
+    provider_version_matrix = compatibility.get("provider_version_matrix")
+    verified_versions = []
+    if isinstance(provider_version_matrix, dict):
+        raw_versions = provider_version_matrix.get("verified_provider_versions")
+        if isinstance(raw_versions, list):
+            verified_versions = [
+                item for item in raw_versions if isinstance(item, dict)
+            ]
+    observed_text = provider_version_text.strip() if provider_version_text else ""
+    observed_version = version_number_from_text(observed_text)
+    if not observed_text:
+        return {
+            "status": "unknown",
+            "reason": "provider_version_missing",
+            "provider_version_text": None,
+            "provider_version": None,
+            "compatibility": compatibility,
+        }
+    for item in verified_versions:
+        if provider_version_matches(observed_text, observed_version, item):
+            return {
+                "status": "verified",
+                "reason": "provider_version_in_matrix",
+                "provider_version_text": observed_text,
+                "provider_version": observed_version,
+                "matched_provider_version": item,
+                "compatibility": compatibility,
+            }
+    return {
+        "status": "unverified",
+        "reason": (
+            "provider_version_not_in_matrix"
+            if verified_versions
+            else "no_verified_provider_versions"
+        ),
+        "provider_version_text": observed_text,
+        "provider_version": observed_version,
+        "verified_provider_versions": verified_versions,
+        "compatibility": compatibility,
+    }
+
+
+def provider_version_matches(
+    observed_text: str,
+    observed_version: str | None,
+    verified_version: dict[str, object],
+) -> bool:
+    verified_text = verified_version.get("provider_version_text")
+    if isinstance(verified_text, str) and observed_text == verified_text:
+        return True
+    verified_number = verified_version.get("provider_version")
+    return (
+        observed_version is not None
+        and isinstance(verified_number, str)
+        and observed_version == verified_number
+    )
+
+
+def version_number_from_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    match = VERSION_NUMBER_PATTERN.search(value)
+    return match.group(0) if match else None
+
+
+def nested_string(payload: dict[str, object] | None, *keys: str) -> str | None:
+    current: object = payload
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current if isinstance(current, str) else None
 
 
 def adapter_event_type_map_for(agent_type: AgentType) -> dict[str, str]:

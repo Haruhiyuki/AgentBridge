@@ -24,6 +24,7 @@ from uuid import uuid4
 
 from agentbridge.agent_adapter_events import (
     AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+    adapter_provider_version_verification,
     adapter_schema_version_supported,
     supported_adapter_schema_versions_for,
 )
@@ -833,6 +834,11 @@ class AgentLaunchConfig:
                 "next_step": "Fix the version probe before enabling structured adapter APIs.",
             }
         if handshake_probe.status == "ok":
+            provider_version_verification = adapter_provider_version_verification(
+                agent_type=agent_type,
+                schema_version=handshake_probe.schema_version,
+                provider_version_text=version_probe.version_text,
+            )
             if not adapter_schema_version_supported(
                 agent_type=agent_type,
                 schema_version=handshake_probe.schema_version,
@@ -843,6 +849,7 @@ class AgentLaunchConfig:
                     "required_protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
                     "schema_version": handshake_probe.schema_version,
                     "supported_schema_versions": supported_schema_versions,
+                    "provider_version_verification": provider_version_verification,
                     "next_step": "Use a schema version listed in the compatibility matrix.",
                 }
             return {
@@ -851,6 +858,7 @@ class AgentLaunchConfig:
                 "required_protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
                 "schema_version": handshake_probe.schema_version,
                 "supported_schema_versions": supported_schema_versions,
+                "provider_version_verification": provider_version_verification,
                 "next_step": "Structured adapter capability gate is open for this profile.",
             }
         if handshake_probe.status == "skipped":

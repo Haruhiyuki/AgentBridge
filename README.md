@@ -163,7 +163,7 @@ The packaged `agentbridge-adapter-client` CLI and `agentbridge.agent_adapter_cli
 module provide the same bridge for native adapter processes, including standard
 handshake JSON with schema snapshots, Codex provider-captured schema projection,
 API-token or device-key headers, event submission, response polling, blocking waits for
-adapter-originated interactions, and local schema matrix inspection:
+adapter-originated interactions, and local schema/provider-version matrix inspection:
 
 ```bash
 export AGENTBRIDGE_API_URL="http://127.0.0.1:8000"
@@ -222,6 +222,12 @@ agentbridge-adapter-client claude-hooks-config \
   --write-file .claude/settings.local.json
 agentbridge-adapter-client poll-responses --after-seq 0 --limit 50
 ```
+
+The schema matrix includes provider-version evidence where AgentBridge has a captured
+provider schema bundle, currently `codex-app-server.v1` from `codex-cli 0.141.0`.
+Terminal adapter detection keeps unknown provider versions behind the schema handshake,
+but marks their `provider_version_verification` as `unverified` so operators can decide
+whether to accept, test, or pin that adapter version.
 
 Use `agentbridge-adapter-client claude-hook` as the command for Claude Code command
 hooks. It reads the hook JSON from stdin, reports the event to AgentBridge, exits quietly
