@@ -25,6 +25,11 @@ from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
+from agentbridge.acceptance_evidence import (
+    ACCEPTANCE_EVIDENCE_SCHEMA_VERSION,
+    ACCEPTANCE_SECTIONS,
+    read_acceptance_evidence,
+)
 from agentbridge.admin_ui import (
     ACCESS_POLICY_ADMIN_HTML,
     ADMIN_AUTH_REQUIRED_HTML,
@@ -667,17 +672,10 @@ class AccessPolicySimulationRequest(BaseModel):
 
 
 READINESS_SCHEMA_VERSION = "agentbridge.readiness.v1"
-ACCEPTANCE_EVIDENCE_SCHEMA_VERSION = "agentbridge.acceptance_evidence.v1"
 READINESS_STATUS_ORDER = {"pass": 0, "warn": 1, "fail": 2}
 READINESS_ACCEPTANCE_SECTIONS = {
-    "34.1": "native_session",
-    "34.2": "visible_terminal_takeover",
-    "34.3": "bot_experience",
-    "34.4": "permissions_management",
-    "34.5": "multi_project_management",
-    "34.6": "multi_session_management",
-    "34.7": "slash_commands",
-    "34.8": "recovery",
+    section_id: str(section["slug"])
+    for section_id, section in ACCEPTANCE_SECTIONS.items()
 }
 
 
@@ -1292,105 +1290,9 @@ def readiness_acceptance_checks(
 
 
 def readiness_acceptance_evidence() -> dict[str, object]:
-    raw_path = os.environ.get("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", "").strip()
-    if not raw_path:
-        return {
-            "configured": False,
-            "valid": False,
-            "path": None,
-            "schema_version": None,
-            "error": None,
-            "section_count": 0,
-            "sections": {},
-        }
-    path = Path(raw_path).expanduser()
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        return readiness_acceptance_evidence_error(path, f"read_error:{exc.__class__.__name__}")
-    except json.JSONDecodeError as exc:
-        return readiness_acceptance_evidence_error(path, f"json_error:{exc.msg}")
-    if not isinstance(payload, dict):
-        return readiness_acceptance_evidence_error(path, "manifest_must_be_object")
-    schema_version = payload.get("schema_version")
-    if schema_version != ACCEPTANCE_EVIDENCE_SCHEMA_VERSION:
-        return readiness_acceptance_evidence_error(
-            path,
-            "schema_version_mismatch",
-            schema_version=schema_version,
-        )
-    raw_sections = payload.get("sections")
-    if not isinstance(raw_sections, dict):
-        return readiness_acceptance_evidence_error(
-            path,
-            "sections_must_be_object",
-            schema_version=schema_version,
-        )
-    sections = {
-        section_id: readiness_acceptance_section_evidence(
-            section_id,
-            raw_sections.get(section_id),
-        )
-        for section_id in READINESS_ACCEPTANCE_SECTIONS
-    }
-    return {
-        "configured": True,
-        "valid": True,
-        "path": str(path),
-        "schema_version": schema_version,
-        "error": None,
-        "section_count": len(raw_sections),
-        "sections": sections,
-    }
-
-
-def readiness_acceptance_evidence_error(
-    path: Path,
-    error: str,
-    *,
-    schema_version: object = None,
-) -> dict[str, object]:
-    return {
-        "configured": True,
-        "valid": False,
-        "path": str(path),
-        "schema_version": schema_version,
-        "error": error,
-        "section_count": 0,
-        "sections": {},
-    }
-
-
-def readiness_acceptance_section_evidence(
-    section_id: str,
-    raw_section: object,
-) -> dict[str, object]:
-    if not isinstance(raw_section, dict):
-        return {
-            "section": section_id,
-            "name": READINESS_ACCEPTANCE_SECTIONS[section_id],
-            "status": "missing",
-            "status_valid": True,
-            "artifact_count": 0,
-            "notes_present": False,
-        }
-    raw_status = str(raw_section.get("status") or "").strip().lower()
-    status_valid = raw_status in {"passed", "failed", "blocked", "not_run"}
-    artifacts = raw_section.get("artifacts")
-    artifact_count = (
-        len([artifact for artifact in artifacts if isinstance(artifact, str) and artifact.strip()])
-        if isinstance(artifacts, list)
-        else 0
+    return read_acceptance_evidence(
+        os.environ.get("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", "").strip()
     )
-    notes = raw_section.get("notes")
-    return {
-        "section": section_id,
-        "name": READINESS_ACCEPTANCE_SECTIONS[section_id],
-        "status": raw_status or "missing",
-        "status_valid": status_valid,
-        "artifact_count": artifact_count,
-        "notes_present": bool(isinstance(notes, str) and notes.strip()),
-    }
 
 
 def readiness_check(

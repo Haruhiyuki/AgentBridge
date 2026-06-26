@@ -49,6 +49,15 @@ each design-document section `34.1` through `34.8` to `passed`, and attach at le
 artifact reference per section. Readiness treats a missing manifest as a warning, an
 unreadable or malformed manifest as a failure, and any failed section as a failure.
 
+```bash
+uv run agentbridge-acceptance init "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
+  --environment staging
+uv run agentbridge-acceptance set-section "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
+  34.1 --status passed --artifact artifacts/native-session-run.json
+uv run agentbridge-acceptance summary "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
+  --fail-on-warn
+```
+
 ## Acceptance Evidence Matrix
 
 | Design section | Automated evidence | Manual or integration evidence still required |

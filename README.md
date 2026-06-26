@@ -1015,5 +1015,7 @@ device keys, managed devices, or client certificate fingerprints as failures. Se
 `AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE` to an
 `agentbridge.acceptance_evidence.v1` manifest when collecting manual MVP sign-off; use
 `docs/operations/templates/acceptance_evidence.example.json` as the starting point and
+`agentbridge-acceptance init`, `agentbridge-acceptance set-section`, and
+`agentbridge-acceptance summary --fail-on-warn` to manage the manifest. Use
 `docs/operations/MVP_ACCEPTANCE_RUNBOOK.md` to map the automated readiness gate to the
 manual MVP acceptance items from the design document.
