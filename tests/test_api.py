@@ -210,6 +210,20 @@ def passed_acceptance_checklist(section: str) -> list[dict[str, str]]:
     return checklist
 
 
+def bot_delivery_admin_export_payload() -> dict[str, object]:
+    return {
+        "schema_version": "agentbridge.admin_bot_delivery_export.v1",
+        "filters": {},
+        "record_count": 0,
+        "records": [],
+        "retry_worker": {},
+        "capabilities": {},
+        "rate_limits": {},
+        "command_registration_results": [],
+        "latest_action": None,
+    }
+
+
 def test_acceptance_cli_updates_checklist_evidence(tmp_path):
     manifest = tmp_path / "acceptance-evidence.json"
     assert (
@@ -273,10 +287,7 @@ def test_acceptance_cli_attaches_admin_export_evidence(tmp_path):
     export_path = tmp_path / "bot-delivery-export.json"
     export_path.write_text(
         json.dumps(
-            {
-                "schema_version": "agentbridge.admin_bot_delivery_export.v1",
-                "records": [],
-            },
+            bot_delivery_admin_export_payload(),
             sort_keys=True,
         ),
         encoding="utf-8",
@@ -384,7 +395,7 @@ def test_acceptance_cli_rejects_admin_export_section_mismatch(
     artifact_root = tmp_path / "acceptance-artifacts"
     export_path = tmp_path / "bot-delivery-export.json"
     export_path.write_text(
-        json.dumps({"schema_version": "agentbridge.admin_bot_delivery_export.v1"}),
+        json.dumps(bot_delivery_admin_export_payload()),
         encoding="utf-8",
     )
     assert (
@@ -426,7 +437,7 @@ def test_acceptance_cli_allows_admin_export_section_mismatch_override(tmp_path):
     artifact_root = tmp_path / "acceptance-artifacts"
     export_path = tmp_path / "bot-delivery-export.json"
     export_path.write_text(
-        json.dumps({"schema_version": "agentbridge.admin_bot_delivery_export.v1"}),
+        json.dumps(bot_delivery_admin_export_payload()),
         encoding="utf-8",
     )
     assert (

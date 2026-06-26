@@ -64,10 +64,11 @@ the source file into the artifact root, computes the sha256 digest, and writes t
 digest-backed manifest reference in one step. Use
 `agentbridge-acceptance attach-admin-export` for JSON files downloaded from the built-in
 Admin pages; it rejects unknown Admin export schemas before copying the file and uses a
-stable `<section-slug>/admin-*.json` artifact name by default. It also blocks attaching
+stable `<section-slug>/admin-*.json` artifact name by default. It also checks that each
+supported Admin export includes the required top-level evidence fields, blocks attaching
 a known Admin export outside the recommended design-document sections unless the operator
-passes `--allow-section-mismatch`. System Health exports with non-passing acceptance
-readiness actions must include the corresponding `evidence_summary` fields:
+passes `--allow-section-mismatch`, and requires System Health exports with non-passing
+acceptance readiness actions to include the corresponding `evidence_summary` fields:
 
 | Admin export schema | Recommended sections |
 | --- | --- |

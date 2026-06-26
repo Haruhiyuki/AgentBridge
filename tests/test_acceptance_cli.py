@@ -496,6 +496,48 @@ def test_acceptance_cli_rejects_system_health_export_missing_acceptance_summary(
     assert not artifact_root.exists()
 
 
+def test_acceptance_cli_rejects_incomplete_bot_delivery_admin_export(
+    tmp_path,
+    capsys,
+):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    export_path = tmp_path / "bot-delivery-export.json"
+    export_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "agentbridge.admin_bot_delivery_export.v1",
+                "records": [],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+
+    result = main(
+        [
+            "attach-admin-export",
+            str(manifest),
+            "34.3",
+            str(export_path),
+            "--artifact-root",
+            str(artifact_root),
+            "--status",
+            "passed",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert result == 1
+    assert "bot delivery admin export record_count" in captured.err
+    assert payload["sections"]["34.3"]["status"] == "not_run"
+    assert payload["sections"]["34.3"]["artifacts"] == []
+    assert not artifact_root.exists()
+
+
 def test_acceptance_cli_bundle_creates_portable_verified_zip(tmp_path, capsys):
     manifest = tmp_path / "acceptance-evidence.json"
     artifact_root = tmp_path / "artifacts"

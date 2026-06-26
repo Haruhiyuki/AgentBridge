@@ -515,17 +515,57 @@ def validate_acceptance_admin_export_payload(
 ) -> None:
     if schema_version == "agentbridge.admin_system_health_export.v1":
         validate_acceptance_system_health_export(payload)
+    elif schema_version == "agentbridge.admin_project_session_export.v1":
+        validate_acceptance_project_session_export(payload)
+    elif schema_version == "agentbridge.admin_interaction_export.v1":
+        validate_acceptance_interaction_export(payload)
+    elif schema_version == "agentbridge.admin_terminal_lifecycle_export.v1":
+        validate_acceptance_terminal_lifecycle_export(payload)
+    elif schema_version == "agentbridge.admin_device_identity_export.v1":
+        validate_acceptance_device_identity_export(payload)
+    elif schema_version == "agentbridge.admin_bot_delivery_export.v1":
+        validate_acceptance_bot_delivery_export(payload)
+
+
+def validate_admin_export_array(
+    payload: dict[str, object],
+    export_name: str,
+    field_name: str,
+) -> None:
+    if not isinstance(payload.get(field_name), list):
+        raise ValueError(f"{export_name} admin export {field_name} must be a JSON array")
+
+
+def validate_admin_export_object(
+    payload: dict[str, object],
+    export_name: str,
+    field_name: str,
+    *,
+    allow_null: bool = False,
+) -> None:
+    value = payload.get(field_name)
+    if allow_null and value is None:
+        return
+    if not isinstance(value, dict):
+        raise ValueError(f"{export_name} admin export {field_name} must be a JSON object")
+
+
+def validate_admin_export_integer(
+    payload: dict[str, object],
+    export_name: str,
+    field_name: str,
+) -> None:
+    value = payload.get(field_name)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(
+            f"{export_name} admin export {field_name} must be a non-negative integer"
+        )
 
 
 def validate_acceptance_system_health_export(payload: dict[str, object]) -> None:
-    endpoints = payload.get("endpoints")
-    if not isinstance(endpoints, list):
-        raise ValueError("system health admin export endpoints must be a JSON array")
-    readiness_actions = payload.get("readiness_actions")
-    if not isinstance(readiness_actions, list):
-        raise ValueError(
-            "system health admin export readiness_actions must be a JSON array"
-        )
+    validate_admin_export_array(payload, "system health", "endpoints")
+    validate_admin_export_array(payload, "system health", "readiness_actions")
+    readiness_actions = payload["readiness_actions"]
     for index, raw_action in enumerate(readiness_actions):
         if not isinstance(raw_action, dict):
             raise ValueError(
@@ -565,6 +605,87 @@ def validate_acceptance_system_health_readiness_action(
             f"system health admin export acceptance readiness action {action_id} "
             "must include evidence_summary"
         )
+
+
+def validate_acceptance_project_session_export(payload: dict[str, object]) -> None:
+    validate_admin_export_integer(payload, "project session", "project_count")
+    validate_admin_export_integer(payload, "project session", "workspace_count")
+    validate_admin_export_integer(payload, "project session", "session_count")
+    for field_name in ("projects", "workspaces", "sessions"):
+        validate_admin_export_array(payload, "project session", field_name)
+    validate_admin_export_object(
+        payload,
+        "project session",
+        "project_bindings",
+        allow_null=True,
+    )
+    for field_name in (
+        "queues_by_session",
+        "leases_by_session",
+        "pending_approvals_by_session",
+    ):
+        validate_admin_export_object(payload, "project session", field_name)
+
+
+def validate_acceptance_interaction_export(payload: dict[str, object]) -> None:
+    validate_admin_export_integer(payload, "interaction", "interaction_count")
+    validate_admin_export_object(payload, "interaction", "filters")
+    validate_admin_export_object(payload, "interaction", "actor")
+    validate_admin_export_array(payload, "interaction", "interactions")
+    validate_admin_export_object(
+        payload,
+        "interaction",
+        "selected_interaction",
+        allow_null=True,
+    )
+
+
+def validate_acceptance_terminal_lifecycle_export(payload: dict[str, object]) -> None:
+    for field_name in (
+        "monitor",
+        "observed",
+        "agent_probe_profiles",
+        "agent_adapters",
+    ):
+        validate_admin_export_object(payload, "terminal lifecycle", field_name)
+
+
+def validate_acceptance_device_identity_export(payload: dict[str, object]) -> None:
+    validate_admin_export_integer(payload, "device identity", "device_count")
+    validate_admin_export_object(payload, "device identity", "actor")
+    validate_admin_export_object(payload, "device identity", "auth_device")
+    validate_admin_export_array(payload, "device identity", "devices")
+    validate_admin_export_object(
+        payload,
+        "device identity",
+        "selected_device",
+        allow_null=True,
+    )
+    validate_admin_export_object(
+        payload,
+        "device identity",
+        "latest_operation",
+        allow_null=True,
+    )
+
+
+def validate_acceptance_bot_delivery_export(payload: dict[str, object]) -> None:
+    validate_admin_export_integer(payload, "bot delivery", "record_count")
+    validate_admin_export_object(payload, "bot delivery", "filters")
+    validate_admin_export_array(payload, "bot delivery", "records")
+    for field_name in ("retry_worker", "capabilities", "rate_limits"):
+        validate_admin_export_object(payload, "bot delivery", field_name)
+    validate_admin_export_array(
+        payload,
+        "bot delivery",
+        "command_registration_results",
+    )
+    validate_admin_export_object(
+        payload,
+        "bot delivery",
+        "latest_action",
+        allow_null=True,
+    )
 
 
 def validate_acceptance_admin_export_section(
