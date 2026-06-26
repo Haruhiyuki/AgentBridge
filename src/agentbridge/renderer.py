@@ -183,6 +183,19 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 details,
             )
         )
+    elif event.type == "turn.queue_unblocked":
+        blocks.append(
+            progress_block(
+                "队列可继续",
+                (
+                    "本地控制已释放，Bot 可以继续同一会话。\n"
+                    f"下一个 Turn：{payload.get('next_turn_id') or event.turn_id}\n"
+                    f"可继续任务数：{payload.get('unblocked_turn_count')}\n"
+                    f"队列状态：{'paused' if payload.get('queue_paused') else 'active'}\n"
+                    f"next_epoch={payload.get('next_epoch')}"
+                ),
+            )
+        )
     elif event.type == "tool.started":
         blocks.append(
             progress_block(

@@ -125,6 +125,34 @@ def test_turn_queued_event_renders_human_control_reason():
     assert "epoch=2" in messages[0]
 
 
+def test_turn_queue_unblocked_event_renders_resume_notice():
+    event = make_event(
+        "turn.queue_unblocked",
+        {
+            "queue_reason": "human_control",
+            "next_turn_id": "turn_1",
+            "unblocked_turn_count": 2,
+            "queued_turn_count": 3,
+            "queue_version": "queue-v1",
+            "queue_paused": False,
+            "released_epoch": 2,
+            "next_epoch": 3,
+        },
+    )
+    event = event.model_copy(update={"turn_id": "turn_1"})
+
+    document = document_from_event(event)
+    messages = OneBotV11TextRenderer().render(document)
+
+    assert "队列可继续" in messages[0]
+    assert "本地控制已释放" in messages[0]
+    assert "Bot 可以继续同一会话" in messages[0]
+    assert "下一个 Turn：turn_1" in messages[0]
+    assert "可继续任务数：2" in messages[0]
+    assert "队列状态：active" in messages[0]
+    assert "next_epoch=3" in messages[0]
+
+
 def test_approval_request_event_renders_approver_actions():
     event = make_event(
         "approval.requested",

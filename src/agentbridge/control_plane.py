@@ -965,6 +965,7 @@ class ControlPlane:
             chat_context_id=chat_context_id,
             attributes={"operation": "release_lease", "epoch": epoch},
         )
+        released_lease = self.repository.current_lease(session_id)
         next_epoch = self.repository.release_lease(session_id=session_id, epoch=epoch)
         self.audit(
             action="lease.released",
@@ -984,6 +985,36 @@ class ControlPlane:
             session_id=session_id,
             payload={"released_epoch": epoch, "next_epoch": next_epoch},
         )
+        if (
+            released_lease is not None
+            and released_lease.owner_type == LeaseOwnerType.HUMAN
+        ):
+            queued_turns, queue_version, queue_paused = self.repository.queue_snapshot(
+                session_id
+            )
+            unblocked_turns = [
+                turn for turn in queued_turns if turn.queue_reason == "human_control"
+            ]
+            if unblocked_turns:
+                next_turn = unblocked_turns[0]
+                self.emit_event(
+                    event_type="turn.queue_unblocked",
+                    source=SemanticEventSource.CONTROL_PLANE,
+                    trace_id=trace_id,
+                    project_id=session.project_id,
+                    session_id=session_id,
+                    turn_id=next_turn.id,
+                    payload={
+                        "queue_reason": "human_control",
+                        "released_epoch": epoch,
+                        "next_epoch": next_epoch,
+                        "next_turn_id": next_turn.id,
+                        "unblocked_turn_count": len(unblocked_turns),
+                        "queued_turn_count": len(queued_turns),
+                        "queue_version": queue_version,
+                        "queue_paused": queue_paused,
+                    },
+                )
         return next_epoch
 
     def ingest_session_event(

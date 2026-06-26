@@ -148,6 +148,25 @@ def test_turn_enqueue_marks_queue_when_human_controls_session(tmp_path):
     assert queued_audit.details["queue_reason"] == "human_control"
     assert queued_audit.details["lease_epoch"] == lease.epoch
 
+    release_result = execute(
+        commands,
+        f"/agent control release --epoch {lease.epoch}",
+        maintainer,
+        context.id,
+        "human-queue-release",
+    )
+    events = control.repository.list_events(session_id=session_result.data["session_id"])
+    unblocked_event = events[-1]
+
+    assert release_result.canonical_command == "control.release"
+    assert release_result.data["next_epoch"] == lease.epoch + 1
+    assert unblocked_event.type == "turn.queue_unblocked"
+    assert unblocked_event.turn_id == result.data["turn_id"]
+    assert unblocked_event.payload["queue_reason"] == "human_control"
+    assert unblocked_event.payload["next_turn_id"] == result.data["turn_id"]
+    assert unblocked_event.payload["unblocked_turn_count"] == 1
+    assert unblocked_event.payload["queue_paused"] is False
+
 
 def test_top_level_use_alias_switches_session_across_projects(tmp_path):
     control = ControlPlane()
