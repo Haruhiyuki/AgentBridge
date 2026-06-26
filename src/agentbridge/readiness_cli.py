@@ -16,6 +16,7 @@ from agentbridge.agent_adapter_client import (
 
 READINESS_EXIT_DEGRADED = 2
 READINESS_EXIT_NOT_READY = 3
+ReadinessOutputFormat = Literal["json", "summary", "actions"]
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,41 @@ def readiness_summary_text(payload: dict[str, object]) -> str:
     )
 
 
+def readiness_action_text(payload: dict[str, object]) -> str:
+    checks = payload.get("checks")
+    check_items = (
+        [check for check in checks if isinstance(check, dict)]
+        if isinstance(checks, list)
+        else []
+    )
+    problem_checks = [
+        (index, check)
+        for index, check in enumerate(check_items)
+        if str(check.get("status") or "fail") != "pass"
+    ]
+    status_order = {"fail": 0, "warn": 1}
+    ordered_checks = sorted(
+        problem_checks,
+        key=lambda item: (status_order.get(str(item[1].get("status")), 2), item[0]),
+    )
+
+    lines = [readiness_summary_text(payload)]
+    if not ordered_checks:
+        lines.append("all readiness checks passed")
+        return "\n".join(lines)
+
+    for _, check in ordered_checks:
+        status = str(check.get("status") or "unknown")
+        category = str(check.get("category") or "unknown")
+        check_id = str(check.get("id") or "unknown")
+        summary = str(check.get("summary") or "")
+        lines.append(f"{status} {category}/{check_id}: {summary}")
+        next_step = check.get("next_step")
+        if next_step:
+            lines.append(f"  next: {next_step}")
+    return "\n".join(lines)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Fetch AgentBridge product readiness status."
@@ -89,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
     parser.add_argument(
         "--format",
-        choices=["json", "summary"],
+        choices=["json", "summary", "actions"],
         default="json",
         help="Output format",
     )
@@ -131,9 +167,12 @@ def build_config_from_args(args: argparse.Namespace) -> ReadinessClientConfig:
     )
 
 
-def print_readiness(payload: dict[str, object], output_format: Literal["json", "summary"]) -> None:
+def print_readiness(payload: dict[str, object], output_format: ReadinessOutputFormat) -> None:
     if output_format == "summary":
         print(readiness_summary_text(payload))
+        return
+    if output_format == "actions":
+        print(readiness_action_text(payload))
         return
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 

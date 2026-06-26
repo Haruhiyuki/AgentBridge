@@ -999,6 +999,7 @@ Before forwarding input, the console requests a `human` writer lease and sends i
 curl http://127.0.0.1:8000/api/v1/health
 curl http://127.0.0.1:8000/api/v1/readiness
 uv run agentbridge-readiness --format summary
+uv run agentbridge-readiness --format actions
 uv run agentbridge-readiness --fail-on-warn
 ```
 
@@ -1006,5 +1007,8 @@ The app uses in-memory storage by default, so data is reset when the process exi
 `/api/v1/health` is intentionally minimal and unauthenticated; `/api/v1/readiness` is a
 protected operational report when API/device gates are configured and requires
 `terminal_read` for managed device credentials. `agentbridge-readiness` reads the same
-report using `AGENTBRIDGE_API_URL`, API token, or managed-device credentials and can
-return non-zero for degraded or not-ready deployments.
+report using `AGENTBRIDGE_API_URL`, API token, or managed-device credentials, prints
+degraded/failing checks with operator next steps through `--format actions`, and can
+return non-zero for degraded or not-ready deployments. Use
+`docs/operations/MVP_ACCEPTANCE_RUNBOOK.md` to map the automated readiness gate to the
+manual MVP acceptance items from the design document.
