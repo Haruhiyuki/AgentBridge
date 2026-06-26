@@ -1035,9 +1035,11 @@ requires every checklist item to be `passed` before release evidence is ready; u
 `attach-artifact` command copies files into the artifact root, computes sha256 digests,
 and writes digest-backed manifest references for release-candidate evidence. The
 `attach-admin-export` command first validates that a downloaded Admin JSON export uses a
-known built-in evidence schema, then copies it into a stable section-scoped artifact
-name with the same digest-backed manifest reference, and rejects mismatched design
-sections unless `--allow-section-mismatch` is supplied; after all
+known built-in evidence schema, requires System Health exports to preserve acceptance
+readiness action evidence summaries when acceptance checks are not passing, then copies
+it into a stable section-scoped artifact name with the same digest-backed manifest
+reference, and rejects mismatched design sections unless `--allow-section-mismatch` is
+supplied; after all
 sections are signed off, `agentbridge-acceptance bundle` creates a portable ZIP with the
 manifest, bundle index, and verified artifact files, and `agentbridge-acceptance
 verify-bundle` can validate the ZIP offline during release review while reporting

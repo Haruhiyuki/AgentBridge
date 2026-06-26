@@ -66,7 +66,8 @@ digest-backed manifest reference in one step. Use
 Admin pages; it rejects unknown Admin export schemas before copying the file and uses a
 stable `<section-slug>/admin-*.json` artifact name by default. It also blocks attaching
 a known Admin export outside the recommended design-document sections unless the operator
-passes `--allow-section-mismatch`:
+passes `--allow-section-mismatch`. System Health exports with non-passing acceptance
+readiness actions must include the corresponding `evidence_summary` fields:
 
 | Admin export schema | Recommended sections |
 | --- | --- |

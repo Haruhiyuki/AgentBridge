@@ -376,6 +376,126 @@ def test_acceptance_cli_summary_fails_for_invalid_checklist_item(tmp_path, capsy
     ) in output
 
 
+def test_acceptance_cli_attaches_system_health_export_with_evidence_summary(
+    tmp_path,
+    capsys,
+):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    export_path = tmp_path / "system-health-export.json"
+    export_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "agentbridge.admin_system_health_export.v1",
+                "status": "1 endpoint checks failed",
+                "endpoints": [],
+                "readiness_actions": [
+                    {
+                        "status": "warn",
+                        "category": "acceptance",
+                        "id": "acceptance.native_session",
+                        "summary": "Design-document section 34.1 is signed off.",
+                        "next_step": "Mark every checklist item passed.",
+                        "evidence_summary": (
+                            "section=34.1 status=passed artifacts=1 "
+                            "artifact_errors=0 checklist=1/3 "
+                            "checklist_incomplete=2 checklist_errors=0"
+                        ),
+                        "evidence": {
+                            "section": "34.1",
+                            "status": "passed",
+                            "artifact_count": 1,
+                            "checklist_total": 3,
+                            "checklist_passed_count": 1,
+                        },
+                    }
+                ],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+
+    result = main(
+        [
+            "attach-admin-export",
+            str(manifest),
+            "34.1",
+            str(export_path),
+            "--artifact-root",
+            str(artifact_root),
+            "--status",
+            "passed",
+        ]
+    )
+
+    assert result == 0
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload["sections"]["34.1"]["artifacts"][0]["path"] == (
+        "native_session/admin-system-health.json"
+    )
+    assert (artifact_root / "native_session" / "admin-system-health.json").is_file()
+
+
+def test_acceptance_cli_rejects_system_health_export_missing_acceptance_summary(
+    tmp_path,
+    capsys,
+):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    export_path = tmp_path / "system-health-export.json"
+    export_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "agentbridge.admin_system_health_export.v1",
+                "status": "1 endpoint checks failed",
+                "endpoints": [],
+                "readiness_actions": [
+                    {
+                        "status": "warn",
+                        "category": "acceptance",
+                        "id": "acceptance.native_session",
+                        "summary": "Design-document section 34.1 is signed off.",
+                        "next_step": "Mark every checklist item passed.",
+                        "evidence": {
+                            "section": "34.1",
+                            "status": "passed",
+                            "artifact_count": 1,
+                        },
+                    }
+                ],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+
+    result = main(
+        [
+            "attach-admin-export",
+            str(manifest),
+            "34.1",
+            str(export_path),
+            "--artifact-root",
+            str(artifact_root),
+            "--status",
+            "passed",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert result == 1
+    assert "must include evidence_summary" in captured.err
+    assert payload["sections"]["34.1"]["status"] == "not_run"
+    assert payload["sections"]["34.1"]["artifacts"] == []
+    assert not artifact_root.exists()
+
+
 def test_acceptance_cli_bundle_creates_portable_verified_zip(tmp_path, capsys):
     manifest = tmp_path / "acceptance-evidence.json"
     artifact_root = tmp_path / "artifacts"

@@ -505,7 +505,66 @@ def read_acceptance_admin_export_schema(source_path: Path) -> str:
     schema_version = raw_schema_version.strip()
     if schema_version not in ACCEPTANCE_ADMIN_EXPORT_ARTIFACT_NAMES:
         raise ValueError(f"unsupported admin export schema_version: {schema_version}")
+    validate_acceptance_admin_export_payload(schema_version, payload)
     return schema_version
+
+
+def validate_acceptance_admin_export_payload(
+    schema_version: str,
+    payload: dict[str, object],
+) -> None:
+    if schema_version == "agentbridge.admin_system_health_export.v1":
+        validate_acceptance_system_health_export(payload)
+
+
+def validate_acceptance_system_health_export(payload: dict[str, object]) -> None:
+    endpoints = payload.get("endpoints")
+    if not isinstance(endpoints, list):
+        raise ValueError("system health admin export endpoints must be a JSON array")
+    readiness_actions = payload.get("readiness_actions")
+    if not isinstance(readiness_actions, list):
+        raise ValueError(
+            "system health admin export readiness_actions must be a JSON array"
+        )
+    for index, raw_action in enumerate(readiness_actions):
+        if not isinstance(raw_action, dict):
+            raise ValueError(
+                f"system health admin export readiness_actions[{index}] "
+                "must be a JSON object"
+            )
+        validate_acceptance_system_health_readiness_action(index, raw_action)
+
+
+def validate_acceptance_system_health_readiness_action(
+    index: int,
+    action: dict[str, object],
+) -> None:
+    raw_id = action.get("id")
+    action_id = raw_id if isinstance(raw_id, str) else ""
+    evidence = action.get("evidence")
+    if evidence is not None and not isinstance(evidence, dict):
+        raise ValueError(
+            f"system health admin export readiness_actions[{index}].evidence "
+            "must be a JSON object"
+        )
+    raw_summary = action.get("evidence_summary")
+    if raw_summary is not None and not isinstance(raw_summary, str):
+        raise ValueError(
+            f"system health admin export readiness_actions[{index}].evidence_summary "
+            "must be a string"
+        )
+    if not action_id.startswith("acceptance."):
+        return
+    if not isinstance(evidence, dict):
+        raise ValueError(
+            f"system health admin export acceptance readiness action {action_id} "
+            "must include evidence"
+        )
+    if not isinstance(raw_summary, str) or not raw_summary.strip():
+        raise ValueError(
+            f"system health admin export acceptance readiness action {action_id} "
+            "must include evidence_summary"
+        )
 
 
 def validate_acceptance_admin_export_section(
