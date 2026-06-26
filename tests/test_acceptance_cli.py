@@ -110,6 +110,13 @@ def test_acceptance_cli_set_section_and_summary(tmp_path, capsys):
     assert "checklist=0/3" in output
     assert "34.8 status=not_run artifacts=0" in output
 
+    checklist_result = main(["summary", str(manifest), "--show-checklist"])
+    checklist_output = capsys.readouterr().out
+
+    assert checklist_result == 0
+    assert "34.1 checklist id=real_pty_claude status=not_run" in checklist_output
+    assert "34.1 checklist id=bot_restart_same_cli status=not_run" in checklist_output
+
 
 def test_acceptance_cli_summary_json_for_complete_manifest(tmp_path, capsys):
     manifest = tmp_path / "acceptance-evidence.json"

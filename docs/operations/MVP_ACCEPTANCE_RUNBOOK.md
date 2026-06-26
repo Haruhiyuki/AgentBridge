@@ -99,7 +99,7 @@ uv run agentbridge-acceptance set-checklist "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FI
   --status passed --notes "Bound the staging OneBot V11 group."
 uv run agentbridge-acceptance summary "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
   --verify-artifacts --artifact-root "$AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT" \
-  --fail-on-warn
+  --show-checklist --fail-on-warn
 uv run agentbridge-acceptance bundle "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
   "$AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE" \
   --artifact-root "$AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT"

@@ -1027,7 +1027,8 @@ device keys, managed devices, or client certificate fingerprints as failures. Se
 `agentbridge-acceptance attach-admin-export`, and
 `agentbridge-acceptance summary --fail-on-warn` to manage the manifest. The
 `set-checklist` command records per-section manual acceptance item status, and readiness
-requires every checklist item to be `passed` before release evidence is ready. The
+requires every checklist item to be `passed` before release evidence is ready; use
+`agentbridge-acceptance summary --show-checklist` to list incomplete or invalid items. The
 `attach-artifact` command copies files into the artifact root, computes sha256 digests,
 and writes digest-backed manifest references for release-candidate evidence. The
 `attach-admin-export` command first validates that a downloaded Admin JSON export uses a

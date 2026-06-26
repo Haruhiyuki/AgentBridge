@@ -146,6 +146,11 @@ def build_parser() -> argparse.ArgumentParser:
     summary_parser.add_argument("--artifact-root", type=Path)
     summary_parser.add_argument("--verify-artifacts", action="store_true")
     summary_parser.add_argument(
+        "--show-checklist",
+        action="store_true",
+        help="Show incomplete or invalid manual checklist items in summary output",
+    )
+    summary_parser.add_argument(
         "--format",
         choices=["json", "summary"],
         default="summary",
@@ -576,7 +581,11 @@ def acceptance_artifact_target_name(
     return Path(section_slug) / source_path.name
 
 
-def acceptance_summary_text(evidence: dict[str, object]) -> str:
+def acceptance_summary_text(
+    evidence: dict[str, object],
+    *,
+    show_checklist: bool = False,
+) -> str:
     summary = acceptance_evidence_summary(evidence)
     counts = summary["counts"] if isinstance(summary.get("counts"), dict) else {}
     lines = [
@@ -590,6 +599,8 @@ def acceptance_summary_text(evidence: dict[str, object]) -> str:
                 f"missing={counts.get('missing', 0)}",
                 f"invalid={counts.get('invalid', 0)}",
                 f"artifact_errors={summary.get('artifact_error_count', 0)}",
+                f"checklist_incomplete={summary.get('checklist_incomplete_count', 0)}",
+                f"checklist_errors={summary.get('checklist_error_count', 0)}",
             ]
         )
     ]
@@ -612,10 +623,51 @@ def acceptance_summary_text(evidence: dict[str, object]) -> str:
                 f"checklist={checklist_passed}/{checklist_total} "
                 f"checklist_errors={checklist_errors}"
             )
+            if show_checklist:
+                lines.extend(acceptance_checklist_gap_lines(section_id, section_payload))
     return "\n".join(lines)
 
 
-def print_summary(evidence: dict[str, object], output_format: AcceptanceOutputFormat) -> None:
+def acceptance_checklist_gap_lines(
+    section_id: str,
+    section_payload: dict[str, object],
+) -> list[str]:
+    raw_checklist = section_payload.get("checklist")
+    if not isinstance(raw_checklist, list):
+        return []
+    lines: list[str] = []
+    for raw_item in raw_checklist:
+        item = raw_item if isinstance(raw_item, dict) else {}
+        item_id = item.get("id")
+        status = str(item.get("status") or "missing")
+        expected = bool(item.get("expected", True))
+        status_valid = bool(item.get("status_valid", True))
+        if expected and status_valid and status == "passed":
+            continue
+        lines.append(
+            " ".join(
+                [
+                    f"{section_id} checklist",
+                    (
+                        f"id={item_id}"
+                        if isinstance(item_id, str) and item_id
+                        else "id=<missing>"
+                    ),
+                    f"status={status}",
+                    f"expected={str(expected).lower()}",
+                    f"status_valid={str(status_valid).lower()}",
+                ]
+            )
+        )
+    return lines
+
+
+def print_summary(
+    evidence: dict[str, object],
+    output_format: AcceptanceOutputFormat,
+    *,
+    show_checklist: bool = False,
+) -> None:
     if output_format == "json":
         print(
             json.dumps(
@@ -629,7 +681,7 @@ def print_summary(evidence: dict[str, object], output_format: AcceptanceOutputFo
             )
         )
         return
-    print(acceptance_summary_text(evidence))
+    print(acceptance_summary_text(evidence, show_checklist=show_checklist))
 
 
 def summary_exit_code(
@@ -666,7 +718,7 @@ def summarize_manifest(args: argparse.Namespace) -> int:
         artifact_root=args.artifact_root,
         verify_artifacts=args.verify_artifacts,
     )
-    print_summary(evidence, args.format)
+    print_summary(evidence, args.format, show_checklist=args.show_checklist)
     return summary_exit_code(
         evidence,
         fail_on_warn=args.fail_on_warn,
