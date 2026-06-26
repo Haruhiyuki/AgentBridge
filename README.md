@@ -927,8 +927,9 @@ dashboard, device identity dashboard, and Bot delivery operations dashboard. The
 health page summarizes `/api/v1/health`, terminal lifecycle monitor status, Bot retry
 worker status, Bot platform capabilities, Bot rate-limit policies, and managed-device
 endpoint reachability, plus the `/api/v1/readiness` MVP acceptance summary with
-pass/warn/fail counts across Control Plane, Terminal, Adapter, Bot, security workers,
-and HTTP/Admin/WebSocket/device/certificate authentication gates. The
+pass/warn/fail counts and a warn/fail action table with next steps across Control
+Plane, Terminal, Adapter, Bot, security workers, and
+HTTP/Admin/WebSocket/device/certificate authentication gates. The
 project/session page lists projects, adds workspaces, creates sessions, closes selected
 sessions, and surfaces active Turn, queue, pending approval, and lease status through
 the same REST APIs used by external clients. The interaction

@@ -130,6 +130,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       --muted: #5b6878;
       --accent: #0f766e;
       --danger: #b42318;
+      --warn: #a15c00;
       --ok: #087443;
     }
     * { box-sizing: border-box; }
@@ -257,7 +258,12 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       font-weight: 700;
     }
     .ok { color: var(--ok); font-weight: 700; }
+    .warn { color: var(--warn); font-weight: 700; }
     .fail { color: var(--danger); font-weight: 700; }
+    .actions th, .actions td {
+      white-space: normal;
+      vertical-align: top;
+    }
     pre {
       margin: 0;
       padding: 10px;
@@ -317,6 +323,16 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
         <div class="metric"><span>Bot Platforms</span><strong id="bot-platforms">-</strong></div>
         <div class="metric"><span>Rate Policies</span><strong id="rate-policies">-</strong></div>
       </div>
+      <table class="actions" aria-label="Readiness action items">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Check</th>
+            <th>Next Step</th>
+          </tr>
+        </thead>
+        <tbody id="readiness-actions"></tbody>
+      </table>
     </section>
     <section>
       <div class="toolbar">
@@ -387,6 +403,41 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       $("details").textContent = JSON.stringify(results, null, 2);
     }
 
+    function renderReadinessActions(readiness) {
+      const checks = Array.isArray(readiness.checks) ? readiness.checks : [];
+      const actionable = checks
+        .filter((check) => check.status && check.status !== "pass")
+        .sort((left, right) => {
+          const rank = {fail: 0, warn: 1};
+          return (rank[left.status] ?? 2) - (rank[right.status] ?? 2);
+        });
+      const rows = actionable.map((check) => {
+        const tr = document.createElement("tr");
+        const values = [
+          {text: check.status, className: check.status},
+          {text: check.id || "-"},
+          {text: check.next_step || check.summary || "-"},
+        ];
+        for (const value of values) {
+          const td = document.createElement("td");
+          td.textContent = String(value.text ?? "-");
+          if (value.className) td.className = value.className;
+          tr.appendChild(td);
+        }
+        return tr;
+      });
+      if (!rows.length) {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = 3;
+        td.className = "ok";
+        td.textContent = "All readiness checks passed";
+        tr.appendChild(td);
+        rows.push(tr);
+      }
+      $("readiness-actions").replaceChildren(...rows);
+    }
+
     function renderMetrics(results) {
       const byName = Object.fromEntries(results.map((result) => [result.name, result]));
       const health = byName["Control Health"]?.data || {};
@@ -417,6 +468,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       );
       setText("bot-platforms", platforms.length);
       setText("rate-policies", policies.length);
+      renderReadinessActions(readiness);
     }
 
     async function refresh() {
