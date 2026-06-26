@@ -15,11 +15,13 @@ from agentbridge.agent_adapter_client import (
     claude_adapter_event_type_from_hook_payload,
     claude_hook_failure_stdout_json,
     claude_hook_idempotency_key,
+    claude_hook_settings_fragment,
     format_adapter_response_for_agent,
     handle_claude_hook_payload,
     handshake_payload_for_agent,
     main,
     urllib_json_transport,
+    write_claude_hook_settings_file,
 )
 from agentbridge.domain import AgentBridgeError, AgentType
 
@@ -614,6 +616,171 @@ def test_claude_hook_failure_defaults_interactions_to_deny():
             },
         }
     }
+
+
+def test_claude_hook_settings_fragment_uses_exec_form_for_supported_events():
+    payload = claude_hook_settings_fragment(
+        api_url="http://bridge.local",
+        session_id="ses_1",
+        device_id="device_1",
+        device_key_file="/tmp/agentbridge device.key",
+        wait_timeout_seconds=60.0,
+        poll_interval_seconds=0.5,
+        hook_timeout_seconds=75.0,
+    )
+
+    hooks = payload["hooks"]
+    assert set(hooks) == {
+        "SessionStart",
+        "MessageDisplay",
+        "PreToolUse",
+        "PermissionRequest",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "Stop",
+        "StopFailure",
+        "SessionEnd",
+    }
+    pre_tool_group = hooks["PreToolUse"][0]
+    assert pre_tool_group["matcher"] == "*"
+    message_group = hooks["MessageDisplay"][0]
+    assert "matcher" not in message_group
+    handler = pre_tool_group["hooks"][0]
+    assert handler == {
+        "type": "command",
+        "command": "agentbridge-adapter-client",
+        "args": [
+            "claude-hook",
+            "--api-url",
+            "http://bridge.local",
+            "--session-id",
+            "ses_1",
+            "--device-id",
+            "device_1",
+            "--device-key-file",
+            "/tmp/agentbridge device.key",
+            "--trace-id",
+            "claude-hook-adapter",
+            "--timeout-seconds",
+            "10",
+            "--wait-timeout-seconds",
+            "60",
+            "--poll-interval-seconds",
+            "0.5",
+        ],
+        "timeout": 75,
+    }
+
+
+def test_claude_hook_settings_fragment_includes_file_changed_when_watchers_are_set():
+    payload = claude_hook_settings_fragment(
+        events=["SessionStart"],
+        file_watch_patterns=["pyproject.toml", ".env"],
+    )
+
+    hooks = payload["hooks"]
+    assert set(hooks) == {"SessionStart", "FileChanged"}
+    assert hooks["FileChanged"][0]["matcher"] == "pyproject.toml|.env"
+
+
+def test_claude_hook_settings_fragment_rejects_direct_secret_values_by_default():
+    with pytest.raises(ValueError, match="refusing to embed --device-key"):
+        claude_hook_settings_fragment(device_key="secret-value")
+
+
+def test_claude_hook_settings_write_file_replaces_agentbridge_handlers(tmp_path):
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(
+        json.dumps(
+            {
+                "theme": "dark",
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {"type": "command", "command": "lint", "args": []},
+                                {
+                                    "type": "command",
+                                    "command": "agentbridge-adapter-client",
+                                    "args": ["claude-hook", "--session-id", "old"],
+                                },
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    fragment = claude_hook_settings_fragment(
+        events=["PreToolUse"],
+        session_id="ses_new",
+        hook_timeout_seconds=20,
+    )
+
+    merged = write_claude_hook_settings_file(settings_file, fragment)
+    persisted = json.loads(settings_file.read_text(encoding="utf-8"))
+
+    assert persisted == merged
+    assert merged["theme"] == "dark"
+    pre_tool_groups = merged["hooks"]["PreToolUse"]
+    assert pre_tool_groups[0]["hooks"] == [
+        {"type": "command", "command": "lint", "args": []}
+    ]
+    assert pre_tool_groups[1]["hooks"][0]["args"] == [
+        "claude-hook",
+        "--session-id",
+        "ses_new",
+        "--trace-id",
+        "claude-hook-adapter",
+        "--timeout-seconds",
+        "10",
+        "--wait-timeout-seconds",
+        "300",
+        "--poll-interval-seconds",
+        "1",
+    ]
+
+
+def test_cli_claude_hooks_config_prints_settings_fragment(capsys):
+    result = main(
+        [
+            "claude-hooks-config",
+            "--session-id",
+            "ses_1",
+            "--device-id",
+            "device_1",
+            "--device-key-file",
+            "/tmp/device.key",
+            "--wait-timeout-seconds",
+            "60",
+            "--hook-timeout-seconds",
+            "65",
+        ]
+    )
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    permission_handler = payload["hooks"]["PermissionRequest"][0]["hooks"][0]
+    assert permission_handler["timeout"] == 65
+    assert permission_handler["args"] == [
+        "claude-hook",
+        "--session-id",
+        "ses_1",
+        "--device-id",
+        "device_1",
+        "--device-key-file",
+        "/tmp/device.key",
+        "--trace-id",
+        "claude-hook-adapter",
+        "--timeout-seconds",
+        "10",
+        "--wait-timeout-seconds",
+        "60",
+        "--poll-interval-seconds",
+        "1",
+    ]
 
 
 def test_urllib_transport_reports_structured_http_errors(monkeypatch):

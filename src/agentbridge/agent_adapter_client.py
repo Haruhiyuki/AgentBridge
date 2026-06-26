@@ -40,6 +40,36 @@ CLAUDE_QUESTION_TOOL_EVENT_BY_TOOL_NAME = {
     "QuestionRequested": "QuestionRequested",
     "ExitPlanMode": "PlanRequested",
 }
+CLAUDE_HOOK_SETTINGS_DEFAULT_EVENTS = (
+    "SessionStart",
+    "MessageDisplay",
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "Stop",
+    "StopFailure",
+    "SessionEnd",
+)
+CLAUDE_HOOK_SETTINGS_OPTIONAL_EVENTS = ("FileChanged",)
+CLAUDE_HOOK_SETTINGS_SUPPORTED_EVENTS = frozenset(
+    CLAUDE_HOOK_SETTINGS_DEFAULT_EVENTS + CLAUDE_HOOK_SETTINGS_OPTIONAL_EVENTS
+)
+CLAUDE_HOOK_SETTINGS_DERIVED_EVENTS = {
+    "AskUserQuestion",
+    "QuestionRequested",
+    "PlanRequested",
+}
+CLAUDE_HOOK_SETTINGS_TOOL_MATCHER_EVENTS = {
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "PermissionRequest",
+}
+CLAUDE_HOOK_SETTINGS_BLOCKING_EVENTS = {
+    "PreToolUse",
+    "PermissionRequest",
+}
 
 
 class AgentAdapterClientError(RuntimeError):
@@ -443,6 +473,336 @@ def claude_hook_failure_stdout_json(
         "request_payload": {"raw_event": dict(hook_payload)},
     }
     return claude_hook_stdout_json(response)
+
+
+def claude_hook_settings_fragment(
+    *,
+    hook_command: str = "agentbridge-adapter-client",
+    api_url: str | None = None,
+    session_id: str | None = None,
+    api_token: str | None = None,
+    api_token_file: Path | None = None,
+    device_id: str | None = None,
+    device_key: str | None = None,
+    device_key_file: Path | None = None,
+    schema_version: str | None = None,
+    trace_id: str = "claude-hook-adapter",
+    timeout_seconds: float = 10.0,
+    wait_timeout_seconds: float = 300.0,
+    poll_interval_seconds: float = 1.0,
+    hook_timeout_seconds: float | None = None,
+    events: list[str] | tuple[str, ...] | None = None,
+    tool_matcher: str = "*",
+    file_watch_patterns: list[str] | tuple[str, ...] | None = None,
+    strict: bool = False,
+    include_secret_values: bool = False,
+) -> dict[str, object]:
+    configured_events = claude_hook_settings_events(
+        events=events,
+        file_watch_patterns=file_watch_patterns,
+    )
+    hooks: dict[str, object] = {}
+    for event in configured_events:
+        handler = claude_hook_settings_handler(
+            event,
+            hook_command=hook_command,
+            api_url=api_url,
+            session_id=session_id,
+            api_token=api_token,
+            api_token_file=api_token_file,
+            device_id=device_id,
+            device_key=device_key,
+            device_key_file=device_key_file,
+            schema_version=schema_version,
+            trace_id=trace_id,
+            timeout_seconds=timeout_seconds,
+            wait_timeout_seconds=wait_timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            hook_timeout_seconds=hook_timeout_seconds,
+            strict=strict,
+            include_secret_values=include_secret_values,
+        )
+        group: dict[str, object] = {"hooks": [handler]}
+        matcher = claude_hook_settings_matcher(
+            event,
+            tool_matcher=tool_matcher,
+            file_watch_patterns=file_watch_patterns,
+        )
+        if matcher is not None:
+            group["matcher"] = matcher
+        hooks[event] = [group]
+    return {"hooks": hooks}
+
+
+def claude_hook_settings_events(
+    *,
+    events: list[str] | tuple[str, ...] | None,
+    file_watch_patterns: list[str] | tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    configured = list(events or CLAUDE_HOOK_SETTINGS_DEFAULT_EVENTS)
+    if file_watch_patterns and "FileChanged" not in configured:
+        configured.append("FileChanged")
+    deduplicated: list[str] = []
+    for event in configured:
+        if event in CLAUDE_HOOK_SETTINGS_DERIVED_EVENTS:
+            raise ValueError(f"{event} is derived from PreToolUse; configure PreToolUse instead")
+        if event not in CLAUDE_HOOK_SETTINGS_SUPPORTED_EVENTS:
+            raise ValueError(f"unsupported Claude hook event for AgentBridge config: {event}")
+        if event == "FileChanged" and not file_watch_patterns:
+            raise ValueError("FileChanged hook config requires at least one --file-watch matcher")
+        if event not in deduplicated:
+            deduplicated.append(event)
+    return tuple(deduplicated)
+
+
+def claude_hook_settings_matcher(
+    event: str,
+    *,
+    tool_matcher: str,
+    file_watch_patterns: list[str] | tuple[str, ...] | None,
+) -> str | None:
+    if event == "FileChanged":
+        patterns = [pattern.strip() for pattern in (file_watch_patterns or []) if pattern.strip()]
+        if not patterns:
+            raise ValueError("FileChanged hook config requires at least one --file-watch matcher")
+        return "|".join(patterns)
+    if event in CLAUDE_HOOK_SETTINGS_TOOL_MATCHER_EVENTS:
+        return tool_matcher
+    return None
+
+
+def claude_hook_settings_handler(
+    event: str,
+    *,
+    hook_command: str,
+    api_url: str | None,
+    session_id: str | None,
+    api_token: str | None,
+    api_token_file: Path | None,
+    device_id: str | None,
+    device_key: str | None,
+    device_key_file: Path | None,
+    schema_version: str | None,
+    trace_id: str,
+    timeout_seconds: float,
+    wait_timeout_seconds: float,
+    poll_interval_seconds: float,
+    hook_timeout_seconds: float | None,
+    strict: bool,
+    include_secret_values: bool,
+) -> dict[str, object]:
+    args = claude_hook_command_args(
+        api_url=api_url,
+        session_id=session_id,
+        api_token=api_token,
+        api_token_file=api_token_file,
+        device_id=device_id,
+        device_key=device_key,
+        device_key_file=device_key_file,
+        schema_version=schema_version,
+        trace_id=trace_id,
+        timeout_seconds=timeout_seconds,
+        wait_timeout_seconds=wait_timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+        strict=strict,
+        include_secret_values=include_secret_values,
+    )
+    return {
+        "type": "command",
+        "command": hook_command,
+        "args": args,
+        "timeout": claude_hook_timeout_for_event(
+            event,
+            timeout_seconds=timeout_seconds,
+            wait_timeout_seconds=wait_timeout_seconds,
+            hook_timeout_seconds=hook_timeout_seconds,
+        ),
+    }
+
+
+def claude_hook_command_args(
+    *,
+    api_url: str | None,
+    session_id: str | None,
+    api_token: str | None,
+    api_token_file: Path | None,
+    device_id: str | None,
+    device_key: str | None,
+    device_key_file: Path | None,
+    schema_version: str | None,
+    trace_id: str,
+    timeout_seconds: float,
+    wait_timeout_seconds: float,
+    poll_interval_seconds: float,
+    strict: bool,
+    include_secret_values: bool,
+) -> list[str]:
+    args = ["claude-hook"]
+    append_optional_cli_arg(args, "--api-url", api_url)
+    append_optional_cli_arg(args, "--session-id", session_id)
+    append_secret_cli_args(
+        args,
+        value=api_token,
+        file_value=api_token_file,
+        value_flag="--api-token",
+        file_flag="--api-token-file",
+        include_secret_values=include_secret_values,
+    )
+    append_optional_cli_arg(args, "--device-id", device_id)
+    append_secret_cli_args(
+        args,
+        value=device_key,
+        file_value=device_key_file,
+        value_flag="--device-key",
+        file_flag="--device-key-file",
+        include_secret_values=include_secret_values,
+    )
+    append_optional_cli_arg(args, "--schema-version", schema_version)
+    append_optional_cli_arg(args, "--trace-id", trace_id)
+    args.extend(["--timeout-seconds", cli_number(timeout_seconds)])
+    args.extend(["--wait-timeout-seconds", cli_number(wait_timeout_seconds)])
+    args.extend(["--poll-interval-seconds", cli_number(poll_interval_seconds)])
+    if strict:
+        args.append("--strict")
+    return args
+
+
+def append_optional_cli_arg(args: list[str], flag: str, value: str | None) -> None:
+    if value:
+        args.extend([flag, value])
+
+
+def append_secret_cli_args(
+    args: list[str],
+    *,
+    value: str | None,
+    file_value: Path | None,
+    value_flag: str,
+    file_flag: str,
+    include_secret_values: bool,
+) -> None:
+    if value and not include_secret_values:
+        raise ValueError(
+            f"refusing to embed {value_flag}; use {file_flag} or --include-secret-values"
+        )
+    if value:
+        args.extend([value_flag, value])
+    if file_value is not None:
+        args.extend([file_flag, str(file_value)])
+
+
+def claude_hook_timeout_for_event(
+    event: str,
+    *,
+    timeout_seconds: float,
+    wait_timeout_seconds: float,
+    hook_timeout_seconds: float | None,
+) -> float | int:
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    if wait_timeout_seconds <= 0:
+        raise ValueError("wait_timeout_seconds must be positive")
+    if hook_timeout_seconds is not None:
+        if hook_timeout_seconds <= 0:
+            raise ValueError("hook_timeout_seconds must be positive")
+        return json_number(hook_timeout_seconds)
+    if event in CLAUDE_HOOK_SETTINGS_BLOCKING_EVENTS:
+        return json_number(wait_timeout_seconds + timeout_seconds + 5.0)
+    return json_number(timeout_seconds + 5.0)
+
+
+def cli_number(value: float) -> str:
+    number = json_number(value)
+    return str(number)
+
+
+def json_number(value: float) -> float | int:
+    return int(value) if float(value).is_integer() else value
+
+
+def write_claude_hook_settings_file(
+    settings_path: Path,
+    fragment: Mapping[str, object],
+) -> dict[str, object]:
+    existing = load_claude_settings_file(settings_path)
+    merged = merge_claude_hook_settings(existing, fragment)
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        json.dumps(merged, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return merged
+
+
+def load_claude_settings_file(settings_path: Path) -> dict[str, object]:
+    if not settings_path.exists():
+        return {}
+    raw = settings_path.read_text(encoding="utf-8")
+    if not raw.strip():
+        return {}
+    decoded = json.loads(raw)
+    if not isinstance(decoded, dict):
+        raise ValueError("Claude settings file must contain a JSON object")
+    return {str(key): value for key, value in decoded.items()}
+
+
+def merge_claude_hook_settings(
+    existing_settings: Mapping[str, object],
+    fragment: Mapping[str, object],
+) -> dict[str, object]:
+    fragment_hooks = fragment.get("hooks")
+    if not isinstance(fragment_hooks, Mapping):
+        raise ValueError("Claude hook settings fragment must include hooks object")
+    merged = {str(key): value for key, value in existing_settings.items()}
+    existing_hooks = merged.get("hooks")
+    if existing_hooks is None:
+        hooks: dict[str, object] = {}
+    elif isinstance(existing_hooks, Mapping):
+        hooks = {str(key): value for key, value in existing_hooks.items()}
+    else:
+        raise ValueError("Claude settings hooks must be a JSON object")
+    for event, generated_groups in fragment_hooks.items():
+        if not isinstance(generated_groups, list):
+            raise ValueError("Claude hook event groups must be arrays")
+        current_groups = hooks.get(str(event), [])
+        if not isinstance(current_groups, list):
+            raise ValueError(f"Claude hook groups for {event} must be an array")
+        hooks[str(event)] = cleaned_claude_hook_groups(current_groups) + generated_groups
+    merged["hooks"] = hooks
+    return merged
+
+
+def cleaned_claude_hook_groups(groups: list[object]) -> list[object]:
+    cleaned: list[object] = []
+    for group in groups:
+        if not isinstance(group, dict):
+            cleaned.append(group)
+            continue
+        handlers = group.get("hooks")
+        if not isinstance(handlers, list):
+            cleaned.append(group)
+            continue
+        retained = [
+            handler for handler in handlers if not is_agentbridge_claude_hook_handler(handler)
+        ]
+        if not retained:
+            continue
+        updated_group = dict(group)
+        updated_group["hooks"] = retained
+        cleaned.append(updated_group)
+    return cleaned
+
+
+def is_agentbridge_claude_hook_handler(handler: object) -> bool:
+    if not isinstance(handler, dict):
+        return False
+    args = handler.get("args")
+    return (
+        handler.get("type") == "command"
+        and isinstance(args, list)
+        and bool(args)
+        and args[0] == "claude-hook"
+    )
 
 
 def adapter_response_matches_request(
@@ -948,6 +1308,58 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Return an error on non-interaction hook delivery failures instead of failing open",
     )
+
+    claude_hooks_config = subparsers.add_parser(
+        "claude-hooks-config",
+        help="Generate or merge a Claude Code settings fragment for AgentBridge hooks",
+    )
+    add_auth_arguments(claude_hooks_config)
+    claude_hooks_config.add_argument(
+        "--hook-command",
+        default="agentbridge-adapter-client",
+        help="Executable to use in Claude Code command-hook exec form",
+    )
+    claude_hooks_config.add_argument("--schema-version")
+    claude_hooks_config.add_argument("--trace-id", default="claude-hook-adapter")
+    claude_hooks_config.add_argument("--wait-timeout-seconds", type=float, default=300.0)
+    claude_hooks_config.add_argument("--poll-interval-seconds", type=float, default=1.0)
+    claude_hooks_config.add_argument(
+        "--hook-timeout-seconds",
+        type=float,
+        help="Override generated Claude hook handler timeout for every event",
+    )
+    claude_hooks_config.add_argument(
+        "--event",
+        action="append",
+        dest="events",
+        help="Claude hook event to configure; defaults to AgentBridge-supported v1 events",
+    )
+    claude_hooks_config.add_argument(
+        "--tool-matcher",
+        default="*",
+        help="Matcher for Claude tool events such as PreToolUse and PermissionRequest",
+    )
+    claude_hooks_config.add_argument(
+        "--file-watch",
+        action="append",
+        dest="file_watch_patterns",
+        help="FileChanged matcher to include; can be passed more than once",
+    )
+    claude_hooks_config.add_argument(
+        "--strict",
+        action="store_true",
+        help="Generate hook command args that fail closed for observer delivery errors",
+    )
+    claude_hooks_config.add_argument(
+        "--include-secret-values",
+        action="store_true",
+        help="Allow direct --api-token/--device-key values to be embedded in settings JSON",
+    )
+    claude_hooks_config.add_argument(
+        "--write-file",
+        type=Path,
+        help="Merge the generated hooks into a Claude settings JSON file",
+    )
     return parser
 
 
@@ -985,6 +1397,35 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(stdout_json, ensure_ascii=False, sort_keys=True))
             else:
                 print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.command == "claude-hooks-config":
+            fragment = claude_hook_settings_fragment(
+                hook_command=args.hook_command,
+                api_url=args.api_url,
+                session_id=args.session_id,
+                api_token=args.api_token,
+                api_token_file=args.api_token_file,
+                device_id=args.device_id,
+                device_key=args.device_key,
+                device_key_file=args.device_key_file,
+                schema_version=args.schema_version,
+                trace_id=args.trace_id,
+                timeout_seconds=args.timeout_seconds,
+                wait_timeout_seconds=args.wait_timeout_seconds,
+                poll_interval_seconds=args.poll_interval_seconds,
+                hook_timeout_seconds=args.hook_timeout_seconds,
+                events=args.events,
+                tool_matcher=args.tool_matcher,
+                file_watch_patterns=args.file_watch_patterns,
+                strict=args.strict,
+                include_secret_values=args.include_secret_values,
+            )
+            payload: Mapping[str, object]
+            if args.write_file is not None:
+                payload = write_claude_hook_settings_file(args.write_file, fragment)
+            else:
+                payload = fragment
+            print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
             return 0
         if args.command == "claude-hook":
             hook_payload = load_hook_payload_from_args(args)
