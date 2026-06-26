@@ -1042,9 +1042,9 @@ export into a stable section-scoped artifact name with the same digest-backed ma
 reference, and rejects mismatched design sections unless `--allow-section-mismatch` is
 supplied; after all
 sections are signed off, `agentbridge-acceptance bundle` creates a portable ZIP with the
-manifest, bundle index, and verified artifact files, and `agentbridge-acceptance
-verify-bundle` can validate the ZIP offline during release review while recomputing and
-checking artifact/checklist summary counts. Set
+manifest, bundle index, and verified artifact files without embedding the local artifact
+root path, and `agentbridge-acceptance verify-bundle` can validate the ZIP offline during
+release review while recomputing and checking artifact/checklist summary counts. Set
 `AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE` to make `/api/v1/readiness` require that the same
 bundle validates as portable release evidence, matches the configured acceptance
 manifest hash, and exposes the bundle summary counts in the readiness check evidence.

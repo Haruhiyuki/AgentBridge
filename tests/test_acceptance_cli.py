@@ -588,6 +588,7 @@ def test_acceptance_cli_bundle_creates_portable_verified_zip(tmp_path, capsys):
         bundled_native = bundle.read("artifacts/native_session/34.1.json")
 
     assert bundle_index["schema_version"] == ACCEPTANCE_BUNDLE_SCHEMA_VERSION
+    assert "artifact_root" not in bundle_index
     assert bundle_index["summary"]["ready"] is True
     assert len(bundle_index["artifacts"]) == 8
     assert manifest_payload["sections"]["34.1"]["status"] == "passed"

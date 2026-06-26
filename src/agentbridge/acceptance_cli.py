@@ -972,7 +972,6 @@ def bundle_manifest(args: argparse.Namespace) -> int:
         "schema_version": ACCEPTANCE_BUNDLE_SCHEMA_VERSION,
         "manifest": "acceptance-evidence.json",
         "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
-        "artifact_root": str(artifact_root),
         "summary": summary,
         "artifacts": [
             {
