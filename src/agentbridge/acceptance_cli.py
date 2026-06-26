@@ -1262,6 +1262,10 @@ def verify_acceptance_bundle_artifacts(
         raw_path = raw_artifact.get("path")
         raw_archive_path = raw_artifact.get("archive_path")
         raw_sha256 = raw_artifact.get("sha256")
+        raw_section = raw_artifact.get("section")
+        section = raw_section if isinstance(raw_section, str) else ""
+        if section not in ACCEPTANCE_SECTIONS:
+            errors.append(f"artifact[{index}]_section_invalid")
         if not isinstance(raw_path, str) or not raw_path.strip():
             errors.append(f"artifact[{index}]_path_missing")
             continue
@@ -1294,6 +1298,7 @@ def verify_acceptance_bundle_artifacts(
             continue
         artifact_index[raw_path] = {
             "archive_path": raw_archive_path,
+            "section": section,
             "sha256": actual_sha256,
         }
     return artifact_index
@@ -1311,6 +1316,7 @@ def verify_acceptance_bundle_manifest(
         return False
     ready = True
     referenced_paths: set[str] = set()
+    referenced_sections_by_path: dict[str, set[str]] = {}
     for section_id in ACCEPTANCE_SECTIONS:
         section = sections.get(section_id)
         if not isinstance(section, dict):
@@ -1341,6 +1347,7 @@ def verify_acceptance_bundle_manifest(
                     errors.append(f"section_{section_id}_artifact_sha256_mismatch")
                     continue
                 referenced_paths.add(artifact_path)
+                referenced_sections_by_path.setdefault(artifact_path, set()).add(section_id)
                 artifact_count += 1
         elif raw_artifacts is not None:
             errors.append(f"section_{section_id}_artifacts_must_be_list")
@@ -1354,6 +1361,14 @@ def verify_acceptance_bundle_manifest(
     for artifact_path in artifact_index:
         if artifact_path not in referenced_paths:
             errors.append(f"bundle_artifact_unreferenced:{artifact_path}")
+            continue
+        artifact_section = artifact_index[artifact_path].get("section")
+        referenced_sections = referenced_sections_by_path.get(artifact_path, set())
+        if (
+            artifact_section in ACCEPTANCE_SECTIONS
+            and artifact_section not in referenced_sections
+        ):
+            errors.append(f"bundle_artifact_section_mismatch:{artifact_path}")
     return ready
 
 

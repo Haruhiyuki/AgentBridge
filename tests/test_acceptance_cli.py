@@ -731,6 +731,75 @@ def test_acceptance_cli_verify_bundle_rejects_unindexed_zip_entry(tmp_path, caps
     assert "error=unexpected_bundle_entry:notes/local-paths.txt" in output
 
 
+def test_acceptance_cli_verify_bundle_rejects_artifact_section_mismatch(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    bundle_path = tmp_path / "acceptance-bundle.zip"
+    tampered_bundle_path = tmp_path / "acceptance-bundle-section-tampered.zip"
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+    for section in ACCEPTANCE_TEST_SECTIONS:
+        source = tmp_path / f"{section}.json"
+        source.write_text(f'{{"section":"{section}"}}', encoding="utf-8")
+        assert (
+            main(
+                [
+                    "attach-artifact",
+                    str(manifest),
+                    section,
+                    str(source),
+                    "--artifact-root",
+                    str(artifact_root),
+                    "--status",
+                    "passed",
+                ]
+            )
+            == 0
+        )
+        mark_section_checklist_passed(manifest, section)
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "bundle",
+                str(manifest),
+                str(bundle_path),
+                "--artifact-root",
+                str(artifact_root),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    with (
+        zipfile.ZipFile(bundle_path) as source_bundle,
+        zipfile.ZipFile(
+            tampered_bundle_path,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as target_bundle,
+    ):
+        for entry in source_bundle.infolist():
+            entry_bytes = source_bundle.read(entry.filename)
+            if entry.filename == "acceptance-bundle.json":
+                bundle_index = json.loads(entry_bytes)
+                for artifact in bundle_index["artifacts"]:
+                    if artifact["section"] == "34.1":
+                        artifact["section"] = "34.2"
+                        break
+                entry_bytes = (
+                    json.dumps(bundle_index, ensure_ascii=False, sort_keys=True) + "\n"
+                ).encode("utf-8")
+            target_bundle.writestr(entry.filename, entry_bytes)
+
+    result = main(["verify-bundle", str(tampered_bundle_path)])
+    output = capsys.readouterr().out
+
+    assert result == ACCEPTANCE_EXIT_INVALID
+    assert "valid=false ready=false artifacts=8 errors=1" in output
+    assert "error=bundle_artifact_section_mismatch:native_session/34.1.json" in output
+
+
 def test_acceptance_cli_bundle_refuses_incomplete_evidence_by_default(tmp_path, capsys):
     manifest = tmp_path / "acceptance-evidence.json"
     artifact_root = tmp_path / "artifacts"
