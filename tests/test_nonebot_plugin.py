@@ -8,6 +8,7 @@ from agentbridge.domain import Actor, InteractionStatus, InteractionType, Visibi
 from agentbridge.nonebot_plugin import (
     NoneBotAgentBridgePlugin,
     nonebot_event_to_onebot_event,
+    register_nonebot_command_registration,
     register_nonebot_matcher,
 )
 
@@ -266,6 +267,87 @@ def test_nonebot_plugin_records_command_registration_results():
         ),
     )
     assert len(events) == 1
+
+
+def test_nonebot_plugin_registers_command_manifest_on_startup():
+    class FakeDriver:
+        def __init__(self) -> None:
+            self.startup_handlers = []
+
+        def on_startup(self):
+            def decorator(handler):
+                self.startup_handlers.append(handler)
+                return handler
+
+            return decorator
+
+    driver = FakeDriver()
+    control = ControlPlane()
+    captured = {}
+
+    async def registrar(manifest):
+        captured["manifest"] = manifest
+        return {
+            "registration_id": "startup-commands-v1",
+            "commands": manifest["native_entries"][:2],
+            "payload": {"provider": "nonebot-startup"},
+        }
+
+    plugin = register_nonebot_command_registration(
+        driver,
+        registrar,
+        control=control,
+        bot_instance_id="nonebot-startup",
+        scope="group",
+        channel_id="10001",
+    )
+    result = asyncio.run(driver.startup_handlers[0]())
+
+    assert isinstance(plugin, NoneBotAgentBridgePlugin)
+    assert len(driver.startup_handlers) == 1
+    assert captured["manifest"]["schema_version"] == (
+        "bot.command_registration_manifest.v1"
+    )
+    assert result["event"]["payload"]["status"] == "succeeded"
+    assert result["event"]["payload"]["registration_id"] == "startup-commands-v1"
+    assert result["event"]["payload"]["command_count"] == 2
+    assert result["event"]["payload"]["payload"] == {"provider": "nonebot-startup"}
+
+
+def test_nonebot_plugin_records_failed_startup_command_registration():
+    control = ControlPlane()
+    plugin = NoneBotAgentBridgePlugin(
+        control=control,
+        bot_instance_id="nonebot-failing",
+    )
+
+    def registrar(_manifest):
+        raise RuntimeError("registration failed")
+
+    handler = plugin.as_command_registration_startup_handler(
+        registrar,
+        scope="global",
+        registration_id="failing-commands-v1",
+    )
+
+    try:
+        asyncio.run(handler())
+    except RuntimeError as exc:
+        assert str(exc) == "registration failed"
+    else:
+        raise AssertionError("expected startup registration failure")
+
+    events = control.repository.list_semantic_events(
+        event_type="bot.command_registration.result",
+        trace_id=(
+            "bot-command-registration:"
+            "onebot.v11:nonebot-failing:global:global:failing-commands-v1"
+        ),
+    )
+    assert len(events) == 1
+    assert events[0].payload["status"] == "failed"
+    assert events[0].payload["error"] == "registration failed"
+    assert events[0].payload["payload"] == {"exception_type": "RuntimeError"}
 
 
 def test_nonebot_matcher_registration_requires_handle_decorator():

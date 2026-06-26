@@ -710,7 +710,10 @@ For NoneBot deployments, register a matcher from application setup code:
 
 ```python
 from agentbridge.control_plane import ControlPlane
-from agentbridge.nonebot_plugin import register_nonebot_matcher
+from agentbridge.nonebot_plugin import (
+    register_nonebot_command_registration,
+    register_nonebot_matcher,
+)
 
 control = ControlPlane()
 agentbridge = register_nonebot_matcher(
@@ -718,6 +721,14 @@ agentbridge = register_nonebot_matcher(
     control=control,
     bot_instance_id="nonebot-main",
     default_roles={"operator"},
+)
+
+register_nonebot_command_registration(
+    driver,
+    lambda manifest: native_command_registrar(manifest),
+    control=control,
+    bot_instance_id="nonebot-main",
+    registration_id="commands-v1",
 )
 ```
 
@@ -727,8 +738,10 @@ still exposes `as_async_handler()` and `register_matcher()`. It accepts
 NoneBot/OneBot-style event objects, executes `/agent` and `/ab` text commands, and
 maps callback/action payloads containing a descriptor command through the same audited
 command path. `command_registration_manifest()` exposes the same Bot Gateway command
-manifest for NoneBot startup code, and `record_command_registration_result()` records
-native menu/command registration outcomes as `bot.command_registration.result` events.
+manifest for NoneBot startup code, `register_command_registration_startup()` wires a
+`driver.on_startup()` hook around a sync or async registrar, and
+`record_command_registration_result()` records native menu/command registration outcomes
+as `bot.command_registration.result` events.
 
 ## Interactions And Approvals
 

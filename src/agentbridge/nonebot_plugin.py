@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from datetime import datetime
 from typing import Any
@@ -81,6 +82,87 @@ class NoneBotAgentBridgePlugin:
     def register_matcher(self, matcher: Any) -> Any:
         return register_nonebot_handler(matcher, self.as_async_handler())
 
+    def register_command_registration_startup(
+        self,
+        driver: Any,
+        registrar: Any,
+        *,
+        platform: str = "onebot.v11",
+        scope: str | None = None,
+        channel_id: str | None = None,
+        thread_id: str | None = None,
+        registration_id: str | None = None,
+    ) -> Any:
+        return register_nonebot_startup_handler(
+            driver,
+            self.as_command_registration_startup_handler(
+                registrar,
+                platform=platform,
+                scope=scope,
+                channel_id=channel_id,
+                thread_id=thread_id,
+                registration_id=registration_id,
+            ),
+        )
+
+    def as_command_registration_startup_handler(
+        self,
+        registrar: Any,
+        *,
+        platform: str = "onebot.v11",
+        scope: str | None = None,
+        channel_id: str | None = None,
+        thread_id: str | None = None,
+        registration_id: str | None = None,
+    ):
+        async def handler() -> dict[str, Any]:
+            manifest = self.command_registration_manifest(platform=platform)
+            default_commands = command_entries_from_manifest(manifest)
+            try:
+                result = await call_command_registration_registrar(
+                    registrar,
+                    manifest,
+                )
+            except Exception as exc:
+                self.record_command_registration_result(
+                    status="failed",
+                    platform=platform,
+                    scope=scope,
+                    channel_id=channel_id,
+                    thread_id=thread_id,
+                    registration_id=registration_id,
+                    commands=default_commands,
+                    error=str(exc),
+                    payload={"exception_type": type(exc).__name__},
+                )
+                raise
+
+            normalized = normalize_command_registration_result(
+                result,
+                default_commands=default_commands,
+            )
+            return self.record_command_registration_result(
+                status=str(normalized["status"]),
+                platform=platform,
+                scope=string_or_default(normalized.get("scope"), scope),
+                channel_id=string_or_default(normalized.get("channel_id"), channel_id),
+                thread_id=string_or_default(normalized.get("thread_id"), thread_id),
+                registration_id=string_or_default(
+                    normalized.get("registration_id"),
+                    registration_id,
+                ),
+                commands=normalized["commands"],
+                error=string_or_default(normalized.get("error"), None),
+                payload=normalized["payload"],
+                idempotency_key=string_or_default(
+                    normalized.get("idempotency_key"),
+                    None,
+                ),
+                trace_id=string_or_default(normalized.get("trace_id"), None),
+            )
+
+        return handler
+
     def command_registration_manifest(
         self,
         *,
@@ -151,6 +233,40 @@ def register_nonebot_matcher(
     return plugin
 
 
+def register_nonebot_command_registration(
+    driver: Any,
+    registrar: Any,
+    *,
+    control: ControlPlane,
+    command_service: CommandService | None = None,
+    bot_instance_id: str = "nonebot",
+    default_roles: set[str] | None = None,
+    command_prefixes: tuple[str, ...] = ("/agent", "/ab"),
+    platform: str = "onebot.v11",
+    scope: str | None = None,
+    channel_id: str | None = None,
+    thread_id: str | None = None,
+    registration_id: str | None = None,
+) -> NoneBotAgentBridgePlugin:
+    plugin = NoneBotAgentBridgePlugin(
+        control=control,
+        command_service=command_service,
+        bot_instance_id=bot_instance_id,
+        default_roles=default_roles,
+        command_prefixes=command_prefixes,
+    )
+    plugin.register_command_registration_startup(
+        driver,
+        registrar,
+        platform=platform,
+        scope=scope,
+        channel_id=channel_id,
+        thread_id=thread_id,
+        registration_id=registration_id,
+    )
+    return plugin
+
+
 def register_nonebot_handler(matcher: Any, handler: Any) -> Any:
     handle = getattr(matcher, "handle", None)
     if not callable(handle):
@@ -159,6 +275,77 @@ def register_nonebot_handler(matcher: Any, handler: Any) -> Any:
     if not callable(decorator):
         raise TypeError("NoneBot matcher handle() must return a decorator")
     return decorator(handler)
+
+
+def register_nonebot_startup_handler(driver: Any, handler: Any) -> Any:
+    on_startup = getattr(driver, "on_startup", None)
+    if not callable(on_startup):
+        raise TypeError("NoneBot driver must expose a callable on_startup() decorator")
+    decorator = on_startup()
+    if not callable(decorator):
+        raise TypeError("NoneBot driver on_startup() must return a decorator")
+    return decorator(handler)
+
+
+async def call_command_registration_registrar(
+    registrar: Any,
+    manifest: dict[str, object],
+) -> Any:
+    if not callable(registrar):
+        raise TypeError("NoneBot command registrar must be callable")
+    result = registrar(manifest)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+def normalize_command_registration_result(
+    result: Any,
+    *,
+    default_commands: list[dict[str, object]],
+) -> dict[str, Any]:
+    if result is None:
+        return {
+            "status": "succeeded",
+            "commands": default_commands,
+            "payload": {},
+        }
+    if isinstance(result, dict):
+        normalized = dict(result)
+        normalized.setdefault("status", "succeeded")
+        normalized["commands"] = command_entries_from_value(
+            normalized.get("commands"),
+            default_commands=default_commands,
+        )
+        payload = normalized.get("payload")
+        normalized["payload"] = payload if isinstance(payload, dict) else {}
+        return normalized
+    return {
+        "status": "succeeded",
+        "commands": default_commands,
+        "payload": {"result": str(result)},
+    }
+
+
+def command_entries_from_manifest(manifest: dict[str, object]) -> list[dict[str, object]]:
+    return command_entries_from_value(manifest.get("native_entries"), default_commands=[])
+
+
+def command_entries_from_value(
+    value: Any,
+    *,
+    default_commands: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        return default_commands
+    commands = [dict(item) for item in value if isinstance(item, dict)]
+    return commands or default_commands
+
+
+def string_or_default(value: Any, default: str | None) -> str | None:
+    if value is None:
+        return default
+    return str(value)
 
 
 def nonebot_event_to_onebot_event(event: Any) -> dict[str, Any]:
