@@ -241,13 +241,14 @@ def bot_platform_capability(
     platform: BotPlatform,
     *,
     max_text_length: int,
+    edit_message: bool | None = None,
 ) -> BotPlatformCapability:
     if platform == BotPlatform.ONEBOT_V11:
         return BotPlatformCapability(
             platform=platform,
             markdown=False,
             code_block=True,
-            edit_message=False,
+            edit_message=bool(edit_message),
             delete_message=True,
             buttons=False,
             select_menu=False,
@@ -263,7 +264,7 @@ def bot_platform_capability(
         platform=platform,
         markdown=False,
         code_block=True,
-        edit_message=True,
+        edit_message=True if edit_message is None else edit_message,
         delete_message=True,
         buttons=False,
         select_menu=False,
@@ -303,9 +304,20 @@ class BotGatewayService:
             bot_platform_capability(
                 item,
                 max_text_length=self.renderer.max_message_chars,
+                edit_message=self._transport_supports_edit(item),
             )
             for item in platforms
         ]
+
+    def _transport_supports_edit(self, platform: BotPlatform) -> bool | None:
+        if platform != BotPlatform.ONEBOT_V11:
+            return None
+        supports_edit_text = getattr(self.transport, "supports_edit_text", None)
+        if isinstance(supports_edit_text, bool):
+            return supports_edit_text
+        if callable(supports_edit_text):
+            return bool(supports_edit_text())
+        return False
 
     def deliver_session_events(
         self,

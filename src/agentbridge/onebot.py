@@ -90,6 +90,8 @@ class OneBotV11HTTPTransport:
     endpoint: str
     access_token: str | None = None
     poster: HTTPPoster | None = None
+    edit_action: str | None = None
+    edit_message_field: str = "message"
 
     def send_text(
         self,
@@ -130,18 +132,38 @@ class OneBotV11HTTPTransport:
                 f"OneBot transport 不支持平台：{platform.value}",
                 next_step="请使用 onebot.v11 平台或选择其他 Bot transport。",
             )
-        raise AgentBridgeError(
-            ErrorCode.PLATFORM_CAPABILITY_MISSING,
-            "OneBot V11 不支持标准原生消息编辑。",
-            next_step="请使用平台特定扩展 transport，或发送新消息并删除旧消息。",
-            details={
-                "chat_context_id": chat_context_id,
-                "chat_space_id": chat_context.chat_space_id,
-                "platform_message_id": platform_message_id,
-                "idempotency_key": idempotency_key,
-                "text": text,
-            },
+        if not self.supports_edit_text:
+            raise AgentBridgeError(
+                ErrorCode.PLATFORM_CAPABILITY_MISSING,
+                "OneBot V11 不支持标准原生消息编辑。",
+                next_step="请配置平台特定编辑扩展 action，或发送新消息并删除旧消息。",
+                details={
+                    "chat_context_id": chat_context_id,
+                    "chat_space_id": chat_context.chat_space_id,
+                    "platform_message_id": platform_message_id,
+                    "idempotency_key": idempotency_key,
+                    "text": text,
+                },
+            )
+
+        response = (self.poster or UrllibHTTPPoster()).post_json(
+            self._url((self.edit_action or "").strip()),
+            onebot_edit_payload(
+                platform_message_id,
+                text,
+                message_field=(self.edit_message_field or "message").strip()
+                or "message",
+            ),
+            self._headers(idempotency_key),
         )
+        ensure_onebot_success(response, action_label="编辑")
+        return {
+            "platform_message_id": platform_message_id,
+            "chat_context_id": chat_context_id,
+            "chat_space_id": chat_context.chat_space_id,
+            "response": response,
+            "edit_action": self.edit_action,
+        }
 
     def delete_message(
         self,
@@ -173,7 +195,8 @@ class OneBotV11HTTPTransport:
         }
 
     def _url(self, action: str) -> str:
-        return f"{self.endpoint.rstrip('/')}/{action}"
+        normalized_action = action.strip().lstrip("/")
+        return f"{self.endpoint.rstrip('/')}/{normalized_action}"
 
     def _headers(self, idempotency_key: str) -> dict[str, str]:
         headers = {"x-agentbridge-idempotency-key": idempotency_key}
@@ -181,11 +204,27 @@ class OneBotV11HTTPTransport:
             headers["authorization"] = f"Bearer {self.access_token}"
         return headers
 
+    @property
+    def supports_edit_text(self) -> bool:
+        return bool(self.edit_action and self.edit_action.strip())
+
 
 def onebot_text_payload(chat_context: ChatContext, text: str) -> tuple[str, dict[str, Any]]:
     if chat_context.user_id:
         return "send_private_msg", {"user_id": chat_context.user_id, "message": text}
     return "send_group_msg", {"group_id": chat_context.chat_space_id, "message": text}
+
+
+def onebot_edit_payload(
+    platform_message_id: str,
+    text: str,
+    *,
+    message_field: str = "message",
+) -> dict[str, Any]:
+    return {
+        "message_id": onebot_raw_message_id(platform_message_id),
+        message_field: text,
+    }
 
 
 def onebot_message_id(response: dict[str, Any]) -> str:

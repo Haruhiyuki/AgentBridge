@@ -22,7 +22,12 @@ from agentbridge.domain import (
     InteractionType,
     Visibility,
 )
-from agentbridge.onebot import OneBotInboundAdapter, OneBotV11HTTPTransport, onebot_text_payload
+from agentbridge.onebot import (
+    OneBotInboundAdapter,
+    OneBotV11HTTPTransport,
+    onebot_edit_payload,
+    onebot_text_payload,
+)
 
 
 @dataclass
@@ -165,6 +170,45 @@ def test_onebot_transport_deletes_message_with_auth_and_idempotency():
     ]
 
 
+def test_onebot_transport_edits_message_with_configured_extension():
+    control = ControlPlane()
+    context = control.get_or_create_chat_context(
+        bot_instance_id="bot",
+        platform="onebot.v11",
+        chat_space_id="10001",
+    )
+    poster = FakePoster(response={"retcode": 0, "data": {}})
+    transport = OneBotV11HTTPTransport(
+        endpoint="http://127.0.0.1:5700/",
+        access_token="token",
+        poster=poster,
+        edit_action="set_msg",
+        edit_message_field="content",
+    )
+
+    payload = transport.edit_text(
+        platform=BotPlatform.ONEBOT_V11,
+        chat_context_id=context.id,
+        chat_context=context,
+        platform_message_id="onebot:42",
+        text="edited",
+        idempotency_key="idem-edit",
+    )
+
+    assert payload["platform_message_id"] == "onebot:42"
+    assert payload["edit_action"] == "set_msg"
+    assert poster.calls == [
+        {
+            "url": "http://127.0.0.1:5700/set_msg",
+            "payload": {"message_id": 42, "content": "edited"},
+            "headers": {
+                "authorization": "Bearer token",
+                "x-agentbridge-idempotency-key": "idem-edit",
+            },
+        }
+    ]
+
+
 def test_onebot_transport_reports_edit_as_unsupported():
     control = ControlPlane()
     context = control.get_or_create_chat_context(
@@ -185,6 +229,50 @@ def test_onebot_transport_reports_edit_as_unsupported():
         )
 
     assert exc_info.value.code == ErrorCode.PLATFORM_CAPABILITY_MISSING
+
+
+def test_onebot_edit_payload_uses_raw_message_ids():
+    assert onebot_edit_payload("onebot:42", "edited") == {
+        "message_id": 42,
+        "message": "edited",
+    }
+    assert onebot_edit_payload(
+        "platform-native-id",
+        "edited",
+        message_field="content",
+    ) == {
+        "message_id": "platform-native-id",
+        "content": "edited",
+    }
+
+
+def test_bot_gateway_capabilities_reflect_onebot_edit_extension():
+    transport = OneBotV11HTTPTransport(
+        endpoint="http://127.0.0.1:5700",
+        edit_action="set_msg",
+    )
+    gateway = BotGatewayService(ControlPlane(), transport=transport)
+
+    capability = gateway.describe_capabilities(BotPlatform.ONEBOT_V11)[0].to_api_dict()
+
+    assert capability["editMessage"] is True
+    assert capability["deleteMessage"] is True
+
+
+def test_api_onebot_capabilities_reflect_edit_extension_environment(monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_BOT_TRANSPORT", "onebot.v11")
+    monkeypatch.setenv("AGENTBRIDGE_ONEBOT_HTTP_URL", "http://127.0.0.1:5700")
+    monkeypatch.setenv("AGENTBRIDGE_ONEBOT_EDIT_ACTION", "set_msg")
+    monkeypatch.setenv("AGENTBRIDGE_ONEBOT_EDIT_MESSAGE_FIELD", "content")
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/v1/bot-gateway/capabilities",
+        params={"platform": "onebot.v11"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["capabilities"][0]["editMessage"] is True
 
 
 def test_onebot_transport_rejects_failed_retcode():
@@ -264,6 +352,35 @@ def test_bot_gateway_can_deliver_through_onebot_transport(tmp_path):
     assert records[0].platform_message_id == "onebot:42"
     assert poster.calls[0]["url"] == "http://127.0.0.1:5700/send_group_msg"
     assert "OneBot Delivery" in poster.calls[0]["payload"]["message"]
+
+
+def test_bot_gateway_can_edit_through_onebot_extension_transport(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_event(control, tmp_path)
+    poster = FakePoster()
+    transport = OneBotV11HTTPTransport(
+        endpoint="http://127.0.0.1:5700",
+        poster=poster,
+        edit_action="/set_msg",
+    )
+    gateway = BotGatewayService(control, transport=transport)
+    delivered = gateway.deliver_session_events(
+        session_id=session_id,
+        chat_context_id=context.id,
+    )
+
+    edited = gateway.edit_delivery(
+        idempotency_key=delivered[0].idempotency_key,
+        text="edited onebot message",
+    )
+
+    assert edited.platform_state == "edited"
+    assert edited.text == "edited onebot message"
+    assert poster.calls[1]["url"] == "http://127.0.0.1:5700/set_msg"
+    assert poster.calls[1]["payload"] == {
+        "message_id": 42,
+        "message": "edited onebot message",
+    }
 
 
 def test_onebot_inbound_adapter_maps_group_message_to_command():

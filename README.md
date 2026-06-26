@@ -598,7 +598,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/deliveries/delete \
   -d '{"idempotency_key":"<message-key>"}'
 ```
 
-The in-memory transport supports edit/delete for contract tests. OneBot V11 supports native `delete_msg`; standard OneBot V11 message editing is not available and returns a capability error unless a platform-specific transport adds that extension. Successful edit/delete result updates also emit `bot.render.update` or `bot.render.delete` semantic events for Bot Gateway WebSocket subscribers.
+The in-memory transport supports edit/delete for contract tests. OneBot V11 supports native `delete_msg`; standard OneBot V11 message editing is not available, so edit requests return a capability error unless `AGENTBRIDGE_ONEBOT_EDIT_ACTION` is configured for a platform-specific extension action. When that extension is set, AgentBridge posts `message_id` plus the updated text field, defaulting to `message` or `AGENTBRIDGE_ONEBOT_EDIT_MESSAGE_FIELD`. Successful edit/delete result updates also emit `bot.render.update` or `bot.render.delete` semantic events for Bot Gateway WebSocket subscribers.
 
 Bot clients and platform adapters can discover the conservative standard capability contract before choosing render or mutation behavior:
 
@@ -645,6 +645,9 @@ To send through a OneBot V11 HTTP endpoint:
 export AGENTBRIDGE_BOT_TRANSPORT=onebot.v11
 export AGENTBRIDGE_ONEBOT_HTTP_URL=http://127.0.0.1:5700
 export AGENTBRIDGE_ONEBOT_ACCESS_TOKEN=...
+# Optional platform-specific message edit extension:
+export AGENTBRIDGE_ONEBOT_EDIT_ACTION=set_msg
+export AGENTBRIDGE_ONEBOT_EDIT_MESSAGE_FIELD=message
 ```
 
 The OneBot transport maps chat contexts with `user_id` to `send_private_msg`; other contexts use `send_group_msg` with `chat_space_id` as `group_id`.

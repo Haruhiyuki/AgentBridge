@@ -4808,9 +4808,16 @@ def create_bot_transport_from_env():
         endpoint = os.environ.get("AGENTBRIDGE_ONEBOT_HTTP_URL")
         if not endpoint:
             raise RuntimeError("AGENTBRIDGE_ONEBOT_HTTP_URL is required for onebot.v11 transport")
+        edit_action = os.environ.get("AGENTBRIDGE_ONEBOT_EDIT_ACTION", "").strip()
+        edit_message_field = os.environ.get(
+            "AGENTBRIDGE_ONEBOT_EDIT_MESSAGE_FIELD",
+            "message",
+        ).strip()
         return OneBotV11HTTPTransport(
             endpoint=endpoint,
             access_token=os.environ.get("AGENTBRIDGE_ONEBOT_ACCESS_TOKEN"),
+            edit_action=edit_action or None,
+            edit_message_field=edit_message_field or "message",
         )
     return InMemoryBotTransport()
 
