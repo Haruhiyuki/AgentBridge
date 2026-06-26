@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime
 from typing import Any
 
+from agentbridge.bot_command_registration import (
+    bot_command_registration_manifest,
+    emit_bot_command_registration_result,
+)
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
 from agentbridge.onebot import (
@@ -75,6 +80,55 @@ class NoneBotAgentBridgePlugin:
 
     def register_matcher(self, matcher: Any) -> Any:
         return register_nonebot_handler(matcher, self.as_async_handler())
+
+    def command_registration_manifest(
+        self,
+        *,
+        platform: str = "onebot.v11",
+    ) -> dict[str, object]:
+        return bot_command_registration_manifest(platform=platform)
+
+    def record_command_registration_result(
+        self,
+        *,
+        status: str,
+        platform: str = "onebot.v11",
+        scope: str | None = None,
+        channel_id: str | None = None,
+        thread_id: str | None = None,
+        registration_id: str | None = None,
+        commands: list[dict[str, object]] | None = None,
+        error: str | None = None,
+        payload: dict[str, object] | None = None,
+        occurred_at: datetime | None = None,
+        idempotency_key: str | None = None,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        command_items = commands
+        if command_items is None:
+            manifest = self.command_registration_manifest(platform=platform)
+            native_entries = manifest.get("native_entries", [])
+            command_items = [
+                dict(item) for item in native_entries if isinstance(item, dict)
+            ]
+        event = emit_bot_command_registration_result(
+            self.control,
+            platform=platform,
+            status=status,
+            bot_instance_id=self.adapter.bot_instance_id,
+            adapter="nonebot",
+            scope=scope,
+            channel_id=channel_id,
+            thread_id=thread_id,
+            registration_id=registration_id,
+            commands=command_items,
+            error=error,
+            payload=payload,
+            occurred_at=occurred_at,
+            idempotency_key=idempotency_key,
+            trace_id=trace_id,
+        )
+        return {"event": event.model_dump(mode="json")}
 
 
 def register_nonebot_matcher(

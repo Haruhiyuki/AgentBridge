@@ -112,6 +112,7 @@ Implemented in this slice:
 - OneBot inbound API through `POST /api/v1/onebot/events`, converting `/agent` and `/ab` messages or action callbacks into the existing command execution flow and requiring `onebot_event_ingest` for managed device credentials.
 - Optional NoneBot wrapper module that normalizes NoneBot/OneBot-style message events into the existing command execution flow without adding a hard NoneBot dependency.
 - Dependency-free NoneBot matcher registration helpers that attach the AgentBridge async handler through matcher `handle()` decorators.
+- NoneBot command-registration helpers that expose the shared Bot Gateway command manifest and record native menu/command registration outcomes as idempotent `bot.command_registration.result` semantic events without requiring a hard NoneBot runtime dependency.
 - NoneBot callback/action payloads containing render action descriptor commands can execute through the same audited `/agent` command path using the shared OneBot callback payload parser.
 - Bot delivery failure records with attempt count, last error, next retry time, and exponential backoff.
 - Retry API through `POST /api/v1/bot-gateway/retry-failed-deliveries`.
@@ -227,7 +228,7 @@ Not implemented yet:
 - Rendering is split into platform-neutral documents and platform renderers. The first renderer intentionally targets text fallback so unsupported Bot platforms still receive coherent output.
 - Bot delivery idempotency is implemented before real platform integration so duplicate event replay cannot cause duplicate sends once a real transport is attached.
 - Bot delivery records are persisted separately from semantic events so replay, delivery retries, and platform message IDs can evolve without mutating event history.
-- OneBot outbound delivery is implemented as a transport contract first. The NoneBot wrapper is optional and dependency-free; matcher registration helpers cover the common `matcher.handle()` setup path, while full NoneBot integration still needs broader lifecycle hooks, richer message components, and adapter-specific delivery capabilities.
+- OneBot outbound delivery is implemented as a transport contract first. The NoneBot wrapper is optional and dependency-free; matcher registration helpers cover the common `matcher.handle()` setup path, and command-registration helpers expose the shared manifest/result protocol to startup code; full NoneBot integration still needs broader lifecycle hooks, richer message components, and adapter-specific delivery capabilities.
 - Delivery retry state is stored on delivery records, not events, so the immutable semantic event stream remains replayable while platform delivery can fail and recover independently.
 - The retry worker reuses the Bot Gateway retry path instead of writing records directly. This keeps manual retry, background retry, and future scheduler behavior consistent.
 - Platform rate-limit policies intentionally schedule unsent records as `retrying` instead of sleeping inside request handlers. This keeps API calls bounded and leaves actual waiting to the retry worker.

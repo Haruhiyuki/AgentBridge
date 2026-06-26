@@ -726,7 +726,9 @@ with a `handle()` decorator; if you need manual wiring, `NoneBotAgentBridgePlugi
 still exposes `as_async_handler()` and `register_matcher()`. It accepts
 NoneBot/OneBot-style event objects, executes `/agent` and `/ab` text commands, and
 maps callback/action payloads containing a descriptor command through the same audited
-command path.
+command path. `command_registration_manifest()` exposes the same Bot Gateway command
+manifest for NoneBot startup code, and `record_command_registration_result()` records
+native menu/command registration outcomes as `bot.command_registration.result` events.
 
 ## Interactions And Approvals
 

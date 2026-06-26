@@ -42,6 +42,10 @@ from agentbridge.agent_adapter_events import (
     normalize_agent_adapter_event,
     validate_agent_adapter_event_context,
 )
+from agentbridge.bot_command_registration import (
+    bot_command_registration_manifest,
+    emit_bot_command_registration_result,
+)
 from agentbridge.bot_gateway import (
     BotDeliveryRateLimiter,
     BotDeliveryRetryWorker,
@@ -2139,7 +2143,24 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         payload: BotCommandRegistrationResultRequest,
         control: ControlPlane = Depends(get_control),
     ):
-        return handle_bot_command_registration_result(payload, control=control)
+        event = emit_bot_command_registration_result(
+            control,
+            platform=payload.platform,
+            status=payload.status,
+            bot_instance_id=payload.bot_instance_id,
+            adapter=payload.adapter,
+            scope=payload.scope,
+            channel_id=payload.channel_id,
+            thread_id=payload.thread_id,
+            registration_id=payload.registration_id,
+            commands=payload.commands,
+            error=payload.error,
+            payload=payload.payload,
+            occurred_at=payload.occurred_at,
+            idempotency_key=payload.idempotency_key,
+            trace_id=payload.trace_id,
+        )
+        return {"event": event.model_dump(mode="json")}
 
     @app.post("/api/v1/bot-gateway/deliveries/edit")
     def edit_bot_delivery(
@@ -2876,13 +2897,6 @@ BOT_GATEWAY_EXECUTABLE_UPSTREAM_EVENT_TYPES = {
     "bot.modal.submitted",
 }
 
-BOT_COMMAND_REGISTRATION_RESULT_STATUSES = {
-    "succeeded",
-    "failed",
-    "partial",
-}
-
-
 def handle_bot_gateway_inbound_event(
     payload: BotGatewayInboundEventRequest,
     *,
@@ -2969,123 +2983,6 @@ def handle_bot_gateway_inbound_event(
         }
     )
     return response
-
-
-def handle_bot_command_registration_result(
-    payload: BotCommandRegistrationResultRequest,
-    *,
-    control: ControlPlane,
-) -> dict[str, object]:
-    status = normalized_bot_command_registration_status(payload.status)
-    occurred_at = payload.occurred_at or utc_now()
-    idempotency_key = payload.idempotency_key or bot_command_registration_idempotency_key(
-        payload
-    )
-    trace_id = payload.trace_id or idempotency_key
-    event = control.emit_event(
-        event_type="bot.command_registration.result",
-        source=SemanticEventSource.BOT_GATEWAY,
-        trace_id=trace_id,
-        payload={
-            "bot_instance_id": payload.bot_instance_id,
-            "adapter": payload.adapter,
-            "platform": payload.platform,
-            "scope": payload.scope,
-            "channel_id": payload.channel_id,
-            "thread_id": payload.thread_id,
-            "registration_id": payload.registration_id,
-            "status": status,
-            "command_count": len(payload.commands),
-            "commands": payload.commands,
-            "error": payload.error,
-            "payload": payload.payload,
-            "occurred_at": occurred_at.isoformat(),
-        },
-        idempotency_key=f"{idempotency_key}:bot.command_registration.result",
-    )
-    return {"event": event.model_dump(mode="json")}
-
-
-def bot_command_registration_manifest(platform: str | None = None) -> dict[str, object]:
-    registry = command_registry_payload()
-    specs = registry["specs"]
-    native_entries = [
-        {
-            "name": bot_native_command_name(str(spec["name"])),
-            "canonical_command": spec["name"],
-            "summary": spec["summary"],
-            "usage": spec["usage"],
-            "required_permission": spec["required_permission"],
-            "target_mode": spec["target_mode"],
-            "risk": spec["risk"],
-            "argument_schema": spec["argument_schema"],
-        }
-        for spec in specs
-    ]
-    normalized_platform = platform.strip() if platform and platform.strip() else None
-    return {
-        "schema_version": "bot.command_registration_manifest.v1",
-        "platform": normalized_platform,
-        "root_command": registry["root_command"],
-        "aliases": registry["aliases"],
-        "text_prefixes": registry["text_prefixes"],
-        "command_registry_schema_version": registry["schema_version"],
-        "command_specs": specs,
-        "native_entries": native_entries,
-    }
-
-
-def bot_native_command_name(canonical_command: str) -> str:
-    return canonical_command.replace(".", "-").replace("_", "-")
-
-
-def normalized_bot_command_registration_status(status: str) -> str:
-    normalized = status.strip().lower()
-    aliases = {
-        "success": "succeeded",
-        "ok": "succeeded",
-        "error": "failed",
-    }
-    normalized = aliases.get(normalized, normalized)
-    if normalized not in BOT_COMMAND_REGISTRATION_RESULT_STATUSES:
-        raise AgentBridgeError(
-            ErrorCode.COMMAND_ARGUMENT_INVALID,
-            "未知 Bot command registration result 状态。",
-            next_step="请使用 succeeded、failed 或 partial。",
-            status_code=400,
-            details={"status": status},
-        )
-    return normalized
-
-
-def bot_command_registration_idempotency_key(
-    payload: BotCommandRegistrationResultRequest,
-) -> str:
-    scope_key = bot_command_registration_scope_key(payload)
-    result_id = payload.registration_id or bot_command_registration_fingerprint(payload)
-    return (
-        "bot-command-registration:"
-        f"{payload.platform}:{payload.bot_instance_id}:{scope_key}:{result_id}"
-    )
-
-
-def bot_command_registration_scope_key(
-    payload: BotCommandRegistrationResultRequest,
-) -> str:
-    scope = payload.scope or "global"
-    scope_id = payload.channel_id or payload.thread_id or "global"
-    return f"{scope}:{scope_id}"
-
-
-def bot_command_registration_fingerprint(
-    payload: BotCommandRegistrationResultRequest,
-) -> str:
-    body = payload.model_dump(
-        mode="json",
-        exclude={"idempotency_key", "trace_id", "occurred_at"},
-    )
-    canonical = json.dumps(body, sort_keys=True, ensure_ascii=False)
-    return f"result:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
 
 
 def normalized_bot_gateway_upstream_event_type(event_type: str) -> str:

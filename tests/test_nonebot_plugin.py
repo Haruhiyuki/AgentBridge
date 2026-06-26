@@ -226,6 +226,48 @@ def test_nonebot_matcher_registration_helper_registers_async_handler():
     assert context.bot_instance_id == "nonebot-helper"
 
 
+def test_nonebot_plugin_records_command_registration_results():
+    control = ControlPlane()
+    plugin = NoneBotAgentBridgePlugin(
+        control=control,
+        bot_instance_id="nonebot-main",
+    )
+
+    manifest = plugin.command_registration_manifest()
+    result = plugin.record_command_registration_result(
+        status="ok",
+        scope="group",
+        channel_id="10001",
+        registration_id="nonebot-commands-v1",
+        payload={"provider": "alconna"},
+    )
+    repeated = plugin.record_command_registration_result(
+        status="ok",
+        scope="group",
+        channel_id="10001",
+        registration_id="nonebot-commands-v1",
+        payload={"provider": "alconna"},
+    )
+
+    assert manifest["schema_version"] == "bot.command_registration_manifest.v1"
+    assert result["event"]["id"] == repeated["event"]["id"]
+    assert result["event"]["type"] == "bot.command_registration.result"
+    assert result["event"]["payload"]["adapter"] == "nonebot"
+    assert result["event"]["payload"]["bot_instance_id"] == "nonebot-main"
+    assert result["event"]["payload"]["platform"] == "onebot.v11"
+    assert result["event"]["payload"]["status"] == "succeeded"
+    assert result["event"]["payload"]["command_count"] > 0
+    assert result["event"]["payload"]["payload"] == {"provider": "alconna"}
+    events = control.repository.list_semantic_events(
+        event_type="bot.command_registration.result",
+        trace_id=(
+            "bot-command-registration:"
+            "onebot.v11:nonebot-main:group:10001:nonebot-commands-v1"
+        ),
+    )
+    assert len(events) == 1
+
+
 def test_nonebot_matcher_registration_requires_handle_decorator():
     plugin = NoneBotAgentBridgePlugin(control=ControlPlane())
 
