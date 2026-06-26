@@ -12,12 +12,38 @@ The authoritative design input is `AgentBridge_项目总设计文档_v0.2_多项
 
 Current milestone: M0 backend foundation.
 
-Current delivery status for the first QQ bot trial:
+Current direction (2026-06-27): dropped the one-shot `codex exec` route in favor of the
+designed **persistent interactive session** model, with Claude and Codex both wired as
+first-class agents and a humane command layer for switching agents / sessions / projects.
+The unified execution model is **native TUI in a PTY** for both agents (so human takeover is
+identical), with Claude semantics from Claude Code Hooks and Codex turn-completion from a
+PTY-idle heuristic.
 
-- Local AgentBridge API is running on `127.0.0.1:8000` with SQLAlchemy SQLite state under `.runtime/`, token-file protected API/admin/WebSocket access, PTY terminal backend, and Codex launch profile resolving to `/opt/homebrew/bin/codex` (`codex-cli 0.141.0`).
-- The first NoneBot integration has been installed in `/Volumes/data/mybot/qqgroup/qqgroup/plugins/agentbridge_gateway.py`, exposing `/agentbridge` and `/abg` while allowing only QQ user `1398934598`.
-- `/abg ask <task>` now creates an AgentBridge session and starts a one-shot `codex exec` run through the PTY backend, waits up to 90 seconds, and returns the Codex final message or terminal error tail to the group chat.
-- The live path from AgentBridge to Codex has been verified, but the current Codex account returned a usage-limit error with the CLI retry message `try again at 5:35 AM`; once that limit resets, the same bot command should produce a real Codex answer.
+Persistent execution wiring (this iteration, all unit-tested):
+
+- Command layer (`commands.py`): `/agent status` unified status card (project / session / agent /
+  control lease / queue / active turn / sibling sessions); `/agent claude|codex [task]` switches the
+  active session to that agent, creating one if absent and queuing any trailing task; `/agent agents`
+  grouped listing; grouped Chinese `/agent help`. Chinese aliases `状态/切换/使用` included.
+- Persistent runner (`TerminalAgentService.advance_queue` / `advance_pending_queues`): when a session is
+  idle, its terminal is running, the queue has work, and no human holds the lease, it claims the next
+  queued Turn and submits it into the native TUI; on turn completion (semantic event → `finish_turn` →
+  IDLE) it advances the next Turn. Opt-in via `AGENTBRIDGE_TERMINAL_AUTO_ADVANCE_QUEUES`, wired into the
+  lifecycle monitor tick.
+- Codex idle-completion (`check_idle_turn_completions`): for hook-less agents (Codex / generic TUI),
+  tracks PTY output cursor and emits `turn.completed` after `AGENTBRIDGE_CODEX_IDLE_COMPLETE_SECONDS` of
+  silence; Claude is excluded (it uses the Stop hook). Opt-in via `AGENTBRIDGE_TERMINAL_IDLE_TURN_COMPLETION`.
+- Claude Hooks deployment (`claude_hook_deploy.py`): on a Claude session start, merges AgentBridge hooks
+  into `<workspace>/.claude/settings.local.json` (idempotent, preserves unrelated settings) so the native
+  `claude` TUI POSTs structured events back. Opt-in via `AGENTBRIDGE_CLAUDE_HOOK_DEPLOY` (+ API url/token).
+- Bot plugin (`/Volumes/data/mybot/.../agentbridge_gateway.py`): rewritten to route every command
+  (including `ask/send/continue`) through the AgentBridge command path into the persistent session, and to
+  stream rendered events back to the group by polling `GET /sessions/{id}/rendered-events` (now includes
+  `type`) until a terminal turn event. The one-shot `codex exec` path is removed from dispatch (original
+  saved as `.codex-exec.bak`).
+
+End-to-end live verification (group → streaming → human takeover → resume) still requires local `claude` /
+`codex` CLIs and the server launched with the opt-in flags above plus the lifecycle monitor enabled.
 
 Implemented in this slice:
 
