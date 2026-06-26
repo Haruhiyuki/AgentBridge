@@ -908,9 +908,9 @@ device keys, edits allowed scopes, allowed resource IDs, and certificate fingerp
 issues or renews managed certificates from CSR PEM, shows last-used timestamps, shows
 generated keys/certificates once, and revokes selected devices.
 The Bot delivery page lists delivery records, shows retry worker state, displays
-platform capability contracts and rate-limit policies, retries due failures, and can
-edit or delete a selected delivery through the same Bot Gateway mutation APIs used by
-external adapters.
+platform capability contracts and rate-limit policies, shows recent native command
+registration results, retries due failures, and can edit or delete a selected delivery
+through the same Bot Gateway mutation APIs used by external adapters.
 
 Set `AGENTBRIDGE_ADMIN_TOKEN` or `AGENTBRIDGE_ADMIN_TOKEN_FILE` to require a browser
 token before serving `/admin` pages. When `AGENTBRIDGE_API_TOKEN` or

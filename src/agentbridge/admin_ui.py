@@ -4625,6 +4625,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
       <div class="toolbar">
         <button id="worker-refresh" type="button">Worker Status</button>
         <button class="primary" id="worker-run" type="button">Run Worker</button>
+        <button id="command-registration-refresh" type="button">Command Results</button>
         <label class="compact">
           Limit
           <input id="limit" type="number" value="100">
@@ -4644,6 +4645,15 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
         <div class="metric">
           <span>OneBot Edit</span><strong id="cap-onebot-edit">-</strong>
         </div>
+        <div class="metric">
+          <span>Command Results</span><strong id="command-registration-count">-</strong>
+        </div>
+        <div class="metric">
+          <span>Command Failures</span><strong id="command-registration-failures">-</strong>
+        </div>
+        <div class="metric">
+          <span>Last Command Status</span><strong id="command-registration-status">-</strong>
+        </div>
       </div>
       <div class="toolbar">
         <button class="primary" id="edit-selected" type="button">Edit Selected</button>
@@ -4655,6 +4665,7 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
       </div>
       <pre id="worker">{}</pre>
       <pre id="capabilities">{}</pre>
+      <pre id="command-registration-results">[]</pre>
       <pre id="rate-limits">{}</pre>
       <pre id="selected">{}</pre>
     </section>
@@ -4742,6 +4753,18 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
       $("capabilities").textContent = JSON.stringify(capabilities, null, 2);
     }
 
+    function renderCommandRegistrations(events) {
+      const results = events || [];
+      const failed = results.filter((event) => {
+        return (event.payload || {}).status === "failed";
+      });
+      const latestPayload = (results[0] || {}).payload || {};
+      setText("command-registration-count", results.length);
+      setText("command-registration-failures", failed.length);
+      setText("command-registration-status", latestPayload.status);
+      $("command-registration-results").textContent = JSON.stringify(results, null, 2);
+    }
+
     async function refreshRecords() {
       setStatus("Loading");
       const records = await requestJson(`/api/v1/bot-gateway/deliveries${deliveryQuery()}`);
@@ -4753,8 +4776,16 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
       renderWorker(worker);
       const capabilities = await requestJson("/api/v1/bot-gateway/capabilities");
       renderCapabilities(capabilities);
+      await refreshCommandRegistrations();
       const limits = await requestJson("/api/v1/bot-gateway/rate-limits");
       $("rate-limits").textContent = JSON.stringify(limits, null, 2);
+    }
+
+    async function refreshCommandRegistrations() {
+      const events = await requestJson(
+        "/api/v1/events?event_type=bot.command_registration.result&limit=20",
+      );
+      renderCommandRegistrations(events);
     }
 
     async function retryDue() {
@@ -4827,6 +4858,10 @@ BOT_DELIVERY_ADMIN_HTML = """<!doctype html>
     $("retry-due").addEventListener("click", () => run(retryDue));
     $("worker-refresh").addEventListener("click", () => run(refreshWorker));
     $("worker-run").addEventListener("click", () => run(runWorker));
+    $("command-registration-refresh").addEventListener(
+      "click",
+      () => run(refreshCommandRegistrations),
+    );
     $("edit-selected").addEventListener("click", () => run(editSelected));
     $("delete-selected").addEventListener("click", () => run(deleteSelected));
     Promise.all([refreshRecords(), refreshWorker()]).catch((error) => {
