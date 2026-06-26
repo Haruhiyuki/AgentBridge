@@ -67,6 +67,7 @@ KNOWN_ROOTS = {
     "context",
     "project",
     "session",
+    "use",
     "ask",
     "send",
     "continue",
@@ -318,7 +319,7 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
     ),
     command_spec(
         "session.use",
-        aliases=["session use", "会话 使用"],
+        aliases=["session use", "use", "会话 使用", "使用"],
         summary="Select the active session for this chat context.",
         usage="/agent session use <session> [--version <pointer-version>]",
         argument_schema=command_arguments_schema(
@@ -857,6 +858,8 @@ class CommandService:
             return self._parse_project(tokens)
         if root == "session":
             return self._parse_session(tokens)
+        if root == "use":
+            return self._parse_session_use_alias(tokens)
         if root == "select":
             return self._parse_select(tokens)
         if root == "queue":
@@ -987,6 +990,15 @@ class CommandService:
             f"未知 session 子命令：{action}",
             next_step="可用子命令：list、new、use、info、close。",
         )
+
+    def _parse_session_use_alias(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
+        positional, options = parse_options(tokens)
+        if not positional:
+            raise missing_argument("session use", "<session>")
+        return "session.use", {
+            "session": positional[0],
+            "expected_version": parse_optional_int(options.get("version")),
+        }
 
     def _parse_select(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
         if not tokens:

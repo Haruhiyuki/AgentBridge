@@ -571,6 +571,75 @@ def test_onebot_events_api_ignores_non_commands_and_executes_commands():
     assert attachment_events[0].payload["platform_event_id"] == "30005"
 
 
+def test_onebot_group_can_bind_projects_create_sessions_and_use_short_alias(tmp_path):
+    client = TestClient(create_app())
+    alpha_path = tmp_path / "alpha"
+    beta_path = tmp_path / "beta"
+    alpha_path.mkdir()
+    beta_path.mkdir()
+
+    def post_command(message_id: int, raw_text: str):
+        return client.post(
+            "/api/v1/onebot/events",
+            json={
+                "default_roles": ["maintainer"],
+                "event": {
+                    "post_type": "message",
+                    "message_type": "group",
+                    "group_id": 10101,
+                    "user_id": 20002,
+                    "message_id": message_id,
+                    "raw_message": raw_text,
+                },
+            },
+        )
+
+    alpha_project = post_command(
+        41001,
+        f"/agent project create --name Alpha --path {alpha_path} "
+        f"--root {tmp_path} --alias alpha",
+    )
+    beta_project = post_command(
+        41002,
+        f"/agent project create --name Beta --path {beta_path} "
+        f"--root {tmp_path} --alias beta",
+    )
+    alpha_binding = post_command(
+        41003,
+        "/agent project bind alpha --alias main --default",
+    )
+    alpha_session = post_command(41004, "/agent session new Alpha Session")
+    beta_session = post_command(41005, "/agent session new Beta Session --project beta")
+    alpha_short_code = alpha_session.json()["result"]["data"]["session"]["short_code"]
+    switched = post_command(41006, f"/agent 使用 {alpha_short_code}")
+
+    context_id = switched.json()["chat_context_id"]
+    control = client.app.state.control
+    context = control.repository.get_chat_context(context_id)
+    bindings = control.repository.list_project_bindings(context_id)
+    default_bindings = [binding for binding in bindings if binding.is_default]
+
+    assert alpha_project.status_code == 200
+    assert beta_project.status_code == 200
+    assert alpha_binding.status_code == 200
+    assert alpha_session.status_code == 200
+    assert beta_session.status_code == 200
+    assert switched.status_code == 200
+    assert alpha_project.json()["result"]["canonical_command"] == "project.create"
+    assert alpha_binding.json()["result"]["canonical_command"] == "project.bind"
+    assert alpha_session.json()["result"]["canonical_command"] == "session.create"
+    assert switched.json()["result"]["canonical_command"] == "session.use"
+    assert len(bindings) == 2
+    assert [binding.project_id for binding in default_bindings] == [
+        alpha_project.json()["result"]["data"]["project_id"]
+    ]
+    assert context.active_project_id == alpha_project.json()["result"]["data"]["project_id"]
+    assert context.active_session_id == alpha_session.json()["result"]["data"]["session_id"]
+    assert beta_session.json()["result"]["data"]["project_id"] == beta_project.json()[
+        "result"
+    ]["data"]["project_id"]
+
+
 def test_onebot_events_api_executes_action_callback_with_click_actor(tmp_path):
     control = ControlPlane()
     maintainer = Actor(id="usr_maintainer", roles={"maintainer"})

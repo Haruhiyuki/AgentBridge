@@ -428,8 +428,7 @@ class ControlPlane:
         trace_id: str,
     ) -> ChatContext:
         effective_actor = self.effective_actor(actor, chat_context_id)
-        context = self.repository.get_chat_context(chat_context_id)
-        session = self.repository.resolve_session(session_token, context.active_project_id)
+        session = self.repository.resolve_session(session_token)
         self.require_session_permission(
             effective_actor,
             Permission.SESSION_VIEW,

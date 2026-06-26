@@ -91,6 +91,65 @@ def test_project_session_and_turn_command_flow(tmp_path):
     assert len(command_audits) == 3
 
 
+def test_top_level_use_alias_switches_session_across_projects(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+
+    alpha = execute(
+        commands,
+        f"/agent project create --name Alpha --path {tmp_path / 'alpha'} --root {tmp_path}",
+        maintainer,
+        context.id,
+        "create-alpha",
+    )
+    alpha_session = execute(
+        commands,
+        "/agent session new Alpha Session",
+        maintainer,
+        context.id,
+        "create-alpha-session",
+    )
+    beta = execute(
+        commands,
+        f"/agent project create --name Beta --path {tmp_path / 'beta'} --root {tmp_path}",
+        maintainer,
+        context.id,
+        "create-beta",
+    )
+    beta_session = execute(
+        commands,
+        "/agent session new Beta Session",
+        maintainer,
+        context.id,
+        "create-beta-session",
+    )
+
+    assert control.repository.get_chat_context(context.id).active_project_id == beta.data[
+        "project_id"
+    ]
+    assert control.repository.get_chat_context(context.id).active_session_id == beta_session.data[
+        "session_id"
+    ]
+
+    alpha_short_code = alpha_session.data["session"]["short_code"]
+    switched = execute(
+        commands,
+        f"/agent 使用 {alpha_short_code}",
+        maintainer,
+        context.id,
+        "use-alpha-session",
+    )
+
+    updated_context = control.repository.get_chat_context(context.id)
+    assert switched.canonical_command == "session.use"
+    assert switched.data["session_id"] == alpha_session.data["session_id"]
+    assert switched.data["project_id"] == alpha.data["project_id"]
+    assert updated_context.active_project_id == alpha.data["project_id"]
+    assert updated_context.active_session_id == alpha_session.data["session_id"]
+
+
 def test_command_idempotency_does_not_create_duplicate_session(tmp_path):
     control = ControlPlane()
     commands = CommandService(control)
