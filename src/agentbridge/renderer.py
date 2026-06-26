@@ -174,6 +174,34 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 f"Turn：{event.turn_id}\nPrompt 长度：{payload.get('prompt_length')}",
             )
         )
+    elif event.type == "tool.started":
+        blocks.append(
+            progress_block(
+                "工具已开始",
+                format_tool_progress(payload, status="running"),
+            )
+        )
+    elif event.type == "tool.output.delta":
+        blocks.append(
+            progress_block(
+                "工具输出",
+                format_tool_progress(payload, status="output", text_label="输出"),
+            )
+        )
+    elif event.type == "tool.completed":
+        blocks.append(
+            progress_block(
+                "工具已完成",
+                format_tool_progress(payload, status="completed", text_label="结果"),
+            )
+        )
+    elif event.type == "tool.failed":
+        blocks.append(
+            warning_block(
+                "工具失败",
+                format_tool_progress(payload, status="failed", text_label="错误"),
+            )
+        )
     elif event.type == "approval.requested":
         visibility = RenderVisibility.APPROVERS
         interaction_id = str(event.interaction_id or "")
@@ -525,6 +553,45 @@ def progress_block(title: str, text: str) -> RenderBlock:
 
 def code_block(language: str, code: str) -> RenderBlock:
     return RenderBlock(type=RenderBlockType.CODE, language=language, code=code)
+
+
+def format_tool_progress(
+    payload: dict[str, Any],
+    *,
+    status: str,
+    text_label: str | None = None,
+) -> str:
+    tool_name = first_non_empty_string(
+        payload.get("tool_name"),
+        payload.get("name"),
+        payload.get("command"),
+        default="unknown",
+    )
+    lines = [f"工具：{tool_name}", f"状态：{status}"]
+    adapter_item_id = first_non_empty_string(
+        payload.get("adapter_item_id"),
+        payload.get("item_id"),
+        payload.get("request_id"),
+    )
+    if adapter_item_id:
+        lines.append(f"Item：{adapter_item_id}")
+    detail = first_non_empty_string(
+        payload.get("error") if status == "failed" else None,
+        payload.get("text"),
+        payload.get("output"),
+        payload.get("summary"),
+    )
+    if detail and text_label:
+        lines.append(f"{text_label}：")
+        lines.append(detail)
+    return "\n".join(lines)
+
+
+def first_non_empty_string(*values: Any, default: str | None = None) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return default
 
 
 class PlainTextRenderer:

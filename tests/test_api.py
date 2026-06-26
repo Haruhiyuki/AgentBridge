@@ -6234,6 +6234,43 @@ def test_rendered_events_api_returns_documents_and_text_messages(tmp_path):
     assert "Render Session" in rendered[0]["text_messages"][0]
 
 
+def test_rendered_events_api_returns_tool_progress_messages(tmp_path):
+    client = TestClient(create_app())
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-render-tool",
+        prefix="render-tool",
+        name="Render Tool Progress",
+    )
+
+    adapter_response = client.post(
+        f"/api/v1/sessions/{session_id}/agent-adapter/events",
+        json={
+            "agent_type": "claude",
+            "adapter_event_type": "PreToolUse",
+            "schema_version": "claude-hooks.v1",
+            "trace_id": "render-tool-progress",
+            "idempotency_key": "render-tool-progress-start",
+            "payload": {"tool_name": "Bash", "id": "cmd-42"},
+        },
+    )
+    rendered_response = client.get(f"/api/v1/sessions/{session_id}/rendered-events")
+
+    assert adapter_response.status_code == 200
+    assert adapter_response.json()["type"] == "tool.started"
+    assert rendered_response.status_code == 200
+    rendered = rendered_response.json()
+    tool_rendered = next(
+        item
+        for item in rendered
+        if item["document"]["blocks"][0]["title"] == "工具已开始"
+    )
+    assert tool_rendered["document"]["blocks"][0]["title"] == "工具已开始"
+    assert "工具：Bash" in tool_rendered["text_messages"][0]
+    assert "Item：cmd-42" in tool_rendered["text_messages"][0]
+
+
 def test_session_events_websocket_replays_semantic_events_and_idle_close(tmp_path):
     client = TestClient(create_app())
     session_id = _create_session_with_project(

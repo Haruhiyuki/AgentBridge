@@ -161,6 +161,50 @@ def test_question_request_event_renders_select_action_for_options():
     ]
 
 
+def test_tool_progress_events_render_readable_status():
+    cases = [
+        (
+            "tool.started",
+            {
+                "tool_name": "Bash",
+                "adapter_item_id": "cmd-1",
+                "raw_event": {"large": "payload"},
+            },
+            ["工具已开始", "工具：Bash", "状态：running", "Item：cmd-1"],
+        ),
+        (
+            "tool.output.delta",
+            {
+                "tool_name": "Bash",
+                "adapter_item_id": "cmd-1",
+                "text": "collected 12 items",
+            },
+            ["工具输出", "状态：output", "输出：", "collected 12 items"],
+        ),
+        (
+            "tool.completed",
+            {"tool_name": "pytest", "summary": "12 passed"},
+            ["工具已完成", "工具：pytest", "状态：completed", "结果：", "12 passed"],
+        ),
+        (
+            "tool.failed",
+            {"tool_name": "Bash", "error": "exit code 1"},
+            ["工具失败", "工具：Bash", "状态：failed", "错误：", "exit code 1"],
+        ),
+    ]
+
+    for event_type, payload, expected_fragments in cases:
+        event = make_event(event_type, payload)
+
+        document = document_from_event(event)
+        messages = OneBotV11TextRenderer().render(document)
+
+        assert "raw_event" not in messages[0]
+        assert "事件" not in messages[0]
+        for fragment in expected_fragments:
+            assert fragment in messages[0]
+
+
 def test_plan_request_event_renders_plan_actions_with_modal_revision():
     event = make_event(
         "plan.requested",
