@@ -1034,7 +1034,8 @@ requires every checklist item to be `passed` before release evidence is ready; u
 `agentbridge-acceptance summary --show-checklist` to list incomplete or invalid items.
 Unknown manifest section IDs are malformed evidence and fail readiness until corrected. The
 `attach-artifact` command copies files into the artifact root, computes sha256 digests,
-and writes digest-backed manifest references for release-candidate evidence. The
+and writes digest-backed manifest references for release-candidate evidence; repeated
+artifact paths inside the same section are malformed evidence. The
 `attach-admin-export` command first validates that a downloaded Admin JSON export uses a
 known built-in evidence schema and includes the required top-level evidence fields for
 that Admin page; System Health exports must also preserve acceptance readiness action

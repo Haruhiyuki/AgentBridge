@@ -516,11 +516,22 @@ def acceptance_artifact_payloads(
     if not isinstance(artifacts, list):
         return []
     payloads: list[dict[str, object]] = []
+    seen_paths: set[str] = set()
     for artifact in artifacts:
         reference = acceptance_artifact_reference(artifact)
         if reference is None:
             payloads.append({"path": None, "status": "invalid_reference"})
             continue
+        if reference["path"] in seen_paths:
+            payloads.append(
+                {
+                    "path": reference["path"],
+                    "sha256": reference.get("sha256"),
+                    "status": "duplicate_path",
+                }
+            )
+            continue
+        seen_paths.add(reference["path"])
         if not verify_artifacts:
             payloads.append(
                 {
