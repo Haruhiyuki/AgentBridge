@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -75,6 +76,7 @@ CODEX_INTERACTION_APP_SERVER_EVENTS = {
     "item/fileChange/requestApproval",
     "tool/requestUserInput",
 }
+CODEX_APP_SERVER_STREAM_OUTPUT_FORMATS = {"json-rpc", "action", "bridge-json"}
 
 
 class AgentAdapterClientError(RuntimeError):
@@ -532,6 +534,154 @@ def handle_codex_app_server_message(
         "action": None,
         "json_rpc_response": None,
     }
+
+
+def bridge_codex_app_server_jsonl_stream(
+    *,
+    control_client: AgentAdapterControlClient,
+    input_file: TextIO,
+    output_file: TextIO,
+    error_file: TextIO | None = None,
+    schema_version: str | None = None,
+    trace_id: str = "codex-app-server-adapter",
+    wait_timeout_seconds: float = 300.0,
+    poll_interval_seconds: float = 1.0,
+    output_format: str = "json-rpc",
+    strict: bool = False,
+) -> dict[str, object]:
+    if output_format not in CODEX_APP_SERVER_STREAM_OUTPUT_FORMATS:
+        raise ValueError(f"unsupported Codex app-server stream output_format: {output_format}")
+    processed = 0
+    skipped = 0
+    emitted = 0
+    errors = 0
+    for line_number, raw_line in enumerate(input_file, start=1):
+        if not raw_line.strip():
+            skipped += 1
+            continue
+        try:
+            decoded = json.loads(raw_line)
+            if not isinstance(decoded, dict):
+                raise ValueError("Codex app-server JSONL message must be a JSON object")
+            message = {str(key): value for key, value in decoded.items()}
+        except (json.JSONDecodeError, ValueError) as exc:
+            errors += 1
+            if strict:
+                raise ValueError(
+                    f"Codex app-server JSONL line {line_number} is invalid: {exc}"
+                ) from exc
+            write_codex_app_server_stream_error(
+                error_file,
+                line_number=line_number,
+                error=str(exc),
+            )
+            continue
+        if "method" not in message:
+            skipped += 1
+            continue
+        processed += 1
+        payload = codex_app_server_stream_message_output(
+            control_client=control_client,
+            message=message,
+            schema_version=schema_version,
+            trace_id=trace_id,
+            wait_timeout_seconds=wait_timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            output_format=output_format,
+            strict=strict,
+            error_file=error_file,
+            line_number=line_number,
+        )
+        if payload is None:
+            continue
+        write_json_line(output_file, payload)
+        emitted += 1
+    return {
+        "processed": processed,
+        "skipped": skipped,
+        "emitted": emitted,
+        "errors": errors,
+    }
+
+
+def codex_app_server_stream_message_output(
+    *,
+    control_client: AgentAdapterControlClient,
+    message: Mapping[str, object],
+    schema_version: str | None,
+    trace_id: str,
+    wait_timeout_seconds: float,
+    poll_interval_seconds: float,
+    output_format: str,
+    strict: bool,
+    error_file: TextIO | None,
+    line_number: int,
+) -> dict[str, object] | None:
+    try:
+        result = handle_codex_app_server_message(
+            control_client=control_client,
+            message=message,
+            schema_version=schema_version,
+            trace_id=trace_id,
+            wait_timeout_seconds=wait_timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+    except (AgentAdapterClientError, AgentBridgeError, OSError, ValueError) as exc:
+        adapter_event_type = string_value(message.get("method")) or ""
+        if adapter_event_type in CODEX_INTERACTION_APP_SERVER_EVENTS:
+            action = codex_app_server_failure_action_payload(
+                adapter_event_type=adapter_event_type,
+                message=message,
+                error=str(exc),
+            )
+            request_id = codex_app_server_message_id(message)
+            if output_format == "bridge-json":
+                return {
+                    "adapter_event_type": adapter_event_type,
+                    "action": action,
+                    "error": str(exc),
+                }
+            if output_format == "json-rpc" and request_id is not None:
+                return {
+                    "id": request_id,
+                    "result": {"agentbridge": action},
+                }
+            return action
+        if strict:
+            raise
+        write_codex_app_server_stream_error(
+            error_file,
+            line_number=line_number,
+            error=str(exc),
+        )
+        return None
+    if output_format == "bridge-json":
+        return result
+    if output_format == "json-rpc":
+        payload = result.get("json_rpc_response")
+        return payload if isinstance(payload, dict) else None
+    payload = result.get("action")
+    return payload if isinstance(payload, dict) else None
+
+
+def write_codex_app_server_stream_error(
+    error_file: TextIO | None,
+    *,
+    line_number: int,
+    error: str,
+) -> None:
+    if error_file is None:
+        return
+    print(
+        f"codex app-server stream line {line_number} failed open: {error}",
+        file=error_file,
+    )
+
+
+def write_json_line(output_file: TextIO, payload: Mapping[str, object]) -> None:
+    output_file.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    output_file.write("\n")
+    output_file.flush()
 
 
 def codex_app_server_event_type_from_message(message: Mapping[str, object]) -> str:
@@ -1212,6 +1362,7 @@ def default_adapter_capabilities(agent_type: AgentType) -> list[str]:
             "agentbridge.response_poll",
             "codex.app_server",
             "codex.app_server.json_rpc",
+            "codex.app_server.jsonl_stream",
         ]
     raise ValueError(f"structured adapter capabilities are not supported for {agent_type.value}")
 
@@ -1360,6 +1511,13 @@ def load_codex_app_server_message_from_args(args: argparse.Namespace) -> dict[st
     if not isinstance(decoded, dict):
         raise ValueError("Codex app-server message must be a JSON object")
     return {str(key): value for key, value in decoded.items()}
+
+
+def open_text_input_from_args(args: argparse.Namespace) -> tuple[TextIO, bool]:
+    input_file = getattr(args, "input_file", None)
+    if input_file is None or str(input_file) == "-":
+        return sys.stdin, False
+    return input_file.open("r", encoding="utf-8"), True
 
 
 def parse_agent_type(value: str) -> AgentType:
@@ -1580,6 +1738,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Return an error on non-interaction delivery failures instead of failing open",
     )
+
+    codex_app_server_stream = subparsers.add_parser(
+        "codex-app-server-stream",
+        help="Bridge a Codex app-server JSONL stream into AgentBridge",
+    )
+    add_auth_arguments(codex_app_server_stream)
+    codex_app_server_stream.add_argument("--schema-version")
+    codex_app_server_stream.add_argument("--input-file", type=Path)
+    codex_app_server_stream.add_argument("--trace-id", default="codex-app-server-adapter")
+    codex_app_server_stream.add_argument("--wait-timeout-seconds", type=float, default=300.0)
+    codex_app_server_stream.add_argument("--poll-interval-seconds", type=float, default=1.0)
+    codex_app_server_stream.add_argument(
+        "--output-format",
+        choices=sorted(CODEX_APP_SERVER_STREAM_OUTPUT_FORMATS),
+        default="json-rpc",
+        help="JSONL payload to emit for interaction responses",
+    )
+    codex_app_server_stream.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return an error on invalid lines or non-interaction delivery failures",
+    )
     return parser
 
 
@@ -1692,6 +1872,26 @@ def main(argv: list[str] | None = None) -> int:
             action = result.get("action")
             if isinstance(action, dict):
                 print(json.dumps(action, ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.command == "codex-app-server-stream":
+            input_file, should_close_input = open_text_input_from_args(args)
+            control_client = AgentAdapterControlClient(build_config_from_args(args))
+            try:
+                bridge_codex_app_server_jsonl_stream(
+                    control_client=control_client,
+                    input_file=input_file,
+                    output_file=sys.stdout,
+                    error_file=sys.stderr,
+                    schema_version=args.schema_version,
+                    trace_id=args.trace_id,
+                    wait_timeout_seconds=args.wait_timeout_seconds,
+                    poll_interval_seconds=args.poll_interval_seconds,
+                    output_format=args.output_format,
+                    strict=args.strict,
+                )
+            finally:
+                if should_close_input:
+                    input_file.close()
             return 0
         if args.command == "claude-hook":
             hook_payload = load_hook_payload_from_args(args)
