@@ -3437,6 +3437,25 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
     </section>
     <section>
       <div class="toolbar">
+        <strong>Agent Launch Profiles</strong>
+      </div>
+      <div class="table-wrap">
+        <table aria-label="Agent launch profiles">
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>Command</th>
+              <th>Source</th>
+              <th>Executable</th>
+              <th>Available</th>
+            </tr>
+          </thead>
+          <tbody id="agent-profiles"></tbody>
+        </table>
+      </div>
+    </section>
+    <section>
+      <div class="toolbar">
         <label class="compact">
           Actor ID
           <input id="actor-id" value="admin-ui">
@@ -3513,6 +3532,29 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
       setText("allowlist", (status.auto_restart_command_allowlist || []).join(",") || "-");
       $("backend").textContent = JSON.stringify(status.backend_supervision || {}, null, 2);
       $("error").textContent = status.last_error || status.auto_restart_last_block_reason || "";
+      renderAgentProfiles(status.agent_launch_profiles || {});
+    }
+
+    function renderAgentProfiles(profiles) {
+      const tbody = $("agent-profiles");
+      const rows = Object.values(profiles).map((profile) => {
+        const tr = document.createElement("tr");
+        const executable = profile.executable_path || profile.executable || "";
+        const availability = profile.available ? "yes" : (profile.unavailable_reason || "no");
+        for (const value of [
+          profile.agent_type,
+          profile.command,
+          profile.source,
+          executable,
+          availability,
+        ]) {
+          const td = document.createElement("td");
+          td.textContent = String(value ?? "");
+          tr.appendChild(td);
+        }
+        return tr;
+      });
+      tbody.replaceChildren(...rows);
     }
 
     function renderObserved(observed) {

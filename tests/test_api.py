@@ -6279,6 +6279,8 @@ def test_terminal_lifecycle_monitor_status_and_run_once_api(tmp_path):
     status = status_response.json()
     assert status["tracked_sessions"] == 1
     assert status["backend_supervision"] == {"enabled": False}
+    assert set(status["agent_launch_profiles"]) == {"claude", "codex", "generic_tui"}
+    assert status["agent_launch_profiles"]["claude"]["agent_type"] == "claude"
 
     denied_response = client.post(
         "/api/v1/terminal/lifecycle-monitor/run-once",

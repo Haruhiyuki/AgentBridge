@@ -86,6 +86,28 @@ class AgentLaunchProfile:
     source: str
 
 
+@dataclass(frozen=True)
+class AgentLaunchDetection:
+    agent_type: AgentType
+    command: str
+    source: str
+    executable: str | None
+    executable_path: str | None
+    available: bool
+    unavailable_reason: str | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "agent_type": self.agent_type.value,
+            "command": self.command,
+            "source": self.source,
+            "executable": self.executable,
+            "executable_path": self.executable_path,
+            "available": self.available,
+            "unavailable_reason": self.unavailable_reason,
+        }
+
+
 DEFAULT_AGENT_COMMANDS: dict[AgentType, str] = {
     AgentType.CLAUDE: "claude",
     AgentType.CODEX: "codex",
@@ -123,6 +145,51 @@ class AgentLaunchConfig:
         command = self.command_by_agent.get(agent_type) or DEFAULT_AGENT_COMMANDS[agent_type]
         source = self.source_by_agent.get(agent_type) or "built_in"
         return AgentLaunchProfile(agent_type=agent_type, command=command, source=source)
+
+    def detect(self, agent_type: AgentType) -> AgentLaunchDetection:
+        profile = self.profile_for(agent_type)
+        try:
+            argv = shlex.split(profile.command)
+        except ValueError as exc:
+            return AgentLaunchDetection(
+                agent_type=profile.agent_type,
+                command=profile.command,
+                source=profile.source,
+                executable=None,
+                executable_path=None,
+                available=False,
+                unavailable_reason=f"parse_error:{exc}",
+            )
+        if not argv:
+            return AgentLaunchDetection(
+                agent_type=profile.agent_type,
+                command=profile.command,
+                source=profile.source,
+                executable=None,
+                executable_path=None,
+                available=False,
+                unavailable_reason="empty_command",
+            )
+        executable = argv[0]
+        executable_path = self._resolve_executable_path(executable)
+        return AgentLaunchDetection(
+            agent_type=profile.agent_type,
+            command=profile.command,
+            source=profile.source,
+            executable=executable,
+            executable_path=executable_path,
+            available=executable_path is not None,
+            unavailable_reason=None if executable_path is not None else "not_found",
+        )
+
+    @staticmethod
+    def _resolve_executable_path(executable: str) -> str | None:
+        if os.path.dirname(executable):
+            path = Path(executable).expanduser()
+            if path.is_file() and os.access(path, os.X_OK):
+                return str(path)
+            return None
+        return shutil.which(executable)
 
 
 @dataclass(frozen=True)
@@ -852,6 +919,12 @@ class TerminalAgentService:
             )
         return self.agent_launch_config.profile_for(session.agent_type)
 
+    def agent_launch_profile_status(self) -> dict[str, dict[str, object]]:
+        return {
+            agent_type.value: self.agent_launch_config.detect(agent_type).to_payload()
+            for agent_type in AgentType
+        }
+
     def restart_session(
         self,
         *,
@@ -1188,6 +1261,7 @@ class TerminalAgentService:
                     if callable(backend_supervision_status)
                     else {"enabled": False}
                 ),
+                "agent_launch_profiles": self.agent_launch_profile_status(),
             }
 
     def _run_lifecycle_monitor_loop(self) -> None:

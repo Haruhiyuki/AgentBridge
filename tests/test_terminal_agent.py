@@ -128,6 +128,28 @@ def test_terminal_agent_uses_configured_codex_launch_command(tmp_path, monkeypat
     )
 
 
+def test_terminal_lifecycle_status_reports_agent_launch_profiles(tmp_path, monkeypatch):
+    codex_wrapper = tmp_path / "codex-agentbridge-wrapper"
+    codex_wrapper.write_text("#!/bin/sh\n", encoding="utf-8")
+    codex_wrapper.chmod(0o755)
+    monkeypatch.setenv("AGENTBRIDGE_AGENT_CODEX_COMMAND", str(codex_wrapper))
+    terminal = TerminalAgentService(ControlPlane(), backend=FakeTerminalBackend())
+
+    profiles = terminal.lifecycle_monitor_status()["agent_launch_profiles"]
+
+    assert profiles["codex"] == {
+        "agent_type": "codex",
+        "command": str(codex_wrapper),
+        "source": "env:AGENTBRIDGE_AGENT_CODEX_COMMAND",
+        "executable": str(codex_wrapper),
+        "executable_path": str(codex_wrapper),
+        "available": True,
+        "unavailable_reason": None,
+    }
+    assert profiles["claude"]["agent_type"] == "claude"
+    assert profiles["generic_tui"]["agent_type"] == "generic_tui"
+
+
 def test_terminal_agent_enforces_current_writer_lease_epoch(tmp_path):
     control = ControlPlane()
     backend = FakeTerminalBackend()
