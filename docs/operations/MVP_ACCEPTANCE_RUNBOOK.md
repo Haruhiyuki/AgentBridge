@@ -115,6 +115,9 @@ Collect these artifacts for a release candidate:
   The Terminal Lifecycle page's `Export JSON` action captures monitor state,
   backend supervision, event-outbox state, run-once observed sessions, launch probe
   results, and adapter detection summaries for terminal recovery evidence.
+  The Device Identity page's `Export JSON` action captures managed-device scopes,
+  resource allowlists, certificate health, and latest certificate/key operation metadata
+  with device keys and PEM material redacted.
 - Audit JSON/CSV/signed archive covering the manual acceptance run.
 - Bot delivery records for incremental answers, tool progress, interactions, retries,
   fallback text, and any native platform actions.

@@ -3727,6 +3727,9 @@ def test_device_identity_admin_ui_serves_dashboard():
     assert "async function rotateDeviceCertificates()" in html
     assert "async function revokeDevice()" in html
     assert "auth-device-key" in html
+    assert 'id="device-export-json"' in html
+    assert "agentbridge.admin_device_identity_export.v1" in html
+    assert "function downloadDeviceIdentityJson()" in html
     assert "allowed-scopes" in html
     assert "allowed-resource-ids" in html
     assert "audit_read" in html

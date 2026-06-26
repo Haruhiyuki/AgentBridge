@@ -952,7 +952,8 @@ The policy editor lists rules, edits allow/deny match criteria, runs
 The device identities page lists active/revoked managed devices, creates or rotates
 device keys, edits allowed scopes, allowed resource IDs, and certificate fingerprints,
 issues or renews managed certificates from CSR PEM, shows last-used timestamps, shows
-generated keys/certificates once, and revokes selected devices.
+generated keys/certificates once, revokes selected devices, and exports a redacted JSON
+evidence snapshot of device scope and certificate health.
 The Bot delivery page lists delivery records, shows retry worker state, displays
 platform capability contracts and rate-limit policies, shows recent native command
 registration results, retries due failures, and can edit or delete a selected delivery

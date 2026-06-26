@@ -4259,6 +4259,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
     <section>
       <div class="toolbar">
         <button id="refresh" type="button">Refresh</button>
+        <button id="device-export-json" type="button">Export JSON</button>
         <label class="compact">
           Include Revoked
           <input id="include-revoked" type="checkbox">
@@ -4400,6 +4401,10 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       "bot_gateway_ws",
     ].join(",");
     let selectedDeviceId = "";
+    let currentDevices = [];
+    let selectedDevice = null;
+    let devicesLoaded = false;
+    let latestDeviceOperation = null;
 
     function csv(value) {
       return value.split(",").map((item) => item.trim()).filter(Boolean);
@@ -4466,6 +4471,8 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
     }
 
     function renderDevices(devices) {
+      currentDevices = devices;
+      selectedDevice = devices.find((device) => device.device_id === selectedDeviceId) || null;
       const rows = devices.map((device) => {
         const tr = document.createElement("tr");
         tr.dataset.deviceId = device.device_id;
@@ -4498,6 +4505,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
 
     function selectDevice(device) {
       selectedDeviceId = device.device_id;
+      selectedDevice = device;
       $("device-id").value = device.device_id;
       $("display-name").value = device.display_name || "";
       $("allowed-scopes").value = (device.allowed_scopes || []).join(",");
@@ -4520,6 +4528,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
 
     function newDevice() {
       selectedDeviceId = "";
+      selectedDevice = null;
       $("device-id").value = "";
       $("display-name").value = "";
       $("allowed-scopes").value = defaultScopes;
@@ -4539,7 +4548,77 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
     async function loadDevices() {
       setStatus("Loading");
       const devices = await requestJson(devicesUrl());
+      devicesLoaded = true;
       renderDevices(devices);
+    }
+
+    function redactSensitive(value) {
+      if (Array.isArray(value)) {
+        return value.map((item) => redactSensitive(item));
+      }
+      if (value && typeof value === "object") {
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+          const lowered = key.toLowerCase();
+          if (
+            lowered.includes("device_key") ||
+            lowered.includes("private_key") ||
+            lowered.includes("token") ||
+            lowered.includes("csr_pem") ||
+            lowered.includes("certificate_pem")
+          ) {
+            return [key, item ? "[redacted]" : item];
+          }
+          return [key, redactSensitive(item)];
+        }));
+      }
+      return value;
+    }
+
+    function recordDeviceOperation(type, result) {
+      latestDeviceOperation = {
+        type,
+        recorded_at: new Date().toISOString(),
+        result: redactSensitive(result),
+      };
+    }
+
+    function deviceIdentityExportPayload() {
+      return {
+        schema_version: "agentbridge.admin_device_identity_export.v1",
+        exported_at: new Date().toISOString(),
+        include_revoked: $("include-revoked").checked,
+        actor: actor(),
+        auth_device: {
+          device_id: $("auth-device-id").value.trim() || null,
+          device_key_provided: Boolean($("auth-device-key").value.trim()),
+        },
+        device_count: currentDevices.length,
+        selected_device_id: selectedDeviceId || null,
+        devices: currentDevices,
+        selected_device: selectedDevice,
+        latest_operation: latestDeviceOperation,
+      };
+    }
+
+    function downloadDeviceIdentityJson() {
+      if (!devicesLoaded) {
+        setStatus("Refresh before export");
+        return;
+      }
+      const payload = deviceIdentityExportPayload();
+      const blob = new Blob(
+        [JSON.stringify(payload, null, 2) + "\n"],
+        {type: "application/json"},
+      );
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "agentbridge-device-identities.json";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setStatus("Device identity JSON exported");
     }
 
     async function upsertDevice() {
@@ -4567,6 +4646,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
           device_key: saved.device_key,
         }, null, 2);
       }
+      recordDeviceOperation("save_device", saved);
       $("device-key").value = "";
       selectedDeviceId = saved.device_id;
       await loadDevices();
@@ -4604,6 +4684,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
         ca_certificate_pem: issued.ca_certificate_pem,
         not_after: issued.not_after,
       }, null, 2);
+      recordDeviceOperation("issue_certificate", issued);
       selectedDeviceId = issued.device_identity.device_id;
       await loadDevices();
       setStatus(`Issued certificate for ${issued.device_identity.device_id}`);
@@ -4641,6 +4722,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
         ca_certificate_pem: renewed.ca_certificate_pem,
         not_after: renewed.not_after,
       }, null, 2);
+      recordDeviceOperation("renew_certificate", renewed);
       selectedDeviceId = renewed.device_identity.device_id;
       await loadDevices();
       setStatus(`Renewed certificate for ${renewed.device_identity.device_id}`);
@@ -4668,6 +4750,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
       ).join(",");
       $("certificate-fingerprints-add").value = "";
       $("certificate-fingerprints-remove").value = "";
+      recordDeviceOperation("rotate_certificates", rotated);
       selectedDeviceId = rotated.device_id;
       await loadDevices();
       setStatus(`Rotated certificates for ${rotated.device_id}`);
@@ -4682,6 +4765,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
           trace_id: "admin-ui-device-cert-scan",
         }),
       });
+      recordDeviceOperation("scan_certificates", result);
       $("generated-key").textContent = JSON.stringify(result, null, 2);
       await loadDevices();
       setStatus(
@@ -4701,6 +4785,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
           body: JSON.stringify({actor: actor(), trace_id: "admin-ui-device-revoke"}),
         },
       );
+      recordDeviceOperation("revoke_device", revoked);
       selectedDeviceId = revoked.device_id;
       $("include-revoked").checked = true;
       await loadDevices();
@@ -4718,6 +4803,7 @@ DEVICE_IDENTITY_ADMIN_HTML = """<!doctype html>
     }
 
     $("refresh").addEventListener("click", () => run(loadDevices));
+    $("device-export-json").addEventListener("click", downloadDeviceIdentityJson);
     $("include-revoked").addEventListener("change", () => run(loadDevices));
     $("new-device").addEventListener("click", newDevice);
     $("save-device").addEventListener("click", () => run(upsertDevice));
