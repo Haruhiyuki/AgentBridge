@@ -705,6 +705,47 @@ def test_bot_gateway_websocket_includes_button_action_descriptors(tmp_path):
     assert f"/agent approve {interaction.id} once" in frame["messages"][0]["text"]
 
 
+def test_bot_gateway_websocket_includes_plan_action_descriptors(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+    interaction = control.create_interaction(
+        actor=maintainer,
+        session_id=session_id,
+        interaction_type=InteractionType.PLAN,
+        prompt="Plan: run tests, deploy, then monitor.",
+        trace_id="bot-ws-plan-actions",
+    )
+    client = TestClient(create_app(control))
+
+    with client.websocket_connect(
+        "/api/v1/bot-gateway/session-events/ws"
+        f"?session_id={session_id}&chat_context_id={context.id}"
+        "&after_seq=2&idle_timeout_seconds=0"
+    ) as websocket:
+        frame = websocket.receive_json()
+
+    assert frame["type"] == "bot.render.create"
+    assert frame["event"]["type"] == "plan.requested"
+    assert [action["label"] for action in frame["actions"]] == [
+        "批准计划",
+        "查看计划",
+        "取消计划",
+    ]
+    assert [action["style"] for action in frame["actions"]] == [
+        "primary",
+        "default",
+        "danger",
+    ]
+    assert frame["actions"][0]["payload"]["command"] == (
+        f"/agent plan approve {interaction.id}"
+    )
+    assert frame["actions"][2]["callback_data"] == (
+        f"/agent plan cancel {interaction.id}"
+    )
+    assert f"/agent plan revise {interaction.id} <feedback>" in frame["messages"][0]["text"]
+
+
 def test_bot_gateway_websocket_requires_token_when_configured(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "secret")
     control = ControlPlane()

@@ -95,7 +95,7 @@ Implemented in this slice:
 - In-memory Bot transport and idempotent delivery records keyed by platform, chat context, event, and message index.
 - Delivery APIs through `POST /api/v1/bot-gateway/deliver-session-events`, `POST /api/v1/bot-gateway/deliver-events`, and `GET /api/v1/bot-gateway/deliveries`.
 - Bot Gateway subscriber WebSocket through `/api/v1/bot-gateway/session-events/ws`, pushing `bot.render.create` frames with chat routing metadata and per-message idempotency keys.
-- Bot render frames include platform-neutral action descriptors for button-capable adapters, with callback payloads that route back into audited `/agent` commands.
+- Bot render frames include platform-neutral action descriptors for button-capable adapters, with callback payloads that route back into audited `/agent` commands; plan requests now expose callback-safe approve/show/cancel descriptors while keeping free-form revision feedback as an explicit text command until modal input adapters exist.
 - Bot delivery result API through `POST /api/v1/bot-gateway/delivery-results`, tracking platform `acknowledge`, `edit`, and `delete` results by delivery idempotency key.
 - Bot Gateway outbound mutation APIs through `POST /api/v1/bot-gateway/deliveries/edit` and `/delete`, calling the selected transport before updating platform delivery state.
 - Bot delivery records are now domain/repository state and persist through Alembic migration `0002_bot_delivery_records`.
@@ -103,7 +103,7 @@ Implemented in this slice:
 - Recovery tests prove replay after repository re-instantiation skips already delivered Bot messages.
 - OneBot V11 HTTP transport with group/private payload routing, `delete_msg`, bearer token support, and idempotency header.
 - Bot transport selection through `AGENTBRIDGE_BOT_TRANSPORT=onebot.v11` and `AGENTBRIDGE_ONEBOT_HTTP_URL`.
-- OneBot V11 inbound event adapter for group/private text messages, reply segments, and command-carrying action callbacks, including nested render action descriptor payloads such as `data.payload.command` or `payload.command`; callback events must include the clicking `user_id`, so approval/answer commands re-enter RBAC/access-policy checks as the concrete OneBot actor instead of trusting the button payload. Text-only fallback can now resolve `/agent answer ...`, `/agent approve ...`, and `/agent deny ...` replies that omit the Interaction ID by mapping the replied platform message through Bot delivery records back to the delivered semantic event's `interaction_id`.
+- OneBot V11 inbound event adapter for group/private text messages, reply segments, and command-carrying action callbacks, including nested render action descriptor payloads such as `data.payload.command` or `payload.command`; callback events must include the clicking `user_id`, so approval/answer commands re-enter RBAC/access-policy checks as the concrete OneBot actor instead of trusting the button payload. Text-only fallback can now resolve `/agent answer ...`, `/agent approve ...`, `/agent deny ...`, and `/agent plan show/approve/revise/cancel ...` replies that omit the Interaction ID by mapping the replied platform message through Bot delivery records back to the delivered semantic event's `interaction_id`.
 - OneBot inbound API through `POST /api/v1/onebot/events`, converting `/agent` and `/ab` messages or action callbacks into the existing command execution flow and requiring `onebot_event_ingest` for managed device credentials.
 - Optional NoneBot wrapper module that normalizes NoneBot/OneBot-style message events into the existing command execution flow without adding a hard NoneBot dependency.
 - Dependency-free NoneBot matcher registration helpers that attach the AgentBridge async handler through matcher `handle()` decorators.
@@ -124,7 +124,7 @@ Implemented in this slice:
 - REST interaction routes: create, list, show, answer, and vote.
 - `/agent approvals`, `/agent approval show`, `/agent question show/list`, `/agent answer`, `/agent approve`, `/agent deny`, and `/agent plan show/list/approve/revise/cancel`.
 - Basic approval quorum handling with `pending`, `partially_approved`, and `resolved` states.
-- Approval request and vote semantic events with Bot-rendered plain-text actions.
+- Approval request and vote semantic events with Bot-rendered plain-text actions; plan request events render plan-specific approve/show/cancel actions plus a revise feedback command.
 - Interaction expiration through `expires_at` or API `ttl_seconds`, with `interaction.expired` events.
 - Interaction cancellation through `POST /api/v1/interactions/{id}/cancel` and `/agent approval cancel`.
 - Expired and cancelled interactions are persisted and cannot be answered or approved afterward.
@@ -232,7 +232,7 @@ Not implemented yet:
 - Approval policy snapshots are copied onto each approval interaction so later policy changes do not rewrite historical approval requirements.
 - Approval quorum overrides are intentionally scoped and snapshotted at interaction creation. Chat-context overrides win over project overrides, and explicit per-interaction `required_votes` remains the strongest override.
 - OneBot inbound support executes text commands and command-carrying action callbacks through the same command path. The optional NoneBot wrapper shares that callback payload parser so render action descriptors behave consistently across direct OneBot HTTP and NoneBot matcher integrations.
-- OneBot reply fallback intentionally resolves Interaction IDs only through existing Bot delivery records for the same chat context and platform message ID; if the replied message cannot be tied to a delivered semantic event with an `interaction_id`, command parsing keeps the explicit-ID requirement.
+- OneBot reply fallback intentionally resolves Interaction IDs only through existing Bot delivery records for the same chat context and platform message ID; if the replied message cannot be tied to a delivered semantic event with an `interaction_id`, command parsing keeps the explicit-ID requirement. The fallback is limited to Interaction commands where the replied message supplies the target (`answer`, `approve`, `deny`, and plan show/approve/revise/cancel), and does not rewrite unrelated commands such as `plan list`.
 - Group role bindings are scoped to a chat context and actor ID. This keeps OneBot user permissions local to the group/private context while still allowing command/API callers to carry bootstrap roles.
 - Access policy rules are stored separately from approval quorum overrides. Approval policy answers "how many votes"; access policy answers "who may do which action".
 - Access policy evaluation is deny-first and then allow-before-RBAC. This makes temporary freezes explicit while preserving the existing role matrix as the default baseline.

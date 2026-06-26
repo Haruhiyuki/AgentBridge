@@ -733,9 +733,12 @@ Users can inspect and resolve them through commands:
 /agent plan cancel <interaction-id> obsolete
 ```
 
-On OneBot-style text-only platforms, replying to the rendered question or approval
-message lets users omit `<interaction-id>` for `/agent answer`, `/agent approve`, and
-`/agent deny`.
+On OneBot-style text-only platforms, replying to the rendered question, approval, or
+plan message lets users omit `<interaction-id>` for `/agent answer`, `/agent approve`,
+`/agent deny`, and `/agent plan show/approve/revise/cancel`.
+Bot-rendered plan requests expose callback-safe approve/show/cancel actions and keep
+revision feedback as the explicit `/agent plan revise <interaction-id> <feedback>`
+text fallback until a platform adapter supports modal input.
 
 REST callers can use `GET /api/v1/interactions`,
 `POST /api/v1/sessions/{id}/interactions`, `POST /api/v1/interactions/{id}/answer`,

@@ -128,6 +128,34 @@ def test_approval_request_event_renders_approver_actions():
     assert "/agent approve int_1 once" in messages[0]
 
 
+def test_plan_request_event_renders_plan_actions_without_clicking_revision():
+    event = make_event(
+        "plan.requested",
+        {
+            "prompt": "Plan: migrate with expand-contract steps.",
+            "version": 1,
+        },
+    )
+    event = event.model_copy(update={"interaction_id": "int_plan"})
+
+    document = document_from_event(event)
+    messages = OneBotV11TextRenderer().render(document)
+
+    assert [action.command for action in document.actions] == [
+        "/agent plan approve int_plan",
+        "/agent plan show int_plan",
+        "/agent plan cancel int_plan",
+    ]
+    assert [action.style for action in document.actions] == [
+        "primary",
+        "default",
+        "danger",
+    ]
+    assert "需要确认计划" in messages[0]
+    assert "/agent plan revise int_plan <feedback>" in messages[0]
+    assert "<feedback>" not in [action.command for action in document.actions]
+
+
 def test_render_action_descriptors_are_callback_ready():
     action = RenderAction(
         id="approve-int_1",

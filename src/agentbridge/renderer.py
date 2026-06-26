@@ -159,9 +159,44 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 ),
             ]
         )
-    elif event.type in {"interaction.requested", "question.requested", "plan.requested"}:
+    elif event.type == "plan.requested":
         interaction_id = str(event.interaction_id or "")
-        title = "需要确认计划" if event.type == "plan.requested" else "需要回答"
+        revise_command = f"/agent plan revise {interaction_id} <feedback>"
+        title = "需要确认计划"
+        blocks.append(
+            text_block(
+                title,
+                (
+                    f"Interaction：{interaction_id}\n"
+                    f"{payload.get('prompt') or ''}\n"
+                    f"要求修改：{revise_command}"
+                ),
+            )
+        )
+        actions.extend(
+            [
+                RenderAction(
+                    id=f"plan-approve-{interaction_id}",
+                    label="批准计划",
+                    command=f"/agent plan approve {interaction_id}",
+                    style=RenderActionStyle.PRIMARY,
+                ),
+                RenderAction(
+                    id=f"plan-show-{interaction_id}",
+                    label="查看计划",
+                    command=f"/agent plan show {interaction_id}",
+                ),
+                RenderAction(
+                    id=f"plan-cancel-{interaction_id}",
+                    label="取消计划",
+                    command=f"/agent plan cancel {interaction_id}",
+                    style=RenderActionStyle.DANGER,
+                ),
+            ]
+        )
+    elif event.type in {"interaction.requested", "question.requested"}:
+        interaction_id = str(event.interaction_id or "")
+        title = "需要回答"
         blocks.append(
             text_block(
                 title,

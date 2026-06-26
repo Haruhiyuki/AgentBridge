@@ -525,6 +525,7 @@ def inject_reply_interaction_id(raw_text: str, *, interaction_id: str) -> str:
         "回答": "answer",
         "批准": "approve",
         "拒绝": "deny",
+        "计划": "plan",
     }.get(root, root)
     args = tokens[1:]
     if normalized_root == "answer":
@@ -539,6 +540,20 @@ def inject_reply_interaction_id(raw_text: str, *, interaction_id: str) -> str:
         if args and looks_like_interaction_id(args[0]):
             return raw_text
         return shlex.join([prefix, root, interaction_id, *args])
+    if normalized_root == "plan" and args:
+        plan_action = {
+            "批准": "approve",
+            "查看": "show",
+            "显示": "show",
+            "修改": "revise",
+            "取消": "cancel",
+            "拒绝": "cancel",
+        }.get(args[0], args[0])
+        if plan_action not in {"show", "approve", "revise", "revision", "cancel", "deny"}:
+            return raw_text
+        if len(args) >= 2 and looks_like_interaction_id(args[1]):
+            return raw_text
+        return shlex.join([prefix, root, args[0], interaction_id, *args[1:]])
     return raw_text
 
 
