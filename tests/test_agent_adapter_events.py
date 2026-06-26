@@ -155,6 +155,13 @@ def test_adapter_schema_behavior_matrix_lists_supported_versions():
         "semantic_event_type": "approval.requested",
         "interaction_request": True,
     } in matrix["schemas"][0]["adapter_event_types"]
+    assert matrix["schemas"][0]["response_application"]["json_rpc_response_format"] == (
+        "codex.app_server.json_rpc_response.v1"
+    )
+    assert (
+        matrix["schemas"][0]["response_application"]["json_rpc_result_path"]
+        == "result.agentbridge"
+    )
 
 
 def test_filters_adapter_response_frames_to_adapter_originated_interactions():

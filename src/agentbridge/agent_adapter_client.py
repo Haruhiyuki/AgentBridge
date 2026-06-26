@@ -70,6 +70,11 @@ CLAUDE_HOOK_SETTINGS_BLOCKING_EVENTS = {
     "PreToolUse",
     "PermissionRequest",
 }
+CODEX_INTERACTION_APP_SERVER_EVENTS = {
+    "item/commandExecution/requestApproval",
+    "item/fileChange/requestApproval",
+    "tool/requestUserInput",
+}
 
 
 class AgentAdapterClientError(RuntimeError):
@@ -473,6 +478,151 @@ def claude_hook_failure_stdout_json(
         "request_payload": {"raw_event": dict(hook_payload)},
     }
     return claude_hook_stdout_json(response)
+
+
+def handle_codex_app_server_message(
+    *,
+    control_client: AgentAdapterControlClient,
+    message: Mapping[str, object],
+    schema_version: str | None = None,
+    trace_id: str = "codex-app-server-adapter",
+    wait_timeout_seconds: float = 300.0,
+    poll_interval_seconds: float = 1.0,
+) -> dict[str, object]:
+    adapter_event_type = codex_app_server_event_type_from_message(message)
+    payload = codex_app_server_event_payload_from_message(message)
+    client = CodexAppServerAdapterClient(control_client, schema_version=schema_version)
+    idempotency_key = codex_app_server_idempotency_key(adapter_event_type, message)
+    if adapter_event_type in CODEX_INTERACTION_APP_SERVER_EVENTS:
+        result = client.emit_and_wait(
+            adapter_event_type,
+            payload,
+            trace_id=trace_id,
+            idempotency_key=idempotency_key,
+            timeout_seconds=wait_timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+        native_response = format_adapter_response_for_agent(
+            AgentType.CODEX,
+            result["response"],
+        )
+        json_rpc_response = codex_app_server_json_rpc_response(
+            result["response"],
+            request_id=codex_app_server_message_id(message),
+        )
+        return {
+            "adapter_event_type": adapter_event_type,
+            "idempotency_key": idempotency_key,
+            "event": result["event"],
+            "response": result["response"],
+            "native_response": native_response,
+            "action": native_response["payload"],
+            "json_rpc_response": json_rpc_response,
+        }
+    event = client.emit(
+        adapter_event_type,
+        payload,
+        trace_id=trace_id,
+        idempotency_key=idempotency_key,
+    )
+    return {
+        "adapter_event_type": adapter_event_type,
+        "idempotency_key": idempotency_key,
+        "event": event,
+        "action": None,
+        "json_rpc_response": None,
+    }
+
+
+def codex_app_server_event_type_from_message(message: Mapping[str, object]) -> str:
+    method = string_value(message.get("method"))
+    if method is None:
+        raise ValueError("Codex app-server message must include method")
+    return method
+
+
+def codex_app_server_event_payload_from_message(
+    message: Mapping[str, object],
+) -> dict[str, object]:
+    params = message.get("params")
+    if params is None:
+        payload: dict[str, object] = {}
+    elif isinstance(params, Mapping):
+        payload = {str(key): value for key, value in params.items()}
+    else:
+        payload = {"params": params}
+    method = codex_app_server_event_type_from_message(message)
+    payload.setdefault("json_rpc_method", method)
+    request_id = codex_app_server_message_id(message)
+    if request_id is not None:
+        payload.setdefault("json_rpc_id", request_id)
+    return payload
+
+
+def codex_app_server_message_id(message: Mapping[str, object]) -> str | int | float | None:
+    if "id" not in message:
+        return None
+    value = message.get("id")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        return value if value else None
+    if isinstance(value, int | float):
+        return value
+    return None
+
+
+def codex_app_server_idempotency_key(
+    adapter_event_type: str,
+    message: Mapping[str, object],
+) -> str:
+    request_id = codex_app_server_message_id(message)
+    if request_id is not None:
+        return f"codex-app-server:{adapter_event_type}:rpc:{request_id}"
+    params = message.get("params")
+    if isinstance(params, Mapping):
+        item_id = codex_app_server_item_id(params)
+        if item_id:
+            return f"codex-app-server:{adapter_event_type}:item:{item_id}"
+    canonical_message = json.dumps(
+        {str(key): value for key, value in message.items()},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(canonical_message.encode("utf-8")).hexdigest()[:24]
+    return f"codex-app-server:{adapter_event_type}:{digest}"
+
+
+def codex_app_server_item_id(params: Mapping[str, object]) -> str | None:
+    for key in ("item_id", "itemId", "id", "request_id", "requestId"):
+        value = string_value(params.get(key))
+        if value:
+            return value
+    item = params.get("item")
+    if isinstance(item, Mapping):
+        return string_value(item.get("id"))
+    return None
+
+
+def codex_app_server_failure_action_payload(
+    *,
+    adapter_event_type: str,
+    message: Mapping[str, object],
+    error: str,
+) -> dict[str, object]:
+    decision = "cancelled" if adapter_event_type == "tool/requestUserInput" else "denied"
+    response = {
+        "decision": decision,
+        "approve": False if decision == "denied" else None,
+        "answer": None,
+        "reason": f"AgentBridge adapter failed closed: {error}",
+        "adapter_event_type": adapter_event_type,
+        "request_payload": {
+            "raw_event": codex_app_server_event_payload_from_message(message),
+        },
+    }
+    return codex_app_server_action_payload(response)
 
 
 def claude_hook_settings_fragment(
@@ -953,6 +1103,38 @@ def codex_app_server_action_payload(response: Mapping[str, object]) -> dict[str,
     }
 
 
+def codex_app_server_json_rpc_response(
+    response: Mapping[str, object],
+    *,
+    request_id: str | int | float | None = None,
+) -> dict[str, object] | None:
+    resolved_request_id = request_id
+    if resolved_request_id is None:
+        resolved_request_id = codex_app_server_response_json_rpc_id(response)
+    if resolved_request_id is None:
+        return None
+    return {
+        "id": resolved_request_id,
+        "result": {
+            "agentbridge": codex_app_server_action_payload(response),
+        },
+    }
+
+
+def codex_app_server_response_json_rpc_id(
+    response: Mapping[str, object],
+) -> str | int | float | None:
+    raw_event = raw_request_event(response)
+    value = raw_event.get("json_rpc_id")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        return value if value else None
+    if isinstance(value, int | float):
+        return value
+    return None
+
+
 def raw_request_event(response: Mapping[str, object]) -> dict[str, object]:
     request_payload = response.get("request_payload")
     if not isinstance(request_payload, dict):
@@ -1029,6 +1211,7 @@ def default_adapter_capabilities(agent_type: AgentType) -> list[str]:
             "agentbridge.event_ingest",
             "agentbridge.response_poll",
             "codex.app_server",
+            "codex.app_server.json_rpc",
         ]
     raise ValueError(f"structured adapter capabilities are not supported for {agent_type.value}")
 
@@ -1165,6 +1348,17 @@ def load_hook_payload_from_args(args: argparse.Namespace) -> dict[str, object]:
     decoded = json.loads(raw)
     if not isinstance(decoded, dict):
         raise ValueError("hook payload must be a JSON object")
+    return {str(key): value for key, value in decoded.items()}
+
+
+def load_codex_app_server_message_from_args(args: argparse.Namespace) -> dict[str, object]:
+    if args.input_file is not None:
+        raw = sys.stdin.read() if str(args.input_file) == "-" else args.input_file.read_text()
+    else:
+        raw = sys.stdin.read()
+    decoded = json.loads(raw)
+    if not isinstance(decoded, dict):
+        raise ValueError("Codex app-server message must be a JSON object")
     return {str(key): value for key, value in decoded.items()}
 
 
@@ -1360,6 +1554,32 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Merge the generated hooks into a Claude settings JSON file",
     )
+
+    codex_app_server_event = subparsers.add_parser(
+        "codex-app-server-event",
+        help="Bridge one Codex app-server JSON-RPC message into AgentBridge",
+    )
+    add_auth_arguments(codex_app_server_event)
+    codex_app_server_event.add_argument("--schema-version")
+    codex_app_server_event.add_argument("--input-file", type=Path)
+    codex_app_server_event.add_argument("--trace-id", default="codex-app-server-adapter")
+    codex_app_server_event.add_argument("--wait-timeout-seconds", type=float, default=300.0)
+    codex_app_server_event.add_argument("--poll-interval-seconds", type=float, default=1.0)
+    codex_app_server_event.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the AgentBridge bridge result instead of the native action payload",
+    )
+    codex_app_server_event.add_argument(
+        "--json-rpc-response",
+        action="store_true",
+        help="Print a JSON-RPC result response when the input message includes an id",
+    )
+    codex_app_server_event.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return an error on non-interaction delivery failures instead of failing open",
+    )
     return parser
 
 
@@ -1426,6 +1646,52 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 payload = fragment
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.command == "codex-app-server-event":
+            message = load_codex_app_server_message_from_args(args)
+            control_client = AgentAdapterControlClient(build_config_from_args(args))
+            try:
+                result = handle_codex_app_server_message(
+                    control_client=control_client,
+                    message=message,
+                    schema_version=args.schema_version,
+                    trace_id=args.trace_id,
+                    wait_timeout_seconds=args.wait_timeout_seconds,
+                    poll_interval_seconds=args.poll_interval_seconds,
+                )
+            except (AgentAdapterClientError, AgentBridgeError, OSError, ValueError) as exc:
+                adapter_event_type = codex_app_server_event_type_from_message(message)
+                if adapter_event_type in CODEX_INTERACTION_APP_SERVER_EVENTS:
+                    action = codex_app_server_failure_action_payload(
+                        adapter_event_type=adapter_event_type,
+                        message=message,
+                        error=str(exc),
+                    )
+                    request_id = codex_app_server_message_id(message)
+                    if args.json_rpc_response and request_id is not None:
+                        payload = {
+                            "id": request_id,
+                            "result": {"agentbridge": action},
+                        }
+                    else:
+                        payload = action
+                    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+                    return 0
+                if args.strict:
+                    raise
+                print(f"agent adapter client failed open: {exc}", file=sys.stderr)
+                return 0
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+                return 0
+            if args.json_rpc_response:
+                json_rpc_response = result.get("json_rpc_response")
+                if isinstance(json_rpc_response, dict):
+                    print(json.dumps(json_rpc_response, ensure_ascii=False, sort_keys=True))
+                return 0
+            action = result.get("action")
+            if isinstance(action, dict):
+                print(json.dumps(action, ensure_ascii=False, sort_keys=True))
             return 0
         if args.command == "claude-hook":
             hook_payload = load_hook_payload_from_args(args)

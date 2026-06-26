@@ -16,8 +16,13 @@ from agentbridge.agent_adapter_client import (
     claude_hook_failure_stdout_json,
     claude_hook_idempotency_key,
     claude_hook_settings_fragment,
+    codex_app_server_event_payload_from_message,
+    codex_app_server_event_type_from_message,
+    codex_app_server_idempotency_key,
+    codex_app_server_json_rpc_response,
     format_adapter_response_for_agent,
     handle_claude_hook_payload,
+    handle_codex_app_server_message,
     handshake_payload_for_agent,
     main,
     urllib_json_transport,
@@ -276,6 +281,7 @@ def test_handshake_payload_for_agent_uses_supported_schema_and_capabilities():
         "agentbridge.event_ingest",
         "agentbridge.response_poll",
         "codex.app_server",
+        "codex.app_server.json_rpc",
     ]
     assert payload["warnings"] == []
     assert payload["schema_snapshot"]["schema_version"] == "codex-app-server.v1"
@@ -353,6 +359,30 @@ def test_cli_parser_accepts_emit_and_wait_options():
     assert args.wait_timeout_seconds == 12.5
     assert args.poll_interval_seconds == 0.2
     assert args.include_pending is True
+
+
+def test_cli_parser_accepts_codex_app_server_event_options():
+    args = build_parser().parse_args(
+        [
+            "codex-app-server-event",
+            "--session-id",
+            "ses_1",
+            "--input-file",
+            "-",
+            "--wait-timeout-seconds",
+            "12.5",
+            "--poll-interval-seconds",
+            "0.2",
+            "--json-rpc-response",
+        ]
+    )
+
+    assert args.command == "codex-app-server-event"
+    assert args.session_id == "ses_1"
+    assert str(args.input_file) == "-"
+    assert args.wait_timeout_seconds == 12.5
+    assert args.poll_interval_seconds == 0.2
+    assert args.json_rpc_response is True
 
 
 def test_formats_claude_permission_response_as_hook_stdout_json():
@@ -439,6 +469,188 @@ def test_formats_codex_response_as_agentbridge_action_envelope():
         "request_seq": None,
         "payload": None,
     }
+
+
+def test_formats_codex_response_as_json_rpc_result_when_request_id_is_known():
+    response = {
+        "decision": "denied",
+        "approve": False,
+        "reason": "Needs a maintainer",
+        "adapter_item_id": "cmd-1",
+        "request_payload": {
+            "raw_event": {
+                "json_rpc_id": 12,
+                "json_rpc_method": "item/commandExecution/requestApproval",
+            }
+        },
+    }
+
+    assert codex_app_server_json_rpc_response(response) == {
+        "id": 12,
+        "result": {
+            "agentbridge": {
+                "action": "approval_decision",
+                "decision": "denied",
+                "approve": False,
+                "answer": None,
+                "reason": "Needs a maintainer",
+                "adapter_item_id": "cmd-1",
+                "interaction_id": None,
+                "request_event_id": None,
+                "request_seq": None,
+                "payload": None,
+            }
+        },
+    }
+
+
+def test_codex_app_server_message_extracts_method_params_and_idempotency():
+    message = {
+        "method": "item/commandExecution/requestApproval",
+        "id": "rpc-7",
+        "params": {
+            "item": {"id": "cmd-1", "command": "pytest"},
+            "reason": "Run tests",
+        },
+    }
+
+    assert (
+        codex_app_server_event_type_from_message(message)
+        == "item/commandExecution/requestApproval"
+    )
+    assert codex_app_server_event_payload_from_message(message) == {
+        "item": {"id": "cmd-1", "command": "pytest"},
+        "reason": "Run tests",
+        "json_rpc_method": "item/commandExecution/requestApproval",
+        "json_rpc_id": "rpc-7",
+    }
+    assert (
+        codex_app_server_idempotency_key(
+            "item/commandExecution/requestApproval",
+            message,
+        )
+        == "codex-app-server:item/commandExecution/requestApproval:rpc:rpc-7"
+    )
+
+
+def test_codex_app_server_message_bridge_reports_notification_without_action():
+    calls = []
+
+    def transport(method, url, headers, payload, timeout_seconds):
+        calls.append((method, url, payload))
+        return {"id": "evt_delta", "seq": 9}
+
+    control_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(base_url="http://bridge.local", session_id="ses_1"),
+        transport=transport,
+    )
+
+    result = handle_codex_app_server_message(
+        control_client=control_client,
+        message={
+            "method": "item/agentMessage/delta",
+            "params": {"delta": "hello"},
+        },
+    )
+
+    assert result["adapter_event_type"] == "item/agentMessage/delta"
+    assert result["action"] is None
+    assert result["json_rpc_response"] is None
+    assert calls == [
+        (
+            "POST",
+            "http://bridge.local/api/v1/sessions/ses_1/agent-adapter/events",
+            {
+                "agent_type": "codex",
+                "adapter_event_type": "item/agentMessage/delta",
+                "trace_id": "codex-app-server-adapter",
+                "schema_version": "codex-app-server.v1",
+                "payload": {
+                    "delta": "hello",
+                    "json_rpc_method": "item/agentMessage/delta",
+                },
+                "idempotency_key": result["idempotency_key"],
+            },
+        )
+    ]
+
+
+def test_codex_app_server_message_bridge_waits_for_approval_and_outputs_json_rpc():
+    calls = []
+
+    def transport(method, url, headers, payload, timeout_seconds):
+        calls.append((method, url, payload))
+        if method == "POST":
+            return {
+                "id": "evt_request",
+                "seq": 4,
+                "interaction_id": "int_1",
+                "payload": {"adapter_item_id": "cmd-1"},
+            }
+        return {
+            "responses": [
+                {
+                    "seq": 5,
+                    "request_event_id": "evt_request",
+                    "interaction_id": "int_1",
+                    "adapter_event_type": "item/commandExecution/requestApproval",
+                    "adapter_item_id": "cmd-1",
+                    "ready": True,
+                    "decision": "approved",
+                    "approve": True,
+                    "request_payload": {
+                        "raw_event": {
+                            "json_rpc_id": 42,
+                            "json_rpc_method": "item/commandExecution/requestApproval",
+                        }
+                    },
+                }
+            ]
+        }
+
+    control_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(base_url="http://bridge.local", session_id="ses_1"),
+        transport=transport,
+    )
+
+    result = handle_codex_app_server_message(
+        control_client=control_client,
+        message={
+            "method": "item/commandExecution/requestApproval",
+            "id": 42,
+            "params": {
+                "item": {"id": "cmd-1", "command": "pytest"},
+                "reason": "Run tests",
+            },
+        },
+        poll_interval_seconds=0.01,
+    )
+
+    assert result["action"]["action"] == "approval_decision"
+    assert result["action"]["decision"] == "approved"
+    assert result["json_rpc_response"] == {
+        "id": 42,
+        "result": {"agentbridge": result["action"]},
+    }
+    assert calls[0] == (
+        "POST",
+        "http://bridge.local/api/v1/sessions/ses_1/agent-adapter/events",
+        {
+            "agent_type": "codex",
+            "adapter_event_type": "item/commandExecution/requestApproval",
+            "trace_id": "codex-app-server-adapter",
+            "schema_version": "codex-app-server.v1",
+            "payload": {
+                "item": {"id": "cmd-1", "command": "pytest"},
+                "reason": "Run tests",
+                "json_rpc_method": "item/commandExecution/requestApproval",
+                "json_rpc_id": 42,
+            },
+            "idempotency_key": (
+                "codex-app-server:item/commandExecution/requestApproval:rpc:42"
+            ),
+        },
+    )
 
 
 def test_cli_format_response_prints_native_stdout_json(capsys):

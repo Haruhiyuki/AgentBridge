@@ -316,6 +316,7 @@ def adapter_response_application_for(agent_type: AgentType) -> dict[str, object]
     if agent_type == AgentType.CODEX:
         return {
             "format": "codex.app_server.agentbridge_action.v1",
+            "json_rpc_response_format": "codex.app_server.json_rpc_response.v1",
             "approval_actions": [
                 "approval_decision",
                 "approval_pending",
@@ -325,6 +326,7 @@ def adapter_response_application_for(agent_type: AgentType) -> dict[str, object]
                 "interaction_cancelled",
                 "interaction_expired",
             ],
+            "json_rpc_result_path": "result.agentbridge",
             "json_rpc_method": None,
         }
     raise unsupported_agent_error(agent_type)
