@@ -155,7 +155,8 @@ Collect these artifacts for a release candidate:
   event-outbox flush behavior.
 - The `agentbridge-acceptance bundle` ZIP containing the signed-off manifest, bundle
   index, and verified artifact files, plus `agentbridge-acceptance verify-bundle`
-  output showing `valid=true` and `ready=true`.
+  output showing `valid=true`, `ready=true`, artifact counts, and checklist summary
+  counts.
 
 ## Current Boundary
 

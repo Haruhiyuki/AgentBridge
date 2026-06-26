@@ -433,9 +433,15 @@ def test_acceptance_cli_bundle_creates_portable_verified_zip(tmp_path, capsys):
 
     verify_result = main(["verify-bundle", str(bundle_path)])
     verify_output = capsys.readouterr().out
+    verify_json_result = main(["verify-bundle", str(bundle_path), "--format", "json"])
+    verify_json_output = json.loads(capsys.readouterr().out)
 
     assert verify_result == 0
     assert "valid=true ready=true artifacts=8 errors=0" in verify_output
+    assert "checklist_incomplete=0" in verify_output
+    assert verify_json_result == 0
+    assert verify_json_output["summary"]["ready"] is True
+    assert verify_json_output["summary"]["checklist_incomplete_count"] == 0
 
 
 def test_acceptance_cli_bundle_refuses_incomplete_evidence_by_default(tmp_path, capsys):
@@ -529,8 +535,10 @@ def test_acceptance_cli_bundle_allows_draft_incomplete_evidence(tmp_path, capsys
 
     assert draft_verify_result == ACCEPTANCE_EXIT_INCOMPLETE
     assert "valid=true ready=false artifacts=1 errors=0" in draft_verify_output
+    assert "checklist_incomplete=24" in draft_verify_output
     assert allowed_draft_result == 0
     assert "valid=true ready=false artifacts=1 errors=0" in allowed_draft_output
+    assert "checklist_incomplete=24" in allowed_draft_output
 
 
 def test_acceptance_cli_bundle_rejects_invalid_checklist_even_for_draft(tmp_path, capsys):

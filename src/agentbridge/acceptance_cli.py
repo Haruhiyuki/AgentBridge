@@ -16,6 +16,7 @@ from agentbridge.acceptance_evidence import (
     acceptance_artifact_reference,
     acceptance_evidence_summary,
     acceptance_section_checklist_manifest,
+    acceptance_section_evidence,
     empty_acceptance_manifest,
     load_acceptance_manifest,
     read_acceptance_evidence,
@@ -975,6 +976,10 @@ def verify_acceptance_bundle_payload(
     if isinstance(summary.get("ready"), bool) and summary.get("ready") != ready:
         errors.append("bundle_summary_ready_mismatch")
     valid = not errors
+    manifest_summary = acceptance_bundle_manifest_summary(
+        manifest_payload,
+        ready=ready if valid else False,
+    )
     return {
         "schema_version": ACCEPTANCE_BUNDLE_SCHEMA_VERSION,
         "valid": valid,
@@ -982,6 +987,7 @@ def verify_acceptance_bundle_payload(
         "artifact_count": len(artifact_index),
         "errors": errors,
         "manifest_sha256": manifest_sha256,
+        "summary": manifest_summary,
     }
 
 
@@ -993,6 +999,7 @@ def acceptance_bundle_verification_error(path: Path, error: str) -> dict[str, ob
         "path": str(path),
         "artifact_count": 0,
         "errors": [error],
+        "summary": {},
     }
 
 
@@ -1003,6 +1010,7 @@ def acceptance_bundle_verification_payload_error(error: str) -> dict[str, object
         "ready": False,
         "artifact_count": 0,
         "errors": [error],
+        "summary": {},
     }
 
 
@@ -1125,6 +1133,33 @@ def verify_acceptance_bundle_manifest(
     return ready
 
 
+def acceptance_bundle_manifest_summary(
+    manifest_payload: dict[str, object],
+    *,
+    ready: bool,
+) -> dict[str, object]:
+    sections = manifest_payload.get("sections")
+    if not isinstance(sections, dict):
+        return {}
+    section_evidence = {
+        section_id: acceptance_section_evidence(
+            section_id,
+            sections.get(section_id),
+            artifact_root=None,
+            verify_artifacts=False,
+        )
+        for section_id in ACCEPTANCE_SECTIONS
+    }
+    summary = acceptance_evidence_summary(
+        {
+            "valid": True,
+            "sections": section_evidence,
+        }
+    )
+    summary["ready"] = ready
+    return summary
+
+
 def verify_acceptance_bundle_section_checklist(
     section_id: str,
     raw_checklist: object,
@@ -1210,12 +1245,32 @@ def print_bundle_verification(
                 f"ready={str(bool(verification.get('ready'))).lower()}",
                 f"artifacts={int(verification.get('artifact_count') or 0)}",
                 f"errors={error_count}",
+                *acceptance_bundle_summary_fields(verification),
             ]
         )
     )
     if isinstance(errors, list):
         for error in errors:
             print(f"error={error}")
+
+
+def acceptance_bundle_summary_fields(verification: dict[str, object]) -> list[str]:
+    summary = verification.get("summary")
+    if not isinstance(summary, dict):
+        return []
+    counts = summary.get("counts")
+    counts_payload = counts if isinstance(counts, dict) else {}
+    return [
+        f"passed={counts_payload.get('passed', 0)}",
+        f"failed={counts_payload.get('failed', 0)}",
+        f"blocked={counts_payload.get('blocked', 0)}",
+        f"not_run={counts_payload.get('not_run', 0)}",
+        f"missing={counts_payload.get('missing', 0)}",
+        f"invalid={counts_payload.get('invalid', 0)}",
+        f"artifact_errors={summary.get('artifact_error_count', 0)}",
+        f"checklist_incomplete={summary.get('checklist_incomplete_count', 0)}",
+        f"checklist_errors={summary.get('checklist_error_count', 0)}",
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
