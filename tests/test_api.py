@@ -733,6 +733,51 @@ def test_readiness_endpoint_fails_for_duplicate_acceptance_artifact_path(
     ]
 
 
+def test_readiness_endpoint_fails_for_invalid_acceptance_artifact_sha256(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_file = tmp_path / "acceptance-evidence.json"
+    evidence_file.write_text(
+        json.dumps(
+            {
+                "schema_version": ACCEPTANCE_EVIDENCE_SCHEMA_VERSION,
+                "sections": {
+                    "34.1": {
+                        "status": "passed",
+                        "artifacts": [
+                            {
+                                "path": "artifacts/native-session.json",
+                                "sha256": "not-a-sha256",
+                            }
+                        ],
+                        "checklist": passed_acceptance_checklist("34.1"),
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", str(evidence_file))
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    assert payload["status"] == "not_ready"
+    assert checks["acceptance.native_session"]["status"] == "fail"
+    assert checks["acceptance.native_session"]["evidence"]["artifact_error_count"] == 1
+    assert checks["acceptance.native_session"]["evidence"]["artifact_errors"] == [
+        {
+            "path": "artifacts/native-session.json",
+            "sha256": "not-a-sha256",
+            "status": "sha256_invalid",
+        }
+    ]
+
+
 def test_readiness_endpoint_fails_for_invalid_acceptance_evidence_manifest(
     monkeypatch,
     tmp_path,

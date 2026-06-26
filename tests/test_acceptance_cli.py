@@ -448,6 +448,34 @@ def test_acceptance_cli_summary_fails_for_duplicate_section_artifact_path(
     assert "34.1 status=passed artifacts=2 artifact_errors=1" in output
 
 
+def test_acceptance_cli_summary_fails_for_invalid_artifact_sha256(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    assert (
+        main(
+            [
+                "set-section",
+                str(manifest),
+                "34.1",
+                "--status",
+                "passed",
+                "--artifact-sha256",
+                "artifacts/native-session.json=not-a-sha256",
+            ]
+        )
+        == 0
+    )
+    mark_section_checklist_passed(manifest, "34.1")
+    capsys.readouterr()
+
+    result = main(["summary", str(manifest), "--fail-on-fail"])
+    output = capsys.readouterr().out
+
+    assert result == ACCEPTANCE_EXIT_INVALID
+    assert "artifact_errors=1" in output
+    assert "34.1 status=passed artifacts=1 artifact_errors=1" in output
+
+
 def test_acceptance_cli_summary_fails_for_unknown_manifest_section(tmp_path, capsys):
     manifest = tmp_path / "acceptance-evidence.json"
     main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
@@ -1065,6 +1093,41 @@ def test_acceptance_cli_verify_bundle_rejects_duplicate_artifact_archive_path(
     assert result == ACCEPTANCE_EXIT_INVALID
     assert "valid=false ready=false artifacts=8 errors=1" in output
     assert "error=artifact[8]_archive_path_duplicate" in output
+
+
+def test_acceptance_cli_verify_bundle_rejects_invalid_artifact_sha256(tmp_path, capsys):
+    _manifest, _artifact_root, bundle_path = create_complete_acceptance_bundle(tmp_path)
+    tampered_bundle_path = tmp_path / "acceptance-bundle-invalid-sha256.zip"
+    capsys.readouterr()
+    with (
+        zipfile.ZipFile(bundle_path) as source_bundle,
+        zipfile.ZipFile(
+            tampered_bundle_path,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as target_bundle,
+    ):
+        bundle_index = json.loads(source_bundle.read("acceptance-bundle.json"))
+        bundle_index["artifacts"][0]["sha256"] = "not-a-sha256"
+        tampered_index_bytes = (
+            json.dumps(bundle_index, ensure_ascii=False, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        for entry in source_bundle.infolist():
+            entry_bytes = (
+                tampered_index_bytes
+                if entry.filename == "acceptance-bundle.json"
+                else source_bundle.read(entry.filename)
+            )
+            target_bundle.writestr(entry.filename, entry_bytes)
+
+    result = main(["verify-bundle", str(tampered_bundle_path)])
+    output = capsys.readouterr().out
+
+    assert result == ACCEPTANCE_EXIT_INVALID
+    assert "valid=false ready=false artifacts=7 errors=3" in output
+    assert "error=artifact[0]_sha256_invalid" in output
+    assert "error=section_34.1_artifact_missing_from_bundle" in output
+    assert "error=bundle_summary_ready_mismatch" in output
 
 
 def test_acceptance_cli_bundle_refuses_incomplete_evidence_by_default(tmp_path, capsys):

@@ -55,9 +55,10 @@ checklist item `passed`, and attach at least one artifact reference per section.
 Readiness treats a missing manifest as a warning, an unreadable or malformed manifest as
 a failure, any failed section as a failure, and incomplete checklist items as warnings
 until they are signed off. Unknown manifest section IDs are malformed evidence and fail
-the manifest. Repeated artifact paths inside the same section are malformed evidence and
-fail the section. Unknown, duplicate, missing-id, or invalid-status checklist items are
-malformed evidence and fail the section until the manifest is corrected.
+the manifest. Repeated artifact paths inside the same section or malformed sha256
+digests are malformed evidence and fail the section. Unknown, duplicate, missing-id, or
+invalid-status checklist items are malformed evidence and fail the section until the
+manifest is corrected.
 When `AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS=true`, artifact paths are resolved under
 `AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT` or the manifest directory, and missing files,
 root escapes, non-files, or sha256 mismatches fail the relevant section. Prefer

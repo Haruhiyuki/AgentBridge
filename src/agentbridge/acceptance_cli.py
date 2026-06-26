@@ -17,6 +17,7 @@ from agentbridge.acceptance_evidence import (
     acceptance_evidence_summary,
     acceptance_section_checklist_manifest,
     acceptance_section_evidence,
+    acceptance_sha256_digest,
     acceptance_unknown_section_ids,
     empty_acceptance_manifest,
     load_acceptance_manifest,
@@ -1284,6 +1285,10 @@ def verify_acceptance_bundle_artifacts(
         if not isinstance(raw_sha256, str) or not raw_sha256.strip():
             errors.append(f"artifact[{index}]_sha256_missing")
             continue
+        expected_sha256 = raw_sha256.strip().lower()
+        if not acceptance_sha256_digest(expected_sha256):
+            errors.append(f"artifact[{index}]_sha256_invalid")
+            continue
         duplicate = False
         if raw_path in seen_paths:
             errors.append(f"artifact[{index}]_path_duplicate")
@@ -1303,7 +1308,6 @@ def verify_acceptance_bundle_artifacts(
             errors.append(f"artifact[{index}]_archive_entry_missing")
             continue
         actual_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
-        expected_sha256 = raw_sha256.strip().lower()
         if actual_sha256 != expected_sha256:
             errors.append(f"artifact[{index}]_sha256_mismatch")
             continue

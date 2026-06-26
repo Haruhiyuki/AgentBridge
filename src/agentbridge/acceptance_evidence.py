@@ -522,6 +522,16 @@ def acceptance_artifact_payloads(
         if reference is None:
             payloads.append({"path": None, "status": "invalid_reference"})
             continue
+        expected_sha256 = reference.get("sha256")
+        if expected_sha256 is not None and not acceptance_sha256_digest(expected_sha256):
+            payloads.append(
+                {
+                    "path": reference["path"],
+                    "sha256": expected_sha256,
+                    "status": "sha256_invalid",
+                }
+            )
+            continue
         if reference["path"] in seen_paths:
             payloads.append(
                 {
@@ -564,6 +574,10 @@ def acceptance_artifact_reference(artifact: object) -> dict[str, str] | None:
             reference["sha256"] = raw_sha256.strip().lower()
         return reference
     return None
+
+
+def acceptance_sha256_digest(value: str) -> bool:
+    return len(value) == 64 and all(char in "0123456789abcdef" for char in value.lower())
 
 
 def verify_acceptance_artifact(
