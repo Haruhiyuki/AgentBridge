@@ -192,6 +192,82 @@ class BotDeliveryRateLimiter:
         ]
 
 
+@dataclass(frozen=True)
+class BotPlatformCapability:
+    platform: BotPlatform
+    markdown: bool
+    code_block: bool
+    edit_message: bool
+    delete_message: bool
+    buttons: bool
+    select_menu: bool
+    modal_input: bool
+    thread: bool
+    reply: bool
+    reaction: bool
+    file_upload: bool
+    max_text_length: int
+    rate_limit_profile: str
+
+    def to_api_dict(self) -> dict[str, object]:
+        return {
+            "platform": self.platform.value,
+            "markdown": self.markdown,
+            "codeBlock": self.code_block,
+            "editMessage": self.edit_message,
+            "deleteMessage": self.delete_message,
+            "buttons": self.buttons,
+            "selectMenu": self.select_menu,
+            "modalInput": self.modal_input,
+            "thread": self.thread,
+            "reply": self.reply,
+            "reaction": self.reaction,
+            "fileUpload": self.file_upload,
+            "maxTextLength": self.max_text_length,
+            "rateLimitProfile": self.rate_limit_profile,
+        }
+
+
+def bot_platform_capability(
+    platform: BotPlatform,
+    *,
+    max_text_length: int,
+) -> BotPlatformCapability:
+    if platform == BotPlatform.ONEBOT_V11:
+        return BotPlatformCapability(
+            platform=platform,
+            markdown=False,
+            code_block=True,
+            edit_message=False,
+            delete_message=True,
+            buttons=False,
+            select_menu=False,
+            modal_input=False,
+            thread=False,
+            reply=True,
+            reaction=False,
+            file_upload=False,
+            max_text_length=max_text_length,
+            rate_limit_profile=platform.value,
+        )
+    return BotPlatformCapability(
+        platform=platform,
+        markdown=False,
+        code_block=True,
+        edit_message=True,
+        delete_message=True,
+        buttons=False,
+        select_menu=False,
+        modal_input=False,
+        thread=False,
+        reply=False,
+        reaction=False,
+        file_upload=False,
+        max_text_length=max_text_length,
+        rate_limit_profile=platform.value,
+    )
+
+
 class BotGatewayService:
     def __init__(
         self,
@@ -208,6 +284,19 @@ class BotGatewayService:
         self.retry_base_seconds = retry_base_seconds
         self.retry_max_seconds = retry_max_seconds
         self.rate_limiter = rate_limiter or BotDeliveryRateLimiter()
+
+    def describe_capabilities(
+        self,
+        platform: BotPlatform | None = None,
+    ) -> list[BotPlatformCapability]:
+        platforms = [platform] if platform is not None else list(BotPlatform)
+        return [
+            bot_platform_capability(
+                item,
+                max_text_length=self.renderer.max_message_chars,
+            )
+            for item in platforms
+        ]
 
     def deliver_session_events(
         self,

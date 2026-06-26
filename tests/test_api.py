@@ -4437,6 +4437,10 @@ def test_managed_device_identity_requires_bot_gateway_read_scope_for_bot_gateway
         "/api/v1/bot-gateway/rate-limits",
         headers=key_headers,
     )
+    capabilities_response = client.get(
+        "/api/v1/bot-gateway/capabilities",
+        headers=key_headers,
+    )
     retry_worker_response = client.get(
         "/api/v1/bot-gateway/retry-worker",
         headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
@@ -4446,6 +4450,7 @@ def test_managed_device_identity_requires_bot_gateway_read_scope_for_bot_gateway
     assert regular_http_response.status_code == 200
     assert deliveries_response.status_code == 403
     assert rate_limits_response.status_code == 403
+    assert capabilities_response.status_code == 403
     assert retry_worker_response.status_code == 403
 
 
@@ -4475,6 +4480,10 @@ def test_managed_device_identity_bot_gateway_read_scope_allows_bot_gateway_gets(
         "/api/v1/bot-gateway/rate-limits",
         headers=headers,
     )
+    capabilities_response = client.get(
+        "/api/v1/bot-gateway/capabilities",
+        headers=headers,
+    )
     retry_worker_response = client.get(
         "/api/v1/bot-gateway/retry-worker",
         headers=headers,
@@ -4490,6 +4499,8 @@ def test_managed_device_identity_bot_gateway_read_scope_allows_bot_gateway_gets(
     assert deliveries_response.json() == []
     assert rate_limits_response.status_code == 200
     assert "policies" in rate_limits_response.json()
+    assert capabilities_response.status_code == 200
+    assert "capabilities" in capabilities_response.json()
     assert retry_worker_response.status_code == 200
     assert retry_worker_response.json()["enabled"] is False
     assert run_once_response.status_code == 403

@@ -590,6 +590,14 @@ curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/deliveries/delete \
 
 The in-memory transport supports edit/delete for contract tests. OneBot V11 supports native `delete_msg`; standard OneBot V11 message editing is not available and returns a capability error unless a platform-specific transport adds that extension.
 
+Bot clients and platform adapters can discover the conservative standard capability contract before choosing render or mutation behavior:
+
+```bash
+curl 'http://127.0.0.1:8000/api/v1/bot-gateway/capabilities?platform=onebot.v11'
+```
+
+The response uses the design-document `BotCapability` fields (`markdown`, `codeBlock`, `editMessage`, `buttons`, `selectMenu`, `modalInput`, `thread`, `reply`, `reaction`, `fileUpload`, `maxTextLength`, and `rateLimitProfile`) plus `platform` and `deleteMessage`. Platform-neutral action descriptors in WebSocket render frames are still adapter hints; they are not reported as native OneBot V11 button/select/modal support by this endpoint.
+
 The background retry worker is disabled by default. Enable it for long-running deployments:
 
 ```bash
@@ -611,6 +619,7 @@ If a platform transport returns a rate-limit response with `Retry-After` or rela
 Check worker state or run one bounded retry pass:
 
 ```bash
+curl http://127.0.0.1:8000/api/v1/bot-gateway/capabilities
 curl http://127.0.0.1:8000/api/v1/bot-gateway/rate-limits
 curl http://127.0.0.1:8000/api/v1/bot-gateway/retry-worker
 curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/retry-worker/run-once \

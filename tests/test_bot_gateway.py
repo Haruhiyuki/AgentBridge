@@ -488,6 +488,41 @@ def test_bot_gateway_api_delivers_and_lists_records(tmp_path):
     assert len(records_response.json()) == 1
 
 
+def test_bot_gateway_capabilities_api_exposes_platform_contracts():
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/bot-gateway/capabilities")
+    filtered = client.get(
+        "/api/v1/bot-gateway/capabilities",
+        params={"platform": "onebot.v11"},
+    )
+
+    assert response.status_code == 200
+    capabilities = {
+        item["platform"]: item for item in response.json()["capabilities"]
+    }
+    assert capabilities["onebot.v11"] == {
+        "platform": "onebot.v11",
+        "markdown": False,
+        "codeBlock": True,
+        "editMessage": False,
+        "deleteMessage": True,
+        "buttons": False,
+        "selectMenu": False,
+        "modalInput": False,
+        "thread": False,
+        "reply": True,
+        "reaction": False,
+        "fileUpload": False,
+        "maxTextLength": 1800,
+        "rateLimitProfile": "onebot.v11",
+    }
+    assert capabilities["plain_text"]["editMessage"] is True
+    assert capabilities["plain_text"]["deleteMessage"] is True
+    assert filtered.status_code == 200
+    assert filtered.json()["capabilities"] == [capabilities["onebot.v11"]]
+
+
 def test_bot_gateway_delivery_results_api_tracks_ack_edit_delete(tmp_path):
     control = ControlPlane()
     context, session_id = create_session_with_turn(control, tmp_path)

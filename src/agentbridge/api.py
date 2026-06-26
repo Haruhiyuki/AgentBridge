@@ -2094,6 +2094,18 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             for record in bot_gateway_service.list_records(chat_context_id, status=status)
         ]
 
+    @app.get("/api/v1/bot-gateway/capabilities")
+    def list_bot_capabilities(
+        bot_gateway_service: BotGatewayService = Depends(get_bot_gateway),
+        platform: BotPlatform | None = None,
+    ):
+        return {
+            "capabilities": [
+                capability.to_api_dict()
+                for capability in bot_gateway_service.describe_capabilities(platform)
+            ]
+        }
+
     @app.get("/api/v1/bot-gateway/rate-limits")
     def list_bot_rate_limits(
         bot_gateway_service: BotGatewayService = Depends(get_bot_gateway),
