@@ -13,7 +13,15 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agentbridge.domain import Actor, AgentBridgeError, BotPlatform, ChatContext, ErrorCode
+from agentbridge.domain import (
+    Actor,
+    AgentBridgeError,
+    BotPlatform,
+    ChatContext,
+    ErrorCode,
+    SemanticEvent,
+    SemanticEventSource,
+)
 
 MODAL_COMMAND_PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_-]*)\}")
 
@@ -509,11 +517,85 @@ def execute_onebot_inbound_command(
         trace_id=inbound.trace_id,
     )
     result = command_service.execute(invocation)
-    return {
+    ack_event = emit_bot_interaction_ack(
+        inbound=inbound,
+        chat_context_id=context.id,
+        raw_text=raw_text,
+        result=result,
+        control=control,
+    )
+    response = {
         "handled": True,
         "chat_context_id": context.id,
         "result": result.model_dump(mode="json"),
     }
+    if ack_event is not None:
+        response["ack_event"] = ack_event.model_dump(mode="json")
+    return response
+
+
+def emit_bot_interaction_ack(
+    *,
+    inbound: OneBotInboundCommand,
+    chat_context_id: str,
+    raw_text: str,
+    result: Any,
+    control: Any,
+) -> SemanticEvent | None:
+    interaction_kind = bot_interaction_kind(inbound.original_event)
+    if interaction_kind is None:
+        return None
+    session_id = result.data.get("session_id")
+    interaction_id = result.data.get("interaction_id")
+    project_id = None
+    if session_id:
+        project_id = control.repository.get_session(str(session_id)).project_id
+    payload = {
+        "platform": inbound.platform.value,
+        "bot_instance_id": inbound.bot_instance_id,
+        "chat_context_id": chat_context_id,
+        "chat_space_id": inbound.chat_space_id,
+        "thread_id": inbound.thread_id,
+        "user_id": inbound.original_event.get("user_id"),
+        "actor_id": inbound.actor.id,
+        "platform_event_id": platform_event_id_from_inbound(inbound),
+        "interaction_kind": interaction_kind,
+        "raw_text": raw_text,
+        "canonical_command": result.canonical_command,
+        "command_result_title": result.title,
+        "session_id": session_id,
+        "interaction_id": interaction_id,
+    }
+    return control.emit_event(
+        event_type="bot.interaction.ack",
+        source=SemanticEventSource.BOT_GATEWAY,
+        trace_id=inbound.trace_id,
+        project_id=project_id,
+        session_id=str(session_id) if session_id else None,
+        interaction_id=str(interaction_id) if interaction_id else None,
+        payload=payload,
+        idempotency_key=f"{inbound.idempotency_key}:bot-interaction-ack",
+    )
+
+
+def bot_interaction_kind(event: dict[str, Any]) -> str | None:
+    if event.get("post_type") == "message":
+        return None
+    labels = " ".join(
+        str(event.get(key) or "")
+        for key in ("post_type", "notice_type", "request_type", "sub_type", "type")
+    ).lower()
+    if "select" in labels or "selection" in labels:
+        return "selection"
+    if "modal" in labels:
+        return "modal"
+    if "button" in labels or "click" in labels or command_text_from_action_payload(event):
+        return "action"
+    return None
+
+
+def platform_event_id_from_inbound(inbound: OneBotInboundCommand) -> str:
+    return inbound.idempotency_key.removeprefix("onebot:")
 
 
 def command_text_with_reply_interaction(

@@ -472,8 +472,41 @@ def test_onebot_events_api_executes_action_callback_with_click_actor(tmp_path):
     assert response.status_code == 200
     assert response.json()["handled"] is True
     assert response.json()["result"]["canonical_command"] == "approval.vote"
+    ack_event = response.json()["ack_event"]
+    assert ack_event["type"] == "bot.interaction.ack"
+    assert ack_event["source"] == "bot_gateway"
+    assert ack_event["session_id"] == session.id
+    assert ack_event["interaction_id"] == interaction.id
+    assert ack_event["idempotency_key"] == "onebot:callback-approve-1:bot-interaction-ack"
+    assert ack_event["payload"]["interaction_kind"] == "action"
+    assert ack_event["payload"]["actor_id"] == "onebot:20002"
+    assert ack_event["payload"]["platform_event_id"] == "callback-approve-1"
+    assert ack_event["payload"]["canonical_command"] == "approval.vote"
     assert stored.status == InteractionStatus.RESOLVED
     assert stored.votes == {"onebot:20002": True}
+
+    repeated = client.post(
+        "/api/v1/onebot/events",
+        json={
+            "default_roles": ["approver"],
+            "event": {
+                "post_type": "notice",
+                "notice_type": "button_clicked",
+                "group_id": 10001,
+                "user_id": 20002,
+                "event_id": "callback-approve-1",
+                "payload": {"command": f"/agent approve {interaction.id} once"},
+            },
+        },
+    )
+    ack_events = [
+        event
+        for event in control.repository.list_events(session_id=session.id, limit=20)
+        if event.type == "bot.interaction.ack"
+    ]
+    assert repeated.status_code == 200
+    assert repeated.json()["ack_event"]["id"] == ack_event["id"]
+    assert len(ack_events) == 1
 
 
 def test_onebot_events_api_executes_modal_plan_revision(tmp_path):
@@ -513,6 +546,7 @@ def test_onebot_events_api_executes_modal_plan_revision(tmp_path):
     stored = control.get_interaction(actor=maintainer, interaction_id=interaction.id)
     assert response.status_code == 200
     assert response.json()["result"]["canonical_command"] == "plan.revise"
+    assert response.json()["ack_event"]["payload"]["interaction_kind"] == "modal"
     assert stored.status == InteractionStatus.RESOLVED
     assert stored.answer == "Use expand-contract migration first"
 
@@ -553,6 +587,7 @@ def test_onebot_events_api_executes_selection_answer(tmp_path):
     stored = control.get_interaction(actor=maintainer, interaction_id=interaction.id)
     assert response.status_code == 200
     assert response.json()["result"]["canonical_command"] == "interaction.answer"
+    assert response.json()["ack_event"]["payload"]["interaction_kind"] == "selection"
     assert stored.status == InteractionStatus.RESOLVED
     assert stored.answer == "production"
 

@@ -268,6 +268,26 @@ def test_interaction_expired_event_renders_operator_warning():
     assert "int_expired" in messages[0]
 
 
+def test_bot_interaction_ack_event_renders_operator_status():
+    event = make_event(
+        "bot.interaction.ack",
+        {
+            "platform": "onebot.v11",
+            "interaction_kind": "selection",
+            "actor_id": "onebot:20002",
+            "canonical_command": "interaction.answer",
+        },
+    )
+
+    document = document_from_event(event)
+    messages = OneBotV11TextRenderer().render(document)
+
+    assert document.visibility == "operators"
+    assert "Bot 交互已确认" in messages[0]
+    assert "类型：selection" in messages[0]
+    assert "命令：interaction.answer" in messages[0]
+
+
 def test_code_blocks_actions_and_message_splitting_are_stable():
     document = RenderDocument(
         id="rend_1",

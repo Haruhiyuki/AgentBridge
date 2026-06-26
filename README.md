@@ -564,7 +564,7 @@ External Bot Gateway subscribers can also receive Bot-facing render frames witho
 wscat -c 'ws://127.0.0.1:8000/api/v1/bot-gateway/session-events/ws?session_id=<session-id>&chat_context_id=<chat-context-id>&after_seq=42'
 ```
 
-Each pushed frame uses `type: "bot.render.create"` and includes the semantic event, render document, target chat context, platform, per-message idempotency keys, and platform-neutral `actions` for button-, select-, or modal-capable adapters. Button descriptors carry a label, style, command, `callback_data`, and payload that OneBot/NoneBot callback handling can map back into the audited `/agent` command path. Select and modal descriptors add `command_template` plus input or option metadata; submitted payload values are rendered into the command template before the same command execution, RBAC, and access-policy checks run. Set `AGENTBRIDGE_WS_TOKEN` or `AGENTBRIDGE_WS_TOKEN_FILE` to protect this subscription endpoint in the same way as the other WebSocket routes.
+Each pushed frame uses `type: "bot.render.create"` and includes the semantic event, render document, target chat context, platform, per-message idempotency keys, and platform-neutral `actions` for button-, select-, or modal-capable adapters. Button descriptors carry a label, style, command, `callback_data`, and payload that OneBot/NoneBot callback handling can map back into the audited `/agent` command path. Select and modal descriptors add `command_template` plus input or option metadata; submitted payload values are rendered into the command template before the same command execution, RBAC, and access-policy checks run. Successful platform interaction submissions emit an idempotent `bot.interaction.ack` semantic event on the affected session stream. Set `AGENTBRIDGE_WS_TOKEN` or `AGENTBRIDGE_WS_TOKEN_FILE` to protect this subscription endpoint in the same way as the other WebSocket routes.
 
 Platform adapters can report delivery lifecycle results back to AgentBridge:
 
@@ -650,6 +650,8 @@ curl -X POST http://127.0.0.1:8000/api/v1/onebot/events \
 Only `/agent` and `/ab` commands are executed. Non-command messages are ignored, and
 callback events must carry the clicking `user_id` so the command actor can be
 re-authorized through RBAC/access policy instead of trusting the button payload.
+Successful action, select, and modal submissions return an `ack_event` and append the
+same `bot.interaction.ack` event idempotently, keyed by the platform event id.
 Managed device credentials need `onebot_event_ingest` to call this endpoint.
 
 For text-only fallback, users may reply to a Bot-rendered question or approval message

@@ -321,6 +321,19 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 ),
             )
         )
+    elif event.type == "bot.interaction.ack":
+        visibility = RenderVisibility.OPERATORS
+        blocks.append(
+            text_block(
+                "Bot 交互已确认",
+                (
+                    f"平台：{payload.get('platform')}\n"
+                    f"类型：{payload.get('interaction_kind')}\n"
+                    f"Actor：{payload.get('actor_id')}\n"
+                    f"命令：{payload.get('canonical_command')}"
+                ),
+            )
+        )
     elif event.type == "lease.acquired":
         visibility = RenderVisibility.OPERATORS
         blocks.append(
