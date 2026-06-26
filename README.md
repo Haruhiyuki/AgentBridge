@@ -933,9 +933,10 @@ details and event payloads, exports filtered audit records as JSON, CSV, or a si
 archive, replays
 session semantic events, and can live-tail a selected session's event stream over WebSocket.
 The terminal lifecycle page shows tracked sessions, exit/loss counts, automatic restart
-attempts, command allowlist patterns, policy blocks, backend supervision state, Agent
-launch readiness, adapter capability status, and provider-version verification, and can
-trigger bounded run-once/probe/detect actions.
+attempts, command allowlist patterns, policy blocks, backend supervision state, Terminal
+Agent lifecycle event outbox state, Agent launch readiness, adapter capability status,
+and provider-version verification, and can trigger bounded run-once/outbox-flush/probe/detect
+actions.
 The policy editor lists rules, edits allow/deny match criteria, runs
 `/api/v1/access-policy/simulate`, and saves through the same audited REST APIs.
 The device identities page lists active/revoked managed devices, creates or rotates

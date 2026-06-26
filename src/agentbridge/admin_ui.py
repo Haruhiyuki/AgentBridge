@@ -3493,6 +3493,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
       <div class="toolbar">
         <button id="refresh" type="button">Refresh</button>
         <button class="primary" id="run-once" type="button">Run Once</button>
+        <button id="flush-outbox" type="button">Flush Outbox</button>
         <div class="status" id="status">Ready</div>
       </div>
       <div class="metrics">
@@ -3506,8 +3507,12 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
         <div class="metric"><span>Restart Attempts</span><strong id="attempts">-</strong></div>
         <div class="metric"><span>Restart Blocks</span><strong id="blocks">-</strong></div>
         <div class="metric"><span>Command Allowlist</span><strong id="allowlist">-</strong></div>
+        <div class="metric"><span>Outbox Pending</span><strong id="outbox-pending">-</strong></div>
+        <div class="metric"><span>Outbox Flush</span><strong id="outbox-flush">-</strong></div>
+        <div class="metric"><span>Outbox Error</span><strong id="outbox-error">-</strong></div>
       </div>
       <pre id="backend">{}</pre>
+      <pre id="event-outbox">{}</pre>
       <pre id="error" class="danger"></pre>
     </section>
     <section>
@@ -3625,8 +3630,16 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
       setText("blocks", status.auto_restart_blocked_count);
       setText("allowlist", (status.auto_restart_command_allowlist || []).join(",") || "-");
       $("backend").textContent = JSON.stringify(status.backend_supervision || {}, null, 2);
+      renderEventOutbox(status.event_outbox || {});
       $("error").textContent = status.last_error || status.auto_restart_last_block_reason || "";
       renderAgentProfiles(status.agent_launch_profiles || {});
+    }
+
+    function renderEventOutbox(eventOutbox) {
+      setText("outbox-pending", eventOutbox.enabled ? eventOutbox.pending_count : "disabled");
+      setText("outbox-flush", eventOutbox.last_flush_count ?? 0);
+      setText("outbox-error", eventOutbox.last_flush_error || eventOutbox.read_error || "-");
+      $("event-outbox").textContent = JSON.stringify(eventOutbox, null, 2);
     }
 
     function renderAgentProfiles(profiles) {
@@ -3722,6 +3735,20 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
       setStatus("Run complete");
     }
 
+    async function flushOutbox() {
+      setStatus("Flushing outbox");
+      const payload = {
+        actor: actor(),
+        trace_id: $("trace-id").value.trim() || "admin-ui-terminal-event-outbox-flush",
+      };
+      const result = await requestJson("/api/v1/terminal/event-outbox/flush", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      renderEventOutbox(result.event_outbox || {});
+      setStatus(`Flushed ${result.flushed || 0} events`);
+    }
+
     async function probeAgents() {
       setStatus("Probing");
       const payload = {
@@ -3762,6 +3789,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
 
     $("refresh").addEventListener("click", () => run(refresh));
     $("run-once").addEventListener("click", () => run(runOnce));
+    $("flush-outbox").addEventListener("click", () => run(flushOutbox));
     $("probe-agents").addEventListener("click", () => run(probeAgents));
     $("detect-adapters").addEventListener("click", () => run(detectAdapters));
     refresh().catch((error) => setStatus(error.message));
