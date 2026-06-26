@@ -13,6 +13,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from agentbridge.agent_adapter_events import (
+    ADAPTER_NAME_BY_AGENT,
     AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
     adapter_schema_behavior_matrix_for,
     adapter_schema_snapshot_for,
@@ -348,6 +349,162 @@ def adapter_response_matches_request(
     return adapter_item_id is not None and response.get("adapter_item_id") == adapter_item_id
 
 
+def format_adapter_response_for_agent(
+    agent_type: AgentType,
+    response: Mapping[str, object],
+) -> dict[str, object]:
+    if agent_type == AgentType.CLAUDE:
+        stdout_json = claude_hook_stdout_json(response)
+        return {
+            "agent_type": agent_type.value,
+            "adapter": ADAPTER_NAME_BY_AGENT[agent_type],
+            "format": "claude.hooks.command_stdout.v1",
+            "exit_code": 0,
+            "stdout_json": stdout_json,
+            "response": dict(response),
+        }
+    if agent_type == AgentType.CODEX:
+        action_payload = codex_app_server_action_payload(response)
+        return {
+            "agent_type": agent_type.value,
+            "adapter": ADAPTER_NAME_BY_AGENT[agent_type],
+            "format": "codex.app_server.agentbridge_action.v1",
+            "action": action_payload["action"],
+            "payload": action_payload,
+            "response": dict(response),
+        }
+    raise ValueError(f"native response format is not supported for {agent_type.value}")
+
+
+def claude_hook_stdout_json(response: Mapping[str, object]) -> dict[str, object]:
+    adapter_event_type = string_value(response.get("adapter_event_type")) or ""
+    decision = string_value(response.get("decision")) or ""
+    reason = string_value(response.get("reason")) or default_response_reason(decision)
+    if adapter_event_type == "PermissionRequest":
+        behavior = "allow" if decision == "approved" else "deny"
+        decision_payload: dict[str, object] = {"behavior": behavior}
+        if behavior == "deny":
+            decision_payload["message"] = reason
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": decision_payload,
+            }
+        }
+    if adapter_event_type in {"AskUserQuestion", "QuestionRequested", "PlanRequested"}:
+        if decision == "answered":
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "Answered through AgentBridge.",
+                    "updatedInput": claude_updated_input_from_response(response),
+                }
+            }
+        return claude_pre_tool_use_decision("deny", reason)
+    if decision in {"approved", "denied", "cancelled", "expired"}:
+        permission_decision = "allow" if decision == "approved" else "deny"
+        return claude_pre_tool_use_decision(permission_decision, reason)
+    return {
+        "agentbridgeResponse": {
+            "decision": decision or "unknown",
+            "response": dict(response),
+        }
+    }
+
+
+def claude_pre_tool_use_decision(
+    permission_decision: str,
+    reason: str,
+) -> dict[str, object]:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": permission_decision,
+            "permissionDecisionReason": reason,
+        }
+    }
+
+
+def claude_updated_input_from_response(response: Mapping[str, object]) -> dict[str, object]:
+    answer = string_value(response.get("answer")) or ""
+    raw_event = raw_request_event(response)
+    tool_input = raw_event.get("tool_input")
+    if isinstance(tool_input, dict):
+        updated_input = {str(key): value for key, value in tool_input.items()}
+    else:
+        updated_input = {str(key): value for key, value in raw_event.items()}
+    questions = updated_input.get("questions")
+    if isinstance(questions, list) and questions:
+        answers: dict[str, str] = {}
+        for question in questions:
+            question_text = question_text_from_item(question)
+            if question_text:
+                answers[question_text] = answer
+        if answers:
+            updated_input["answers"] = answers
+            return updated_input
+    updated_input["answer"] = answer
+    return updated_input
+
+
+def question_text_from_item(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("text", "question", "prompt", "label"):
+            item = value.get(key)
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return None
+
+
+def codex_app_server_action_payload(response: Mapping[str, object]) -> dict[str, object]:
+    decision = string_value(response.get("decision")) or "unknown"
+    action = {
+        "approved": "approval_decision",
+        "denied": "approval_decision",
+        "pending": "approval_pending",
+        "answered": "user_input_response",
+        "cancelled": "interaction_cancelled",
+        "expired": "interaction_expired",
+    }.get(decision, "interaction_response")
+    return {
+        "action": action,
+        "decision": decision,
+        "approve": response.get("approve"),
+        "answer": response.get("answer"),
+        "reason": response.get("reason"),
+        "adapter_item_id": response.get("adapter_item_id"),
+        "interaction_id": response.get("interaction_id"),
+        "request_event_id": response.get("request_event_id"),
+        "request_seq": response.get("request_seq"),
+        "payload": response.get("payload"),
+    }
+
+
+def raw_request_event(response: Mapping[str, object]) -> dict[str, object]:
+    request_payload = response.get("request_payload")
+    if not isinstance(request_payload, dict):
+        return {}
+    raw_event = request_payload.get("raw_event")
+    if not isinstance(raw_event, dict):
+        return {}
+    return {str(key): value for key, value in raw_event.items()}
+
+
+def default_response_reason(decision: str) -> str:
+    if decision == "approved":
+        return "Approved through AgentBridge."
+    if decision == "answered":
+        return "Answered through AgentBridge."
+    if decision == "cancelled":
+        return "Interaction cancelled through AgentBridge."
+    if decision == "expired":
+        return "Interaction expired before AgentBridge received a response."
+    return "Denied through AgentBridge."
+
+
 def string_value(value: object) -> str | None:
     if isinstance(value, str) and value:
         return value
@@ -519,6 +676,17 @@ def load_payload_from_args(args: argparse.Namespace) -> dict[str, object]:
     return {str(key): value for key, value in decoded.items()}
 
 
+def load_response_from_args(args: argparse.Namespace) -> dict[str, object]:
+    if args.response_json is not None:
+        decoded = json.loads(args.response_json)
+    else:
+        raw = sys.stdin.read() if str(args.response_file) == "-" else args.response_file.read_text()
+        decoded = json.loads(raw)
+    if not isinstance(decoded, dict):
+        raise ValueError("response must be a JSON object")
+    return {str(key): value for key, value in decoded.items()}
+
+
 def parse_agent_type(value: str) -> AgentType:
     try:
         return AgentType(value)
@@ -576,6 +744,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Return the first matching response, even if it is not ready",
     )
+    emit_and_wait.add_argument(
+        "--native-response",
+        action="store_true",
+        help="Print the formatted native adapter response instead of the event/response pair",
+    )
+    emit_and_wait.add_argument(
+        "--native-stdout-json",
+        action="store_true",
+        help="Print only the native stdout JSON payload when the selected format provides one",
+    )
 
     poll = subparsers.add_parser(
         "poll-responses",
@@ -609,6 +787,25 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[AgentType.CLAUDE, AgentType.CODEX],
     )
     schemas.add_argument("--schema-version")
+
+    format_response = subparsers.add_parser(
+        "format-response",
+        help="Format an AgentBridge adapter response for a native adapter shim",
+    )
+    format_response.add_argument(
+        "--agent",
+        type=parse_agent_type,
+        required=True,
+        choices=[AgentType.CLAUDE, AgentType.CODEX],
+    )
+    response_input = format_response.add_mutually_exclusive_group(required=True)
+    response_input.add_argument("--response-json")
+    response_input.add_argument("--response-file", type=Path)
+    format_response.add_argument(
+        "--stdout-json",
+        action="store_true",
+        help="Print only the native stdout JSON payload when the selected format provides one",
+    )
     return parser
 
 
@@ -633,6 +830,19 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 payload = adapter_schema_behavior_matrix_for(args.agent)
             print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.command == "format-response":
+            payload = format_adapter_response_for_agent(
+                args.agent,
+                load_response_from_args(args),
+            )
+            if args.stdout_json:
+                stdout_json = payload.get("stdout_json")
+                if not isinstance(stdout_json, dict):
+                    raise ValueError("selected native response format has no stdout_json")
+                print(json.dumps(stdout_json, ensure_ascii=False, sort_keys=True))
+            else:
+                print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
             return 0
 
         control_client = AgentAdapterControlClient(build_config_from_args(args))
@@ -667,6 +877,13 @@ def main(argv: list[str] | None = None) -> int:
                 poll_interval_seconds=args.poll_interval_seconds,
                 ready_only=not args.include_pending,
             )
+            if args.native_response or args.native_stdout_json:
+                result = format_adapter_response_for_agent(args.agent, result["response"])
+                if args.native_stdout_json:
+                    stdout_json = result.get("stdout_json")
+                    if not isinstance(stdout_json, dict):
+                        raise ValueError("selected native response format has no stdout_json")
+                    result = stdout_json
         elif args.command == "poll-responses":
             result = control_client.poll_responses(
                 after_seq=args.after_seq,

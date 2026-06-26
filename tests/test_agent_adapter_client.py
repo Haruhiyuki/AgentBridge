@@ -12,6 +12,7 @@ from agentbridge.agent_adapter_client import (
     CodexAppServerAdapterClient,
     adapter_response_matches_request,
     build_parser,
+    format_adapter_response_for_agent,
     handshake_payload_for_agent,
     main,
     urllib_json_transport,
@@ -346,6 +347,119 @@ def test_cli_parser_accepts_emit_and_wait_options():
     assert args.wait_timeout_seconds == 12.5
     assert args.poll_interval_seconds == 0.2
     assert args.include_pending is True
+
+
+def test_formats_claude_permission_response_as_hook_stdout_json():
+    formatted = format_adapter_response_for_agent(
+        AgentType.CLAUDE,
+        {
+            "decision": "denied",
+            "reason": "Requires two approvals",
+            "adapter_event_type": "PermissionRequest",
+            "request_event_id": "evt_1",
+        },
+    )
+
+    assert formatted["format"] == "claude.hooks.command_stdout.v1"
+    assert formatted["exit_code"] == 0
+    assert formatted["stdout_json"] == {
+        "hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": {
+                "behavior": "deny",
+                "message": "Requires two approvals",
+            },
+        }
+    }
+
+
+def test_formats_claude_question_answer_as_pre_tool_use_updated_input():
+    formatted = format_adapter_response_for_agent(
+        AgentType.CLAUDE,
+        {
+            "decision": "answered",
+            "answer": "staging",
+            "adapter_event_type": "AskUserQuestion",
+            "request_payload": {
+                "raw_event": {
+                    "tool_input": {
+                        "questions": [
+                            {"text": "Which environment?"},
+                        ],
+                        "allowMultiple": False,
+                    }
+                }
+            },
+        },
+    )
+
+    assert formatted["stdout_json"] == {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "permissionDecisionReason": "Answered through AgentBridge.",
+            "updatedInput": {
+                "questions": [{"text": "Which environment?"}],
+                "allowMultiple": False,
+                "answers": {"Which environment?": "staging"},
+            },
+        }
+    }
+
+
+def test_formats_codex_response_as_agentbridge_action_envelope():
+    formatted = format_adapter_response_for_agent(
+        AgentType.CODEX,
+        {
+            "decision": "approved",
+            "approve": True,
+            "adapter_item_id": "cmd-1",
+            "interaction_id": "int_1",
+            "request_event_id": "evt_1",
+        },
+    )
+
+    assert formatted["format"] == "codex.app_server.agentbridge_action.v1"
+    assert formatted["action"] == "approval_decision"
+    assert formatted["payload"] == {
+        "action": "approval_decision",
+        "decision": "approved",
+        "approve": True,
+        "answer": None,
+        "reason": None,
+        "adapter_item_id": "cmd-1",
+        "interaction_id": "int_1",
+        "request_event_id": "evt_1",
+        "request_seq": None,
+        "payload": None,
+    }
+
+
+def test_cli_format_response_prints_native_stdout_json(capsys):
+    result = main(
+        [
+            "format-response",
+            "--agent",
+            "claude",
+            "--stdout-json",
+            "--response-json",
+            json.dumps(
+                {
+                    "decision": "approved",
+                    "adapter_event_type": "PermissionRequest",
+                }
+            ),
+        ]
+    )
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": {"behavior": "allow"},
+        }
+    }
 
 
 def test_urllib_transport_reports_structured_http_errors(monkeypatch):

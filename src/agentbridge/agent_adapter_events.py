@@ -261,6 +261,7 @@ def adapter_schema_snapshot_for(
             ],
             "pending_decision": "pending",
         },
+        "response_application": adapter_response_application_for(agent_type),
     }
 
 
@@ -296,6 +297,36 @@ def adapter_event_type_map_for(agent_type: AgentType) -> dict[str, str]:
         return CLAUDE_EVENT_TYPE_MAP
     if agent_type == AgentType.CODEX:
         return CODEX_EVENT_TYPE_MAP
+    raise unsupported_agent_error(agent_type)
+
+
+def adapter_response_application_for(agent_type: AgentType) -> dict[str, object]:
+    if agent_type == AgentType.CLAUDE:
+        return {
+            "format": "claude.hooks.command_stdout.v1",
+            "approval_events": ["PermissionRequest", "PreToolUse"],
+            "question_events": [
+                "AskUserQuestion",
+                "QuestionRequested",
+                "PlanRequested",
+            ],
+            "approval_output": "hookSpecificOutput",
+            "question_output": "hookSpecificOutput.updatedInput",
+        }
+    if agent_type == AgentType.CODEX:
+        return {
+            "format": "codex.app_server.agentbridge_action.v1",
+            "approval_actions": [
+                "approval_decision",
+                "approval_pending",
+            ],
+            "question_actions": ["user_input_response"],
+            "terminal_actions": [
+                "interaction_cancelled",
+                "interaction_expired",
+            ],
+            "json_rpc_method": None,
+        }
     raise unsupported_agent_error(agent_type)
 
 

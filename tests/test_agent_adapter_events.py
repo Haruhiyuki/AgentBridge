@@ -129,6 +129,17 @@ def test_adapter_schema_snapshot_describes_versioned_mapping_and_extractors():
         "interaction_id",
         "adapter_item_id",
     ]
+    assert snapshot["response_application"] == {
+        "format": "claude.hooks.command_stdout.v1",
+        "approval_events": ["PermissionRequest", "PreToolUse"],
+        "question_events": [
+            "AskUserQuestion",
+            "QuestionRequested",
+            "PlanRequested",
+        ],
+        "approval_output": "hookSpecificOutput",
+        "question_output": "hookSpecificOutput.updatedInput",
+    }
 
 
 def test_adapter_schema_behavior_matrix_lists_supported_versions():

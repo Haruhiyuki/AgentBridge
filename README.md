@@ -184,6 +184,10 @@ agentbridge-adapter-client emit-and-wait \
   --payload-json '{"item":{"id":"cmd-1","command":"pytest"},"reason":"Run tests"}' \
   --idempotency-key "codex-approval-1" \
   --wait-timeout-seconds 300
+agentbridge-adapter-client format-response \
+  --agent claude \
+  --stdout-json \
+  --response-json '{"decision":"approved","adapter_event_type":"PermissionRequest"}'
 agentbridge-adapter-client poll-responses --after-seq 0 --limit 50
 ```
 
