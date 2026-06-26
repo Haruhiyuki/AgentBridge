@@ -11,6 +11,7 @@ from typing import Literal
 
 from agentbridge.acceptance_evidence import (
     ACCEPTANCE_EVIDENCE_SCHEMA_VERSION,
+    ACCEPTANCE_SECTION_MISSING,
     ACCEPTANCE_SECTION_STATUSES,
     ACCEPTANCE_SECTIONS,
     acceptance_artifact_path,
@@ -1342,8 +1343,12 @@ def verify_acceptance_bundle_manifest(
     referenced_paths: set[str] = set()
     referenced_sections_by_path: dict[str, set[str]] = {}
     for section_id in ACCEPTANCE_SECTIONS:
-        section = sections.get(section_id)
+        if section_id not in sections:
+            ready = False
+            continue
+        section = sections[section_id]
         if not isinstance(section, dict):
+            errors.append(f"section_{section_id}_must_be_object")
             ready = False
             continue
         raw_status = str(section.get("status") or "").strip().lower()
@@ -1407,7 +1412,7 @@ def acceptance_bundle_manifest_summary(
     section_evidence = {
         section_id: acceptance_section_evidence(
             section_id,
-            sections.get(section_id),
+            sections.get(section_id, ACCEPTANCE_SECTION_MISSING),
             artifact_root=None,
             verify_artifacts=False,
         )

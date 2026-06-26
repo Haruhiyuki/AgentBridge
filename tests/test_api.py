@@ -730,6 +730,40 @@ def test_readiness_endpoint_fails_for_non_list_acceptance_checklist(
     }
 
 
+def test_readiness_endpoint_fails_for_non_object_acceptance_section(
+    monkeypatch,
+    tmp_path,
+):
+    evidence_file = tmp_path / "acceptance-evidence.json"
+    evidence_file.write_text(
+        json.dumps(
+            {
+                "schema_version": ACCEPTANCE_EVIDENCE_SCHEMA_VERSION,
+                "sections": {
+                    "34.1": "passed",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", str(evidence_file))
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    evidence = checks["acceptance.native_session"]["evidence"]
+    assert payload["status"] == "not_ready"
+    assert checks["acceptance.evidence_manifest"]["status"] == "pass"
+    assert checks["acceptance.native_session"]["status"] == "fail"
+    assert evidence["status"] == "invalid"
+    assert evidence["status_valid"] is False
+    assert evidence["error"] == "section_must_be_object"
+    assert "JSON object" in checks["acceptance.native_session"]["next_step"]
+
+
 def test_readiness_endpoint_fails_for_duplicate_acceptance_artifact_path(
     monkeypatch,
     tmp_path,

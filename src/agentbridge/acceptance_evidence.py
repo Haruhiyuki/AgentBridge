@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 ACCEPTANCE_EVIDENCE_SCHEMA_VERSION = "agentbridge.acceptance_evidence.v1"
+ACCEPTANCE_SECTION_MISSING = object()
 ACCEPTANCE_SECTION_STATUSES = {"passed", "failed", "blocked", "not_run"}
 ACCEPTANCE_SECTIONS = {
     "34.1": {
@@ -274,7 +275,7 @@ def read_acceptance_evidence(
     sections = {
         section_id: acceptance_section_evidence(
             section_id,
-            raw_sections.get(section_id),
+            raw_sections.get(section_id, ACCEPTANCE_SECTION_MISSING),
             artifact_root=effective_artifact_root,
             verify_artifacts=verify_artifacts,
         )
@@ -333,7 +334,7 @@ def acceptance_section_evidence(
     verify_artifacts: bool = False,
 ) -> dict[str, object]:
     section_name = str(ACCEPTANCE_SECTIONS[section_id]["slug"])
-    if not isinstance(raw_section, dict):
+    if raw_section is ACCEPTANCE_SECTION_MISSING:
         return {
             "section": section_id,
             "name": section_name,
@@ -344,6 +345,29 @@ def acceptance_section_evidence(
             "artifact_error_count": 0,
             "artifact_verification_enabled": verify_artifacts,
             "artifact_errors": [],
+            "notes_present": False,
+        }
+    if not isinstance(raw_section, dict):
+        return {
+            "section": section_id,
+            "name": section_name,
+            "status": "invalid",
+            "status_valid": False,
+            "error": "section_must_be_object",
+            "artifact_count": 0,
+            "artifact_verified_count": 0,
+            "artifact_error_count": 0,
+            "artifact_verification_enabled": verify_artifacts,
+            "artifact_errors": [],
+            "checklist": [],
+            "checklist_present": False,
+            "checklist_total": 0,
+            "checklist_passed_count": 0,
+            "checklist_failed_count": 0,
+            "checklist_blocked_count": 0,
+            "checklist_not_run_count": 0,
+            "checklist_missing_count": 0,
+            "checklist_error_count": 0,
             "notes_present": False,
         }
     raw_status = str(raw_section.get("status") or "").strip().lower()

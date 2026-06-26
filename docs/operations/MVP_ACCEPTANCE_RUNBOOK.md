@@ -55,7 +55,8 @@ checklist item `passed`, and attach at least one artifact reference per section.
 Readiness treats a missing manifest as a warning, an unreadable or malformed manifest as
 a failure, any failed section as a failure, and incomplete checklist items as warnings
 until they are signed off. Unknown manifest section IDs are malformed evidence and fail
-the manifest. Section artifact lists must be JSON arrays, and artifact paths must be safe
+the manifest. Known section values must be JSON objects; non-object section values fail
+the section. Section artifact lists must be JSON arrays, and artifact paths must be safe
 relative POSIX paths. Non-list artifact fields, unsafe artifact paths, repeated artifact
 paths inside the same section, or malformed sha256 digests are malformed evidence and
 fail the section. Non-list checklist fields, unknown, duplicate, missing-id, or

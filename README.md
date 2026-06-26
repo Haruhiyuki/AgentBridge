@@ -1033,7 +1033,8 @@ device keys, managed devices, or client certificate fingerprints as failures. Se
 requires each checklist field to be a JSON array and every checklist item to be `passed`
 before release evidence is ready; use `agentbridge-acceptance summary --show-checklist`
 to list incomplete or invalid items.
-Unknown manifest section IDs are malformed evidence and fail readiness until corrected. The
+Unknown manifest section IDs or known section values that are not JSON objects are
+malformed evidence and fail readiness until corrected. The
 `attach-artifact` command copies files into the artifact root, computes sha256 digests,
 and writes digest-backed manifest references for release-candidate evidence; artifact
 lists must be JSON arrays, paths must be safe relative POSIX paths, and repeated artifact

@@ -1297,9 +1297,16 @@ def readiness_acceptance_checks(
             )
         elif not bool(section_evidence.get("status_valid", True)):
             status = "fail"
-            next_step = (
-                f"Use one of passed, failed, blocked, or not_run for section {section_id}."
-            )
+            if section_evidence.get("error") == "section_must_be_object":
+                next_step = (
+                    f"Fix design-document section {section_id} so its evidence is "
+                    "a JSON object."
+                )
+            else:
+                next_step = (
+                    f"Use one of passed, failed, blocked, or not_run for section "
+                    f"{section_id}."
+                )
         elif not checklist_complete:
             status = "warn"
             next_step = (

@@ -439,6 +439,29 @@ def test_acceptance_cli_summary_fails_for_non_list_checklist(tmp_path, capsys):
     ) in output
 
 
+def test_acceptance_cli_summary_fails_for_non_object_section(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["sections"]["34.1"] = "passed"
+    manifest.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    capsys.readouterr()
+
+    result = main(["summary", str(manifest), "--fail-on-fail"])
+    output = capsys.readouterr().out
+
+    assert result == ACCEPTANCE_EXIT_INVALID
+    assert (
+        "ready=false passed=0 failed=0 blocked=0 not_run=7 missing=0 invalid=1"
+    ) in output
+    assert (
+        "34.1 status=invalid artifacts=0 artifact_errors=0 checklist=0/0"
+    ) in output
+
+
 def test_acceptance_cli_summary_fails_for_duplicate_section_artifact_path(
     tmp_path,
     capsys,
@@ -1075,6 +1098,48 @@ def test_acceptance_cli_verify_bundle_rejects_unknown_manifest_section(tmp_path,
     assert result == ACCEPTANCE_EXIT_INVALID
     assert "valid=false ready=false artifacts=8 errors=1" in output
     assert "error=manifest_sections_unknown:34.9" in output
+
+
+def test_acceptance_cli_verify_bundle_rejects_non_object_section(tmp_path, capsys):
+    _manifest, _artifact_root, bundle_path = create_complete_acceptance_bundle(tmp_path)
+    tampered_bundle_path = tmp_path / "acceptance-bundle-non-object-section.zip"
+    capsys.readouterr()
+    with (
+        zipfile.ZipFile(bundle_path) as source_bundle,
+        zipfile.ZipFile(
+            tampered_bundle_path,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as target_bundle,
+    ):
+        manifest_payload = json.loads(source_bundle.read("acceptance-evidence.json"))
+        manifest_payload["sections"]["34.1"] = "passed"
+        tampered_manifest_bytes = (
+            json.dumps(manifest_payload, ensure_ascii=False, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        bundle_index = json.loads(source_bundle.read("acceptance-bundle.json"))
+        bundle_index["manifest_sha256"] = hashlib.sha256(
+            tampered_manifest_bytes
+        ).hexdigest()
+        tampered_index_bytes = (
+            json.dumps(bundle_index, ensure_ascii=False, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        for entry in source_bundle.infolist():
+            if entry.filename == "acceptance-evidence.json":
+                entry_bytes = tampered_manifest_bytes
+            elif entry.filename == "acceptance-bundle.json":
+                entry_bytes = tampered_index_bytes
+            else:
+                entry_bytes = source_bundle.read(entry.filename)
+            target_bundle.writestr(entry.filename, entry_bytes)
+
+    result = main(["verify-bundle", str(tampered_bundle_path)])
+    output = capsys.readouterr().out
+
+    assert result == ACCEPTANCE_EXIT_INVALID
+    assert "valid=false ready=false artifacts=8" in output
+    assert "invalid=1" in output
+    assert "error=section_34.1_must_be_object" in output
 
 
 def test_acceptance_cli_verify_bundle_rejects_duplicate_artifact_path(tmp_path, capsys):
