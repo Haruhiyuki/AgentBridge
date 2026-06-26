@@ -1372,6 +1372,11 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
           Actor Roles
           <input id="actor-roles" value="admin">
         </label>
+        <label class="compact">
+          Chat Context
+          <input id="binding-chat-context-id" autocomplete="off" placeholder="ctx_...">
+        </label>
+        <button id="binding-refresh" type="button">Load Bindings</button>
         <div class="status" id="status">Ready</div>
       </div>
       <div class="table-wrap">
@@ -1448,6 +1453,23 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
         <div class="metric">
           <span>Sessions</span><strong id="session-count">-</strong>
         </div>
+        <div class="metric">
+          <span>Bindings</span><strong id="binding-count">-</strong>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table aria-label="Project Bindings">
+          <thead>
+            <tr>
+              <th>Project</th>
+              <th>Alias</th>
+              <th>Default</th>
+              <th>Binding</th>
+            </tr>
+          </thead>
+          <tbody id="project-bindings"></tbody>
+        </table>
       </div>
 
       <div class="field-grid">
@@ -1594,6 +1616,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     let selectedSessionId = "";
     let queueState = null;
     let currentSessions = [];
+    let currentProjectBindings = null;
     let sessionQueues = new Map();
     let sessionLeases = new Map();
     let sessionPendingApprovals = new Map();
@@ -1746,6 +1769,34 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       setText("workspace-count", workspaces.length);
     }
 
+    function renderProjectBindings(bindingState) {
+      currentProjectBindings = bindingState;
+      if (!bindingState) {
+        setText("binding-count", "-");
+        $("project-bindings").replaceChildren();
+        return;
+      }
+      const projectsById = bindingState.projects || {};
+      const rows = (bindingState.bindings || []).map((binding) => {
+        const tr = document.createElement("tr");
+        const project = projectsById[binding.project_id] || {};
+        for (const value of [
+          project.slug || binding.project_id,
+          binding.alias_in_chat || "-",
+          binding.is_default ? "default" : "-",
+          binding.id,
+        ]) {
+          appendCell(tr, value);
+        }
+        if (binding.project_id === selectedProjectId) {
+          tr.className = "selected";
+        }
+        return tr;
+      });
+      $("project-bindings").replaceChildren(...rows);
+      setText("binding-count", rows.length);
+    }
+
     function renderSessions(sessions) {
       currentSessions = sessions;
       const rows = sessions.map((session) => {
@@ -1878,6 +1929,21 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       setStatus(`${projects.length} projects`);
     }
 
+    async function loadProjectBindings() {
+      const chatContextId = $("binding-chat-context-id").value.trim();
+      if (!chatContextId) {
+        renderProjectBindings(null);
+        setStatus("Enter a chat context ID to load bindings");
+        return null;
+      }
+      const bindingState = await requestJson(
+        `/api/v1/chat-spaces/${encodeURIComponent(chatContextId)}/project-bindings`,
+      );
+      renderProjectBindings(bindingState);
+      setStatus(`${bindingState.bindings.length} project bindings`);
+      return bindingState;
+    }
+
     async function refreshSelectedProject() {
       const project = projects.find((item) => item.id === selectedProjectId);
       setText("selected-project", project ? project.slug : "-");
@@ -1897,6 +1963,9 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       ]);
       await refreshSessionOperations(sessions);
       renderWorkspaces(workspaces);
+      if (currentProjectBindings) {
+        renderProjectBindings(currentProjectBindings);
+      }
       renderSessions(sessions);
       const selectedSession = currentSessions.find((session) => session.id === selectedSessionId);
       if (selectedSession) {
@@ -2088,6 +2157,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     }
 
     $("refresh").addEventListener("click", () => run(loadProjects));
+    $("binding-refresh").addEventListener("click", () => run(loadProjectBindings));
     $("create-project").addEventListener("click", () => run(createProject));
     $("add-workspace").addEventListener("click", () => run(addWorkspace));
     $("workspace-type").addEventListener("change", syncWorkspaceWritePolicy);

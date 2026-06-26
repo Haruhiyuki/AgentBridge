@@ -417,7 +417,8 @@ update, or delete access/approval policies,
 `group_role_read` to list chat-context role bindings, `group_role_manage` to grant or
 revoke chat-context roles,
 `chat_context_manage` to create chat contexts or update their active project/session
-pointers, `project_read` to list projects, show project details, or list workspaces,
+pointers, `project_read` to list projects, show project details, list workspaces, or
+read chat-space project bindings,
 `project_manage` to create projects, add workspaces, or bind projects to
 chat spaces, `session_read` to list or show sessions, queued Turns, or current writer leases,
 `session_manage` to create or close sessions, acquire or release writer leases,

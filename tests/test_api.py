@@ -1633,6 +1633,14 @@ def test_managed_device_identity_project_read_scope_allows_project_read_apis(
     client = TestClient(create_app())
     admin = {"id": "security-admin", "roles": ["admin"]}
     maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    context = client.post(
+        "/api/v1/chat-contexts",
+        json={
+            "bot_instance_id": "bot-test",
+            "platform": "onebot.v11",
+            "chat_space_id": "project-read-scope",
+        },
+    ).json()
     project = client.post(
         "/api/v1/projects",
         json={
@@ -1651,6 +1659,16 @@ def test_managed_device_identity_project_read_scope_allows_project_read_apis(
             "trace_id": "project-read-scope-workspace",
         },
     ).json()
+    client.post(
+        f"/api/v1/chat-spaces/{context['id']}/project-bindings",
+        json={
+            "actor": maintainer,
+            "project_id": project["id"],
+            "alias_in_chat": "readable",
+            "is_default": True,
+            "trace_id": "project-read-scope-binding",
+        },
+    )
 
     create_identity_response = client.post(
         "/api/v1/device-identities",
@@ -1676,6 +1694,10 @@ def test_managed_device_identity_project_read_scope_allows_project_read_apis(
         f"/api/v1/projects/{project['id']}/workspaces",
         headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
     )
+    bindings_response = client.get(
+        f"/api/v1/chat-spaces/{context['id']}/project-bindings",
+        headers=key_headers,
+    )
     create_project_response = client.post(
         "/api/v1/projects",
         json={
@@ -1693,7 +1715,78 @@ def test_managed_device_identity_project_read_scope_allows_project_read_apis(
     assert detail_response.json()["id"] == project["id"]
     assert workspaces_response.status_code == 200
     assert [item["id"] for item in workspaces_response.json()] == [workspace["id"]]
+    assert bindings_response.status_code == 200
+    assert bindings_response.json()["chat_context_id"] == context["id"]
+    assert [item["project_id"] for item in bindings_response.json()["bindings"]] == [
+        project["id"]
+    ]
+    assert bindings_response.json()["projects"][project["id"]]["slug"] == project["slug"]
     assert create_project_response.status_code == 403
+
+
+def test_managed_device_identity_project_read_resource_allowlist_limits_bindings():
+    control = ControlPlane()
+    admin = Actor(id="security-admin", roles={"admin"})
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    allowed_context = control.get_or_create_chat_context(
+        bot_instance_id="bot-test",
+        platform="onebot.v11",
+        chat_space_id="allowed-project-bindings",
+    )
+    denied_context = control.get_or_create_chat_context(
+        bot_instance_id="bot-test",
+        platform="onebot.v11",
+        chat_space_id="denied-project-bindings",
+    )
+    project = control.create_project(
+        actor=maintainer,
+        name="Allowlisted Binding Project",
+        trace_id="project-binding-allowlist-project",
+    )
+    control.bind_project(
+        actor=maintainer,
+        chat_context_id=allowed_context.id,
+        project_id=project.id,
+        alias_in_chat="allowed",
+        is_default=True,
+        trace_id="project-binding-allowlist-allowed",
+    )
+    control.bind_project(
+        actor=maintainer,
+        chat_context_id=denied_context.id,
+        project_id=project.id,
+        alias_in_chat="denied",
+        is_default=True,
+        trace_id="project-binding-allowlist-denied",
+    )
+    control.upsert_device_identity(
+        actor=admin,
+        device_id="project-binding-read-device",
+        device_key="managed-secret",
+        allowed_scopes={DeviceIdentityScope.PROJECT_READ},
+        allowed_resource_ids={allowed_context.id},
+        trace_id="project-binding-allowlist-device",
+    )
+    client = TestClient(create_app(control))
+    headers = {
+        "x-agentbridge-device-id": "project-binding-read-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+
+    allowed_response = client.get(
+        f"/api/v1/chat-spaces/{allowed_context.id}/project-bindings",
+        headers=headers,
+    )
+    denied_response = client.get(
+        f"/api/v1/chat-spaces/{denied_context.id}/project-bindings",
+        headers=headers,
+    )
+
+    assert allowed_response.status_code == 200
+    assert [item["project_id"] for item in allowed_response.json()["bindings"]] == [
+        project.id
+    ]
+    assert denied_response.status_code == 403
 
 
 def test_managed_device_identity_project_manage_scope_allows_project_write_apis(
@@ -3117,6 +3210,11 @@ def test_project_session_admin_ui_serves_dashboard():
     assert "/api/v1/projects" in html
     assert "/api/v1/sessions" in html
     assert "/workspaces" in html
+    assert "binding-chat-context-id" in html
+    assert "project-bindings" in html
+    assert "/project-bindings" in html
+    assert "async function loadProjectBindings()" in html
+    assert "function renderProjectBindings(bindingState)" in html
     assert "async function createProject()" in html
     assert "async function createSession()" in html
     assert "async function closeSession()" in html

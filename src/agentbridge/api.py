@@ -850,6 +850,29 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         return {"status": "ok"}
 
+    @app.get("/api/v1/chat-spaces/{chat_context_id}/project-bindings")
+    def list_project_bindings(
+        chat_context_id: str,
+        control: ControlPlane = Depends(get_control),
+    ):
+        actor = Actor(id="api", roles={"admin"})
+        bindings = control.list_project_bindings(
+            actor=actor,
+            chat_context_id=chat_context_id,
+        )
+        projects = {
+            binding.project_id: control.repository.get_project(binding.project_id)
+            for binding in bindings
+        }
+        return {
+            "chat_context_id": chat_context_id,
+            "bindings": [binding.model_dump(mode="json") for binding in bindings],
+            "projects": {
+                project_id: project.model_dump(mode="json")
+                for project_id, project in projects.items()
+            },
+        }
+
     @app.put("/api/v1/chat-contexts/{chat_context_id}/active-project")
     def update_active_project(
         chat_context_id: str,
@@ -3809,6 +3832,7 @@ async def http_api_resource_ids(
     resource_ids: set[str] = set()
     resource_collections = {
         "chat-contexts",
+        "chat-spaces",
         "device-identities",
         "interactions",
         "projects",
@@ -3970,6 +3994,13 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         and path_segments[5] == "project-bindings"
     ):
         return DeviceIdentityScope.PROJECT_MANAGE
+    if (
+        method == "GET"
+        and len(path_segments) >= 6
+        and path_segments[:4] == ["", "api", "v1", "chat-spaces"]
+        and path_segments[5] == "project-bindings"
+    ):
+        return DeviceIdentityScope.PROJECT_READ
     if method == "GET" and (
         path == "/api/v1/projects"
         or (

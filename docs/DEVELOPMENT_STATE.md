@@ -29,6 +29,7 @@ Implemented in this slice:
 - Project, Session, and Interaction list command messages now render one-based numbered text rows and command-specific hints, so text-only users can discover the same selectors that `/agent select project|session`, `/agent answer`, `/agent approve`, `/agent deny`, and `/agent plan ...` accept without copying UUIDs.
 - Missing-argument command errors now return command-specific recovery hints in `next_step`, including the relevant list command, numbered selector, queue version lookup, or draft-style command example for project/session selection, queue operations, questions, approvals, plans, roles, policies, and lease release.
 - Chat-context project binding commands now cover `/agent project bind <project> [--alias <alias>] [--default]`, `/agent project bindings`, and `/agent project default <project>`; existing bindings can be promoted to the unique default project, chat aliases are preserved for project resolution, and SQLAlchemy recovery preserves binding/default state.
+- Chat-space project bindings are readable through `GET /api/v1/chat-spaces/{chat_context_id}/project-bindings`, gated by managed-device `project_read` and chat-context resource allowlists, and the Project/Session Admin UI can display bindings for an operator-supplied chat context alongside project/workspace/session state.
 - Idempotent command execution by idempotency key.
 - Parsed command execution now writes command-level audit records for both successful execution (`command.executed`) and execution-stage failures (`command.failed`), preserving invocation ID, trace ID, canonical command, error code, status code, and actor; permission-denied command failures are audited with `denied` outcome, while other execution errors are audited as `failed` and are not stored in the idempotent command-result cache.
 - Optimistic locking for active project/session pointers.
@@ -175,7 +176,7 @@ Implemented in this slice:
 - Managed device identities now require `policy_read` for access/approval policy reads and access-policy simulation.
 - Managed device identities now require `group_role_read` for chat-context role binding reads.
 - Managed device identities now require `chat_context_manage` for chat-context REST writes: create contexts and update active project/session pointers.
-- Managed device identities now require `project_read` for project/workspace REST reads: list/show projects and list workspaces.
+- Managed device identities now require `project_read` for project/workspace/binding REST reads: list/show projects, list workspaces, and read chat-space project bindings.
 - Managed device identities now require `session_read` for session REST reads: list/show sessions, queued Turns, and current writer leases.
 - Managed device identities now require `session_manage` for session REST writes: create/close sessions, acquire/release leases, clear queues, reorder queued Turns, and pause/resume queues.
 - Managed device identities now require `session_send` for direct session turn enqueue and queued-turn removal through `POST /api/v1/sessions/{id}/turns` and `DELETE /api/v1/sessions/{id}/queue/{turn_id}`.
