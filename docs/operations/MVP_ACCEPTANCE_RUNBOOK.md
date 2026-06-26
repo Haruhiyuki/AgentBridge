@@ -106,6 +106,9 @@ Collect these artifacts for a release candidate:
   Terminal Lifecycle, Audit/Event, Device Identity, and Bot Delivery pages.
   The System Health page's `Export JSON` action captures the current endpoint checks,
   readiness summary, and warn/fail next steps as a structured evidence file.
+  The Terminal Lifecycle page's `Export JSON` action captures monitor state,
+  backend supervision, event-outbox state, run-once observed sessions, launch probe
+  results, and adapter detection summaries for terminal recovery evidence.
 - Audit JSON/CSV/signed archive covering the manual acceptance run.
 - Bot delivery records for incremental answers, tool progress, interactions, retries,
   fallback text, and any native platform actions.

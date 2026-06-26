@@ -3611,6 +3611,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
         <button id="refresh" type="button">Refresh</button>
         <button class="primary" id="run-once" type="button">Run Once</button>
         <button id="flush-outbox" type="button">Flush Outbox</button>
+        <button id="lifecycle-export-json" type="button">Export JSON</button>
         <div class="status" id="status">Ready</div>
       </div>
       <div class="metrics">
@@ -3703,6 +3704,10 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
+    let latestLifecycleStatus = null;
+    let latestObserved = {};
+    let latestAgentProbeProfiles = {};
+    let latestAgentAdapters = {};
 
     function csv(value) {
       return value.split(",").map((item) => item.trim()).filter(Boolean);
@@ -3736,6 +3741,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
     }
 
     function renderStatus(status) {
+      latestLifecycleStatus = status;
       setText("running", status.running);
       setText("tracked", status.tracked_sessions);
       setText("runs", status.run_count);
@@ -3811,6 +3817,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
     }
 
     function renderObserved(observed) {
+      latestObserved = observed || {};
       const tbody = $("observed");
       const rows = Object.entries(observed || {}).map(([sessionId, item]) => {
         const tr = document.createElement("tr");
@@ -3828,6 +3835,38 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
         return tr;
       });
       tbody.replaceChildren(...rows);
+    }
+
+    function terminalLifecycleExportPayload() {
+      return {
+        schema_version: "agentbridge.admin_terminal_lifecycle_export.v1",
+        exported_at: new Date().toISOString(),
+        monitor: latestLifecycleStatus || {},
+        observed: latestObserved,
+        agent_probe_profiles: latestAgentProbeProfiles,
+        agent_adapters: latestAgentAdapters,
+      };
+    }
+
+    function downloadTerminalLifecycleJson() {
+      if (!latestLifecycleStatus) {
+        setStatus("Refresh before export");
+        return;
+      }
+      const payload = terminalLifecycleExportPayload();
+      const blob = new Blob(
+        [JSON.stringify(payload, null, 2) + "\n"],
+        {type: "application/json"},
+      );
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "agentbridge-terminal-lifecycle.json";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setStatus("Terminal lifecycle JSON exported");
     }
 
     async function refresh() {
@@ -3862,6 +3901,12 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
         method: "POST",
         body: JSON.stringify(payload),
       });
+      if (latestLifecycleStatus) {
+        latestLifecycleStatus = {
+          ...latestLifecycleStatus,
+          event_outbox: result.event_outbox || {},
+        };
+      }
       renderEventOutbox(result.event_outbox || {});
       setStatus(`Flushed ${result.flushed || 0} events`);
     }
@@ -3876,7 +3921,8 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
         method: "POST",
         body: JSON.stringify(payload),
       });
-      $("agent-probe").textContent = JSON.stringify(result.profiles || {}, null, 2);
+      latestAgentProbeProfiles = result.profiles || {};
+      $("agent-probe").textContent = JSON.stringify(latestAgentProbeProfiles, null, 2);
       setStatus("Probe complete");
     }
 
@@ -3891,6 +3937,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
         body: JSON.stringify(payload),
       });
       const adapters = result.adapters || {};
+      latestAgentAdapters = adapters;
       renderAgentAdapters(adapters);
       $("agent-adapters").textContent = JSON.stringify(adapters, null, 2);
       setStatus("Adapter detect complete");
@@ -3909,6 +3956,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
     $("flush-outbox").addEventListener("click", () => run(flushOutbox));
     $("probe-agents").addEventListener("click", () => run(probeAgents));
     $("detect-adapters").addEventListener("click", () => run(detectAdapters));
+    $("lifecycle-export-json").addEventListener("click", downloadTerminalLifecycleJson);
     refresh().catch((error) => setStatus(error.message));
   </script>
 </body>

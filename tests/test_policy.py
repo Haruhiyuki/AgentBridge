@@ -551,6 +551,9 @@ def test_admin_home_and_terminal_lifecycle_ui_routes():
     assert 'id="agent-profiles"' in html
     assert 'id="probe-agents"' in html
     assert 'id="detect-adapters"' in html
+    assert 'id="lifecycle-export-json"' in html
+    assert "agentbridge.admin_terminal_lifecycle_export.v1" in html
+    assert "function downloadTerminalLifecycleJson()" in html
     assert 'id="agent-adapter-summary"' in html
     assert 'id="agent-adapters"' in html
     assert 'id="allowlist"' in html

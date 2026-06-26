@@ -944,7 +944,7 @@ The terminal lifecycle page shows tracked sessions, exit/loss counts, automatic 
 attempts, command allowlist patterns, policy blocks, backend supervision state, Terminal
 Agent lifecycle event outbox state, Agent launch readiness, adapter capability status,
 and provider-version verification, and can trigger bounded run-once/outbox-flush/probe/detect
-actions.
+actions and export the current lifecycle/probe/adapter snapshot as JSON evidence.
 The policy editor lists rules, edits allow/deny match criteria, runs
 `/api/v1/access-policy/simulate`, and saves through the same audited REST APIs.
 The device identities page lists active/revoked managed devices, creates or rotates
