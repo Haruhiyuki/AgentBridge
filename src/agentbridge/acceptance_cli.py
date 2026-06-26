@@ -13,6 +13,7 @@ from agentbridge.acceptance_evidence import (
     ACCEPTANCE_EVIDENCE_SCHEMA_VERSION,
     ACCEPTANCE_SECTION_STATUSES,
     ACCEPTANCE_SECTIONS,
+    acceptance_artifact_path,
     acceptance_artifact_reference,
     acceptance_evidence_summary,
     acceptance_section_checklist_manifest,
@@ -1496,12 +1497,7 @@ def verify_acceptance_bundle_section_checklist(
 
 
 def acceptance_bundle_relative_path(raw_path: str) -> bool:
-    candidate = PurePosixPath(raw_path)
-    return (
-        bool(raw_path.strip())
-        and not candidate.is_absolute()
-        and all(part not in {"", ".", ".."} for part in candidate.parts)
-    )
+    return acceptance_artifact_path(raw_path)
 
 
 def acceptance_bundle_archive_path(raw_path: str, *, required_prefix: str) -> bool:

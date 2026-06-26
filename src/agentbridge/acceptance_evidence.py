@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ACCEPTANCE_EVIDENCE_SCHEMA_VERSION = "agentbridge.acceptance_evidence.v1"
 ACCEPTANCE_SECTION_STATUSES = {"passed", "failed", "blocked", "not_run"}
@@ -522,6 +522,15 @@ def acceptance_artifact_payloads(
         if reference is None:
             payloads.append({"path": None, "status": "invalid_reference"})
             continue
+        if not acceptance_artifact_path(reference["path"]):
+            payloads.append(
+                {
+                    "path": reference["path"],
+                    "sha256": reference.get("sha256"),
+                    "status": "path_unsafe",
+                }
+            )
+            continue
         expected_sha256 = reference.get("sha256")
         if expected_sha256 is not None and not acceptance_sha256_digest(expected_sha256):
             payloads.append(
@@ -574,6 +583,18 @@ def acceptance_artifact_reference(artifact: object) -> dict[str, str] | None:
             reference["sha256"] = raw_sha256.strip().lower()
         return reference
     return None
+
+
+def acceptance_artifact_path(value: str) -> bool:
+    candidate = PurePosixPath(value)
+    return (
+        bool(value.strip())
+        and "\\" not in value
+        and candidate.as_posix() == value
+        and bool(candidate.parts)
+        and not candidate.is_absolute()
+        and all(part not in {"", ".", ".."} for part in candidate.parts)
+    )
 
 
 def acceptance_sha256_digest(value: str) -> bool:
