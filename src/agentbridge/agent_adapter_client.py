@@ -2385,6 +2385,12 @@ def build_parser() -> argparse.ArgumentParser:
     poll.add_argument("--after-seq", type=int)
     poll.add_argument("--limit", type=int, default=100)
 
+    flush_outbox = subparsers.add_parser(
+        "flush-outbox",
+        help="Flush cached adapter events from the configured offline outbox",
+    )
+    add_auth_arguments(flush_outbox)
+
     handshake = subparsers.add_parser(
         "handshake",
         help="Print a structured adapter handshake payload",
@@ -2875,6 +2881,15 @@ def main(argv: list[str] | None = None) -> int:
                 after_seq=args.after_seq,
                 limit=args.limit,
             )
+        elif args.command == "flush-outbox":
+            result = {
+                "flushed": control_client.flush_offline_events(),
+                "outbox_path": (
+                    str(control_client.offline_outbox.path)
+                    if control_client.offline_outbox is not None
+                    else None
+                ),
+            }
         else:
             parser.error("unknown command")
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))

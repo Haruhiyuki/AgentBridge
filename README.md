@@ -166,7 +166,8 @@ The packaged `agentbridge-adapter-client` CLI and `agentbridge.agent_adapter_cli
 module provide the same bridge for native adapter processes, including standard
 handshake JSON with schema snapshots, Codex provider-captured schema projection,
 API-token or device-key headers, event submission, response polling, blocking waits for
-adapter-originated interactions, and local schema/provider-version matrix inspection:
+adapter-originated interactions, explicit offline outbox flushing, and local
+schema/provider-version matrix inspection:
 
 ```bash
 export AGENTBRIDGE_API_URL="http://127.0.0.1:8000"
@@ -182,6 +183,9 @@ agentbridge-adapter-client emit \
   --event-type MessageDisplay \
   --payload-json '{"text":"hello from Claude"}' \
   --idempotency-key "claude-hook-1"
+agentbridge-adapter-client flush-outbox \
+  --session-id "<session-id>" \
+  --offline-outbox "$HOME/.agentbridge/adapter-outbox.jsonl"
 agentbridge-adapter-client emit-and-wait \
   --agent codex \
   --event-type item/commandExecution/requestApproval \

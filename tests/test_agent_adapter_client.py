@@ -5,6 +5,7 @@ from urllib.error import HTTPError
 
 import pytest
 
+import agentbridge.agent_adapter_client as adapter_client_module
 from agentbridge.agent_adapter_client import (
     AgentAdapterClientConfig,
     AgentAdapterClientError,
@@ -521,6 +522,89 @@ def test_cli_parser_accepts_emit_and_wait_options():
     assert args.wait_timeout_seconds == 12.5
     assert args.poll_interval_seconds == 0.2
     assert args.include_pending is True
+
+
+def test_cli_parser_accepts_flush_outbox_options(tmp_path):
+    outbox_path = tmp_path / "adapter-outbox.jsonl"
+
+    args = build_parser().parse_args(
+        [
+            "flush-outbox",
+            "--session-id",
+            "ses_1",
+            "--offline-outbox",
+            str(outbox_path),
+        ]
+    )
+
+    assert args.command == "flush-outbox"
+    assert args.session_id == "ses_1"
+    assert args.offline_outbox == outbox_path
+
+
+def test_cli_flush_outbox_posts_cached_events(monkeypatch, tmp_path, capsys):
+    outbox_path = tmp_path / "adapter-outbox.jsonl"
+    cached_payload = {
+        "agent_type": "claude",
+        "adapter_event_type": "MessageDisplay",
+        "trace_id": "cached-adapter-event",
+        "schema_version": "claude-hooks.v1",
+        "payload": {"text": "cached answer"},
+        "idempotency_key": "cached-adapter-event-1",
+    }
+    outbox_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "agentbridge.adapter_outbox.v1",
+                "payload": cached_payload,
+                "enqueued_at_monotonic": 1.0,
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def transport(method, url, headers, payload, timeout_seconds):
+        calls.append((method, url, payload))
+        return {"id": "evt_cached", "type": "assistant.delta"}
+
+    monkeypatch.setattr(adapter_client_module, "urllib_json_transport", transport)
+
+    result = main(
+        [
+            "flush-outbox",
+            "--api-url",
+            "http://bridge.local",
+            "--session-id",
+            "ses_1",
+            "--offline-outbox",
+            str(outbox_path),
+        ]
+    )
+
+    assert result == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output == {"flushed": 1, "outbox_path": str(outbox_path)}
+    assert calls == [
+        (
+            "POST",
+            "http://bridge.local/api/v1/sessions/ses_1/agent-adapter/events",
+            cached_payload,
+        )
+    ]
+    assert not outbox_path.exists()
+
+
+def test_cli_flush_outbox_without_config_is_noop(capsys):
+    result = main(["flush-outbox", "--session-id", "ses_1"])
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "flushed": 0,
+        "outbox_path": None,
+    }
 
 
 def test_cli_parser_accepts_codex_app_server_event_options():
