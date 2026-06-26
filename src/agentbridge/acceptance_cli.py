@@ -17,6 +17,7 @@ from agentbridge.acceptance_evidence import (
     acceptance_evidence_summary,
     acceptance_section_checklist_manifest,
     acceptance_section_evidence,
+    acceptance_unknown_section_ids,
     empty_acceptance_manifest,
     load_acceptance_manifest,
     read_acceptance_evidence,
@@ -1314,6 +1315,9 @@ def verify_acceptance_bundle_manifest(
     if not isinstance(sections, dict):
         errors.append("manifest_sections_must_be_object")
         return False
+    unknown_sections = acceptance_unknown_section_ids(sections)
+    if unknown_sections:
+        errors.append("manifest_sections_unknown:" + ",".join(unknown_sections))
     ready = True
     referenced_paths: set[str] = set()
     referenced_sections_by_path: dict[str, set[str]] = {}

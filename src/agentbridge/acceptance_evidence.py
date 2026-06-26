@@ -263,6 +263,14 @@ def read_acceptance_evidence(
             "sections_must_be_object",
             schema_version=schema_version,
         )
+    unknown_sections = acceptance_unknown_section_ids(raw_sections)
+    if unknown_sections:
+        return acceptance_evidence_error(
+            path,
+            "unknown_sections:" + ",".join(unknown_sections),
+            schema_version=schema_version,
+            section_count=len(raw_sections),
+        )
     sections = {
         section_id: acceptance_section_evidence(
             section_id,
@@ -292,6 +300,7 @@ def acceptance_evidence_error(
     error: str,
     *,
     schema_version: object = None,
+    section_count: int = 0,
 ) -> dict[str, object]:
     return {
         "configured": True,
@@ -299,13 +308,21 @@ def acceptance_evidence_error(
         "path": str(path),
         "schema_version": schema_version,
         "error": error,
-        "section_count": 0,
+        "section_count": section_count,
         "artifact_verification": acceptance_artifact_verification_payload(
             None,
             enabled=False,
         ),
         "sections": {},
     }
+
+
+def acceptance_unknown_section_ids(raw_sections: dict[object, object]) -> list[str]:
+    return sorted(
+        str(section_id)
+        for section_id in raw_sections
+        if not isinstance(section_id, str) or section_id not in ACCEPTANCE_SECTIONS
+    )
 
 
 def acceptance_section_evidence(
