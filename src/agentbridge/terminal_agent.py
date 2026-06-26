@@ -29,6 +29,10 @@ from agentbridge.agent_adapter_events import (
     adapter_schema_version_supported,
     supported_adapter_schema_versions_for,
 )
+from agentbridge.claude_hook_deploy import (
+    ClaudeHookDeploymentConfig,
+    deploy_claude_hooks,
+)
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
     Actor,
@@ -38,7 +42,12 @@ from agentbridge.domain import (
     LeaseOwnerType,
     SemanticEventSource,
     SessionStatus,
+    TurnStatus,
 )
+
+
+def _env_truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class TerminalInputKind(StrEnum):
@@ -1685,9 +1694,57 @@ class TerminalAgentService:
         lifecycle_policy: TerminalLifecyclePolicy | None = None,
         agent_launch_config: AgentLaunchConfig | None = None,
         event_outbox_path: Path | None = None,
+        auto_advance_queues: bool | None = None,
+        idle_turn_completion: bool | None = None,
+        idle_completion_agent_types: set[AgentType] | None = None,
+        idle_complete_seconds: float | None = None,
+        idle_min_active_seconds: float | None = None,
+        submit_warmup_seconds: float | None = None,
+        claude_hook_deploy: ClaudeHookDeploymentConfig | None = None,
     ) -> None:
         self.control = control
         self.backend = backend or FakeTerminalBackend()
+        # Claude 会话启动前把 Hooks 部署进工作区，让语义通道通电（默认从环境读取、默认关闭）。
+        self.claude_hook_deploy = claude_hook_deploy or ClaudeHookDeploymentConfig.from_env()
+        self._claude_hook_deploy_last_error: str | None = None
+        # 开启后，生命周期监控每一拍都会为空闲、有排队任务的会话接力提交下一轮，
+        # 从而把"持久会话连续多轮执行"自动化（默认关闭，保持既有行为；可经环境变量打开）。
+        self.auto_advance_queues = (
+            auto_advance_queues
+            if auto_advance_queues is not None
+            else _env_truthy(os.environ.get("AGENTBRIDGE_TERMINAL_AUTO_ADVANCE_QUEUES"))
+        )
+        # 统一 TUI+PTY 模型下，没有结构化完成事件的 agent（Codex / 通用终端）用
+        # "PTY 输出静默 N 秒"启发式判定一轮结束；Claude 走 Stop hook，不在此集合内。
+        self.idle_turn_completion = (
+            idle_turn_completion
+            if idle_turn_completion is not None
+            else _env_truthy(os.environ.get("AGENTBRIDGE_TERMINAL_IDLE_TURN_COMPLETION"))
+        )
+        self.idle_completion_agent_types = (
+            idle_completion_agent_types
+            if idle_completion_agent_types is not None
+            else {AgentType.CODEX, AgentType.GENERIC_TUI}
+        )
+        self.idle_complete_seconds = (
+            idle_complete_seconds
+            if idle_complete_seconds is not None
+            else float(os.environ.get("AGENTBRIDGE_CODEX_IDLE_COMPLETE_SECONDS", "8") or 8)
+        )
+        self.idle_min_active_seconds = (
+            idle_min_active_seconds
+            if idle_min_active_seconds is not None
+            else float(os.environ.get("AGENTBRIDGE_CODEX_IDLE_MIN_ACTIVE_SECONDS", "2") or 2)
+        )
+        self._turn_idle_watch: dict[str, dict[str, object]] = {}
+        # 终端刚启动时原生 TUI 还在初始化，过早写入会丢键/不被当作回车；推进器在终端
+        # 启动后先等待这段预热时间再提交任务（默认 0，生产经环境变量设为数秒）。
+        self.submit_warmup_seconds = (
+            submit_warmup_seconds
+            if submit_warmup_seconds is not None
+            else float(os.environ.get("AGENTBRIDGE_TERMINAL_SUBMIT_WARMUP_SECONDS", "0") or 0)
+        )
+        self._terminal_started_monotonic: dict[str, float] = {}
         self.lifecycle_policy = lifecycle_policy or TerminalLifecyclePolicy()
         self.agent_launch_config = agent_launch_config or AgentLaunchConfig.from_env()
         self.event_outbox = (
@@ -1722,11 +1779,22 @@ class TerminalAgentService:
         session = self.control.repository.get_session(session_id)
         launch_profile = self._resolve_start_profile(session, command)
         workspace = self.control.repository.get_workspace(session.workspace_id)
+        if self.claude_hook_deploy.enabled and session.agent_type == AgentType.CLAUDE:
+            try:
+                deploy_claude_hooks(
+                    session_id=session_id,
+                    workspace_path=workspace.path,
+                    config=self.claude_hook_deploy,
+                )
+                self._claude_hook_deploy_last_error = None
+            except Exception as exc:  # 部署是尽力而为，不应阻断终端启动。
+                self._claude_hook_deploy_last_error = str(exc)
         self.backend.start(
             session_id=session_id,
             cwd=workspace.path,
             command=launch_profile.command,
         )
+        self._terminal_started_monotonic[session_id] = time.monotonic()
         with self._lifecycle_lock:
             generation = self._terminal_start_generations.get(session_id, 0) + 1
             self._terminal_start_generations[session_id] = generation
@@ -1996,6 +2064,7 @@ class TerminalAgentService:
         ttl_seconds: int = 300,
         request_id: str | None = None,
         append_newline: bool = True,
+        submit_newline: str = "\n",
     ) -> dict[str, object]:
         lease = None
         if submit_prompt:
@@ -2032,8 +2101,8 @@ class TerminalAgentService:
         submitted_request_id = None
         if submit_prompt and turn is not None and lease is not None:
             prompt = turn.prompt
-            if append_newline and not prompt.endswith("\n"):
-                prompt += "\n"
+            if append_newline and not prompt.endswith(submit_newline):
+                prompt += submit_newline
             submitted_request_id = self.submit_input(
                 session_id=session_id,
                 epoch=lease.epoch,
@@ -2050,6 +2119,202 @@ class TerminalAgentService:
             "lease": lease.model_dump(mode="json") if lease else None,
             "request_id": submitted_request_id,
         }
+
+    def check_idle_turn_completions(
+        self,
+        *,
+        now: float | None = None,
+        trace_id: str = "turn-idle",
+    ) -> list[dict[str, object]]:
+        """对 hook-less agent（Codex / 通用终端）的运行中 Turn 做空闲完成判定。
+
+        提交一轮后跟踪 PTY 输出游标：先记录基线，之后每拍比较；游标增长则刷新"最后
+        变化"时间，连续静默 >= idle_complete_seconds 且距首次观察 >= idle_min_active_seconds
+        时，落 turn.completed（幂等键 turn-idle-complete:<turn_id>）→ finish_turn → 会话回
+        IDLE，交由 advance_queue 接力下一轮。Claude 等有结构化完成事件的 agent 不在此列。"""
+        current = time.monotonic() if now is None else now
+        completed: list[dict[str, object]] = []
+        for session in self.control.repository.list_sessions():
+            try:
+                outcome = self._check_session_idle_completion(
+                    session_id=session.id, now=current, trace_id=trace_id
+                )
+            except AgentBridgeError:
+                outcome = None
+            if outcome is not None:
+                completed.append(outcome)
+        return completed
+
+    def _check_session_idle_completion(
+        self,
+        *,
+        session_id: str,
+        now: float,
+        trace_id: str,
+    ) -> dict[str, object] | None:
+        session = self.control.repository.get_session(session_id)
+        if session.agent_type not in self.idle_completion_agent_types:
+            return None
+        turn_id = session.active_turn_id
+        if turn_id is None:
+            self._turn_idle_watch.pop(session_id, None)
+            return None
+        turn = self.control.repository.get_turn(turn_id)
+        if turn.status != TurnStatus.RUNNING:
+            return None
+        status = self.backend.status(session_id=session_id)
+        if not status.started or not status.running:
+            return None
+        cursor = status.output_cursor
+        watch = self._turn_idle_watch.get(session_id)
+        if watch is None or watch.get("turn_id") != turn_id:
+            self._turn_idle_watch[session_id] = {
+                "turn_id": turn_id,
+                "cursor": cursor,
+                "last_change": now,
+                "first_seen": now,
+            }
+            return None
+        if cursor != watch.get("cursor"):
+            watch["cursor"] = cursor
+            watch["last_change"] = now
+            return None
+        idle_for = now - float(watch["last_change"])
+        active_for = now - float(watch["first_seen"])
+        if idle_for < self.idle_complete_seconds or active_for < self.idle_min_active_seconds:
+            return None
+        self.control.ingest_session_event(
+            session_id=session_id,
+            event_type="turn.completed",
+            source=SemanticEventSource.TERMINAL_AGENT,
+            trace_id=f"{trace_id}:idle-complete",
+            turn_id=turn_id,
+            idempotency_key=f"turn-idle-complete:{turn_id}",
+            payload={"completion": "idle_heuristic", "idle_seconds": round(idle_for, 3)},
+        )
+        self._turn_idle_watch.pop(session_id, None)
+        return {"session_id": session_id, "turn_id": turn_id, "idle_seconds": idle_for}
+
+    @staticmethod
+    def _advance_skip(session_id: str, reason: str) -> dict[str, object]:
+        return {
+            "session_id": session_id,
+            "action": "skipped",
+            "reason": reason,
+            "turn_id": None,
+            "request_id": None,
+        }
+
+    def advance_queue(
+        self,
+        *,
+        session_id: str,
+        actor: Actor | None = None,
+        trace_id: str = "turn-runner",
+        auto_start_terminal: bool = True,
+        lease_ttl_seconds: int = 600,
+    ) -> dict[str, object]:
+        """持久会话推进器：当会话空闲、终端在跑、队列有待办且不是本地人工接管时，
+        领取下一条排队任务并写入原生 TUI；否则返回 skipped 及原因。
+
+        持久交互进程不会每轮退出，所以"上一轮完成"由语义通道（Claude Stop hook /
+        Codex 空闲启发式）落成 turn.completed → finish_turn，把会话重新置为 IDLE，
+        再由本方法接力提交下一轮，从而实现连续多轮执行。"""
+        runner_actor = actor or Actor(id="system:turn-runner", roles={"maintainer"})
+        session = self.control.repository.get_session(session_id)
+        if session.status in {
+            SessionStatus.CLOSED,
+            SessionStatus.CLOSING,
+            SessionStatus.ARCHIVED,
+            SessionStatus.RECOVERING,
+            SessionStatus.HUMAN_CONTROLLED,
+            SessionStatus.ERROR,
+        }:
+            return self._advance_skip(session_id, f"session_status={session.status.value}")
+        if session.active_turn_id is not None:
+            return self._advance_skip(session_id, "turn_active")
+        if session.queue_paused:
+            return self._advance_skip(session_id, "queue_paused")
+        # 本地用户接管时，机器人退为观察者，绝不抢输入。
+        lease = self.control.repository.current_lease(session_id)
+        if lease is not None and lease.owner_type == LeaseOwnerType.HUMAN:
+            return self._advance_skip(session_id, "human_control")
+        turns, _queue_version, _queue_paused = self.control.list_turn_queue(
+            actor=runner_actor,
+            session_id=session_id,
+        )
+        if not turns:
+            return self._advance_skip(session_id, "queue_empty")
+        started_terminal = False
+        status = self.status(session_id=session_id, trace_id=f"{trace_id}:status")
+        if not status.started or not status.running:
+            if not auto_start_terminal:
+                return self._advance_skip(session_id, "terminal_not_running")
+            self.start_session(session_id=session_id, trace_id=f"{trace_id}:start")
+            started_terminal = True
+        # 原生 TUI 启动后需要预热时间才能正确接收输入；预热未满时本轮先不提交，
+        # 由后续监控拍提交（避免把任务打进尚未就绪的 TUI 而丢键/不提交）。
+        started_at = self._terminal_started_monotonic.get(session_id)
+        if (
+            self.submit_warmup_seconds > 0
+            and started_at is not None
+            and (time.monotonic() - started_at) < self.submit_warmup_seconds
+        ):
+            return self._advance_skip(session_id, "terminal_warming_up")
+        result = self.claim_next_turn(
+            actor=runner_actor,
+            session_id=session_id,
+            trace_id=f"{trace_id}:claim",
+            submit_prompt=True,
+            ttl_seconds=lease_ttl_seconds,
+            submit_newline="\r",
+        )
+        turn = result.get("turn")
+        if not isinstance(turn, dict):
+            return self._advance_skip(session_id, "claim_empty")
+        return {
+            "session_id": session_id,
+            "action": "started_and_submitted" if started_terminal else "submitted",
+            "reason": None,
+            "turn_id": turn.get("id"),
+            "request_id": result.get("request_id"),
+        }
+
+    def advance_pending_queues(
+        self,
+        *,
+        actor: Actor | None = None,
+        trace_id: str = "turn-runner",
+        auto_start_terminal: bool = True,
+        lease_ttl_seconds: int = 600,
+    ) -> list[dict[str, object]]:
+        """扫描全部会话，对空闲且有排队任务者各推进一轮；供生命周期监控/守护周期调用。
+
+        返回只包含真正发生提交或非平凡跳过（如 human_control / queue_paused /
+        terminal_not_running）的结果，过滤掉 queue_empty / turn_active 这类常态噪声。"""
+        results: list[dict[str, object]] = []
+        for session in self.control.repository.list_sessions():
+            if session.active_turn_id is not None:
+                continue
+            if session.status in {
+                SessionStatus.CLOSED,
+                SessionStatus.CLOSING,
+                SessionStatus.ARCHIVED,
+            }:
+                continue
+            outcome = self.advance_queue(
+                session_id=session.id,
+                actor=actor,
+                trace_id=trace_id,
+                auto_start_terminal=auto_start_terminal,
+                lease_ttl_seconds=lease_ttl_seconds,
+            )
+            if outcome.get("action") != "skipped" or outcome.get("reason") not in {
+                "queue_empty",
+                "turn_active",
+            }:
+                results.append(outcome)
+        return results
 
     def snapshot(self, *, session_id: str) -> str:
         self.control.repository.get_session(session_id)
@@ -2106,6 +2371,16 @@ class TerminalAgentService:
                     )
             except Exception as exc:
                 errors.append(f"{session_id}: {exc}")
+        if self.idle_turn_completion:
+            try:
+                self.check_idle_turn_completions(trace_id=f"{trace_id}:idle")
+            except Exception as exc:
+                errors.append(f"check_idle_turn_completions: {exc}")
+        if self.auto_advance_queues:
+            try:
+                self.advance_pending_queues(trace_id=f"{trace_id}:advance")
+            except Exception as exc:
+                errors.append(f"advance_pending_queues: {exc}")
         with self._lifecycle_lock:
             self._lifecycle_last_error = "; ".join(errors) if errors else None
             self._lifecycle_last_observed_count = len(observed)
