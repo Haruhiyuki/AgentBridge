@@ -52,13 +52,18 @@ artifact reference per section. Readiness treats a missing manifest as a warning
 unreadable or malformed manifest as a failure, and any failed section as a failure.
 When `AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS=true`, artifact paths are resolved under
 `AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT` or the manifest directory, and missing files,
-root escapes, non-files, or sha256 mismatches fail the relevant section.
+root escapes, non-files, or sha256 mismatches fail the relevant section. Prefer
+`agentbridge-acceptance attach-artifact` for release-candidate evidence because it copies
+the source file into the artifact root, computes the sha256 digest, and writes the
+digest-backed manifest reference in one step.
 
 ```bash
 uv run agentbridge-acceptance init "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
   --environment staging
-uv run agentbridge-acceptance set-section "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
-  34.1 --status passed --artifact native-session-run.json
+uv run agentbridge-acceptance attach-artifact "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
+  34.1 ./acceptance/native-session-run.json \
+  --artifact-root "$AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT" \
+  --status passed --notes "Native PTY acceptance passed."
 uv run agentbridge-acceptance summary "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
   --verify-artifacts --artifact-root "$AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT" \
   --fail-on-warn

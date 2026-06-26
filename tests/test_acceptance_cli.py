@@ -117,6 +117,157 @@ def test_acceptance_cli_summary_json_for_complete_manifest(tmp_path, capsys):
     assert output["summary"]["counts"]["passed"] == 8
 
 
+def test_acceptance_cli_attach_artifact_copies_and_hashes_file(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    source = tmp_path / "native-session-run.json"
+    source.write_text('{"result":"passed"}', encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+
+    result = main(
+        [
+            "attach-artifact",
+            str(manifest),
+            "34.1",
+            str(source),
+            "--artifact-root",
+            str(artifact_root),
+            "--status",
+            "passed",
+            "--notes",
+            "Native PTY acceptance passed.",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    target = artifact_root / "native_session" / "native-session-run.json"
+
+    assert result == 0
+    assert "attached native_session/native-session-run.json to 34.1" in output
+    assert f"sha256={digest}" in output
+    assert target.read_text(encoding="utf-8") == '{"result":"passed"}'
+    assert payload["sections"]["34.1"] == {
+        "status": "passed",
+        "artifacts": [
+            {
+                "path": "native_session/native-session-run.json",
+                "sha256": digest,
+            }
+        ],
+        "notes": "Native PTY acceptance passed.",
+    }
+
+    summary_result = main(
+        [
+            "summary",
+            str(manifest),
+            "--verify-artifacts",
+            "--artifact-root",
+            str(artifact_root),
+            "--fail-on-fail",
+        ]
+    )
+    summary_output = capsys.readouterr().out
+
+    assert summary_result == 0
+    assert "34.1 status=passed artifacts=1 artifact_errors=0" in summary_output
+
+
+def test_acceptance_cli_attach_artifact_rejects_target_escape(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    source = tmp_path / "native-session-run.json"
+    source.write_text("{}", encoding="utf-8")
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+
+    result = main(
+        [
+            "attach-artifact",
+            str(manifest),
+            "34.1",
+            str(source),
+            "--artifact-root",
+            str(artifact_root),
+            "--name",
+            "../escape.json",
+        ]
+    )
+
+    assert result == 1
+    assert "artifact name must stay within artifact root" in capsys.readouterr().err
+    assert not (tmp_path / "escape.json").exists()
+
+
+def test_acceptance_cli_attach_artifact_rejects_root_target_name(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    source = tmp_path / "native-session-run.json"
+    source.write_text("{}", encoding="utf-8")
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+
+    result = main(
+        [
+            "attach-artifact",
+            str(manifest),
+            "34.1",
+            str(source),
+            "--artifact-root",
+            str(artifact_root),
+            "--name",
+            ".",
+        ]
+    )
+
+    assert result == 1
+    assert "artifact name must identify a file" in capsys.readouterr().err
+    assert not artifact_root.exists()
+
+
+def test_acceptance_cli_attach_artifact_refuses_overwrite_without_force(tmp_path, capsys):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    source = tmp_path / "native-session-run.json"
+    source.write_text('{"run":1}', encoding="utf-8")
+    main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"])
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "attach-artifact",
+                str(manifest),
+                "34.1",
+                str(source),
+                "--artifact-root",
+                str(artifact_root),
+            ]
+        )
+        == 0
+    )
+    source.write_text('{"run":2}', encoding="utf-8")
+    capsys.readouterr()
+
+    result = main(
+        [
+            "attach-artifact",
+            str(manifest),
+            "34.1",
+            str(source),
+            "--artifact-root",
+            str(artifact_root),
+        ]
+    )
+
+    assert result == 1
+    assert "artifact target already exists" in capsys.readouterr().err
+    assert (artifact_root / "native_session" / "native-session-run.json").read_text(
+        encoding="utf-8"
+    ) == '{"run":1}'
+
+
 def test_acceptance_cli_summary_verifies_artifact_hashes(tmp_path, capsys):
     manifest = tmp_path / "acceptance-evidence.json"
     artifact_root = tmp_path / "artifacts"

@@ -1015,8 +1015,11 @@ device keys, managed devices, or client certificate fingerprints as failures. Se
 `AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE` to an
 `agentbridge.acceptance_evidence.v1` manifest when collecting manual MVP sign-off; use
 `docs/operations/templates/acceptance_evidence.example.json` as the starting point and
-`agentbridge-acceptance init`, `agentbridge-acceptance set-section`, and
-`agentbridge-acceptance summary --fail-on-warn` to manage the manifest. Set
+`agentbridge-acceptance init`, `agentbridge-acceptance set-section`,
+`agentbridge-acceptance attach-artifact`, and
+`agentbridge-acceptance summary --fail-on-warn` to manage the manifest. The
+`attach-artifact` command copies files into the artifact root, computes sha256 digests,
+and writes digest-backed manifest references for release-candidate evidence. Set
 `AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS=true` and
 `AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT` when readiness should verify artifact files and
 optional sha256 digests instead of only checking artifact references. Use

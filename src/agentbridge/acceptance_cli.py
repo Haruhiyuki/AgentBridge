@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Literal
@@ -51,6 +53,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     set_parser.add_argument("--notes")
     set_parser.add_argument("--replace-artifacts", action="store_true")
+
+    attach_parser = subparsers.add_parser(
+        "attach-artifact",
+        help="Copy an artifact into the artifact root and add a sha256 reference",
+    )
+    attach_parser.add_argument("path", type=Path)
+    attach_parser.add_argument("section", choices=sorted(ACCEPTANCE_SECTIONS))
+    attach_parser.add_argument("source", type=Path)
+    attach_parser.add_argument("--artifact-root", type=Path, required=True)
+    attach_parser.add_argument(
+        "--name",
+        help=(
+            "Root-relative artifact name. Defaults to "
+            "<section-slug>/<source-filename>."
+        ),
+    )
+    attach_parser.add_argument("--status", choices=sorted(ACCEPTANCE_SECTION_STATUSES))
+    attach_parser.add_argument("--notes")
+    attach_parser.add_argument("--replace-artifacts", action="store_true")
+    attach_parser.add_argument("--force", action="store_true")
 
     summary_parser = subparsers.add_parser("summary", help="Summarize acceptance status")
     summary_parser.add_argument("path", type=Path)
@@ -143,6 +165,114 @@ def set_section(args: argparse.Namespace) -> int:
     write_acceptance_manifest(path, payload)
     print(f"updated {args.section} in {path}")
     return 0
+
+
+def attach_artifact(args: argparse.Namespace) -> int:
+    manifest_path = args.path.expanduser()
+    source_path = args.source.expanduser()
+    artifact_root = args.artifact_root.expanduser()
+    try:
+        payload = load_acceptance_manifest(manifest_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"acceptance artifact attach failed: {exc}", file=sys.stderr)
+        return 1
+    if not source_path.is_file():
+        print(
+            f"acceptance artifact attach failed: source is not a file: {source_path}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        artifact_reference = copy_acceptance_artifact(
+            source_path,
+            artifact_root=artifact_root,
+            section=args.section,
+            name=args.name,
+            force=args.force,
+        )
+    except ValueError as exc:
+        print(f"acceptance artifact attach failed: {exc}", file=sys.stderr)
+        return 1
+    sections = payload.setdefault("sections", {})
+    if not isinstance(sections, dict):
+        print("acceptance artifact attach failed: sections must be a JSON object", file=sys.stderr)
+        return 1
+    current_section = sections.get(args.section)
+    section_payload = current_section if isinstance(current_section, dict) else {}
+    existing_artifacts = section_payload.get("artifacts")
+    artifacts = (
+        []
+        if args.replace_artifacts or not isinstance(existing_artifacts, list)
+        else [
+            artifact
+            for artifact in existing_artifacts
+            if isinstance(artifact, str | dict)
+        ]
+    )
+    artifacts.append(artifact_reference)
+    section_payload = {
+        **section_payload,
+        "status": args.status or section_payload.get("status") or "not_run",
+        "artifacts": artifacts,
+    }
+    if args.notes is not None:
+        section_payload["notes"] = args.notes
+    sections[args.section] = section_payload
+    write_acceptance_manifest(manifest_path, payload)
+    print(
+        f"attached {artifact_reference['path']} to {args.section} in {manifest_path} "
+        f"sha256={artifact_reference['sha256']}"
+    )
+    return 0
+
+
+def copy_acceptance_artifact(
+    source_path: Path,
+    *,
+    artifact_root: Path,
+    section: str,
+    name: str | None,
+    force: bool,
+) -> dict[str, str]:
+    root = artifact_root.expanduser().resolve(strict=False)
+    target_name = acceptance_artifact_target_name(source_path, section=section, name=name)
+    target = (root / target_name).resolve(strict=False)
+    try:
+        relative_target = target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("artifact name must stay within artifact root") from exc
+    resolved_source = source_path.resolve(strict=True)
+    if target.exists() and not target.is_file():
+        raise ValueError(f"artifact target is not a file: {relative_target.as_posix()}")
+    if target.exists() and target != resolved_source and not force:
+        raise ValueError(
+            f"artifact target already exists: {relative_target.as_posix()} "
+            "(use --force to replace it)"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target != resolved_source:
+        shutil.copy2(resolved_source, target)
+    sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+    return {"path": relative_target.as_posix(), "sha256": sha256}
+
+
+def acceptance_artifact_target_name(
+    source_path: Path,
+    *,
+    section: str,
+    name: str | None,
+) -> Path:
+    if name is not None:
+        candidate = Path(name.strip())
+        if not str(candidate):
+            raise ValueError("artifact name must not be empty")
+        if candidate.is_absolute():
+            raise ValueError("artifact name must be relative to artifact root")
+        if candidate == Path(".") or not candidate.name:
+            raise ValueError("artifact name must identify a file below artifact root")
+        return candidate
+    section_slug = str(ACCEPTANCE_SECTIONS[section]["slug"])
+    return Path(section_slug) / source_path.name
 
 
 def acceptance_summary_text(evidence: dict[str, object]) -> str:
@@ -245,6 +375,8 @@ def main(argv: list[str] | None = None) -> int:
         return init_manifest(args)
     if args.command == "set-section":
         return set_section(args)
+    if args.command == "attach-artifact":
+        return attach_artifact(args)
     if args.command == "summary":
         return summarize_manifest(args)
     parser.error(f"unknown command {args.command}")
