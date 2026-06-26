@@ -302,6 +302,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
     <section>
       <div class="toolbar">
         <button id="refresh" class="primary" type="button">Refresh</button>
+        <button id="system-export-json" type="button">Export JSON</button>
         <div class="status" id="status">Ready</div>
       </div>
       <div class="metrics">
@@ -363,6 +364,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       ["Bot Rate Limits", "/api/v1/bot-gateway/rate-limits"],
       ["Device Identities", "/api/v1/device-identities?include_revoked=true"],
     ];
+    let latestResults = [];
 
     function setStatus(text) {
       $("status").textContent = text;
@@ -403,14 +405,18 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       $("details").textContent = JSON.stringify(results, null, 2);
     }
 
-    function renderReadinessActions(readiness) {
+    function readinessActionChecks(readiness) {
       const checks = Array.isArray(readiness.checks) ? readiness.checks : [];
-      const actionable = checks
+      return checks
         .filter((check) => check.status && check.status !== "pass")
         .sort((left, right) => {
           const rank = {fail: 0, warn: 1};
           return (rank[left.status] ?? 2) - (rank[right.status] ?? 2);
         });
+    }
+
+    function renderReadinessActions(readiness) {
+      const actionable = readinessActionChecks(readiness);
       const rows = actionable.map((check) => {
         const tr = document.createElement("tr");
         const values = [
@@ -436,6 +442,51 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
         rows.push(tr);
       }
       $("readiness-actions").replaceChildren(...rows);
+    }
+
+    function systemEndpointStatus(results) {
+      const failures = results.filter((result) => !result.ok).length;
+      return failures ? `${failures} endpoint checks failed` : "All checks passed";
+    }
+
+    function systemHealthExportPayload(results) {
+      const byName = Object.fromEntries(results.map((result) => [result.name, result]));
+      const readiness = byName["Readiness"]?.data || {};
+      return {
+        schema_version: "agentbridge.admin_system_health_export.v1",
+        exported_at: new Date().toISOString(),
+        status: systemEndpointStatus(results),
+        endpoints: results,
+        readiness_actions: readinessActionChecks(readiness).map((check) => ({
+          status: check.status || "unknown",
+          category: check.category || "unknown",
+          id: check.id || "unknown",
+          summary: check.summary || "",
+          next_step: check.next_step || "",
+          evidence: check.evidence || {},
+        })),
+      };
+    }
+
+    function downloadSystemHealthJson() {
+      if (!latestResults.length) {
+        setStatus("Refresh before export");
+        return;
+      }
+      const payload = systemHealthExportPayload(latestResults);
+      const blob = new Blob(
+        [JSON.stringify(payload, null, 2) + "\n"],
+        {type: "application/json"},
+      );
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "agentbridge-system-health.json";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setStatus("System health JSON exported");
     }
 
     function renderMetrics(results) {
@@ -476,15 +527,16 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       const results = await Promise.all(
         checks.map(([name, url]) => readEndpoint(name, url)),
       );
+      latestResults = results;
       renderChecks(results);
       renderMetrics(results);
-      const failures = results.filter((result) => !result.ok).length;
-      setStatus(failures ? `${failures} endpoint checks failed` : "All checks passed");
+      setStatus(systemEndpointStatus(results));
     }
 
     $("refresh").addEventListener("click", () => {
       refresh().catch((error) => setStatus(error.message));
     });
+    $("system-export-json").addEventListener("click", downloadSystemHealthJson);
     refresh().catch((error) => setStatus(error.message));
   </script>
 </body>

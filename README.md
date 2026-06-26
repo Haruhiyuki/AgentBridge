@@ -929,7 +929,8 @@ worker status, Bot platform capabilities, Bot rate-limit policies, and managed-d
 endpoint reachability, plus the `/api/v1/readiness` MVP acceptance summary with
 pass/warn/fail counts and a warn/fail action table with next steps across Control
 Plane, Terminal, Adapter, Bot, security workers, and
-HTTP/Admin/WebSocket/device/certificate authentication gates. The
+HTTP/Admin/WebSocket/device/certificate authentication gates; it can export the
+current endpoint/readiness snapshot as JSON for acceptance evidence. The
 project/session page lists projects, adds workspaces, creates sessions, closes selected
 sessions, and surfaces active Turn, queue, pending approval, and lease status through
 the same REST APIs used by external clients. The interaction

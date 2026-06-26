@@ -104,6 +104,8 @@ Collect these artifacts for a release candidate:
   from `34.1` through `34.8` marked `passed` and backed by artifact references.
 - Admin screenshots or exports for System Health, Project/Session, Interaction,
   Terminal Lifecycle, Audit/Event, Device Identity, and Bot Delivery pages.
+  The System Health page's `Export JSON` action captures the current endpoint checks,
+  readiness summary, and warn/fail next steps as a structured evidence file.
 - Audit JSON/CSV/signed archive covering the manual acceptance run.
 - Bot delivery records for incremental answers, tool progress, interactions, retries,
   fallback text, and any native platform actions.
