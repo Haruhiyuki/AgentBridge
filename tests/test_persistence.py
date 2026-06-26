@@ -22,6 +22,7 @@ from agentbridge.domain import (
     PolicyScope,
     RiskLevel,
     SemanticEventSource,
+    SessionStatus,
     TurnStatus,
     Visibility,
 )
@@ -1118,6 +1119,13 @@ def test_terminal_lifecycle_lost_state_survives_repository_restart(tmp_path):
     assert len(lost_events) == 1
     assert lost_events[0].payload["generation"] == 1
     assert lost_events[0].payload["reason"] == "backend_state_missing"
+    protection_events = [
+        event
+        for event in second_repo.list_events(session_id=session.id)
+        if event.type == "terminal.offline_protection_enabled"
+    ]
+    assert len(protection_events) == 1
+    assert second_repo.get_session(session.id).status == SessionStatus.RECOVERING
 
     third_repo = SQLAlchemyRepository(database_url)
     third_control = ControlPlane(repository=third_repo)
@@ -1132,6 +1140,13 @@ def test_terminal_lifecycle_lost_state_survives_repository_restart(tmp_path):
         if event.type == "terminal.lost"
     ]
     assert len(lost_events) == 1
+    protection_events = [
+        event
+        for event in third_repo.list_events(session_id=session.id)
+        if event.type == "terminal.offline_protection_enabled"
+    ]
+    assert len(protection_events) == 1
+    assert third_repo.get_session(session.id).status == SessionStatus.RECOVERING
 
 
 def test_api_can_use_sqlalchemy_repository_from_environment(tmp_path, monkeypatch):

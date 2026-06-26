@@ -36,6 +36,7 @@ from agentbridge.domain import (
     ErrorCode,
     LeaseOwnerType,
     SemanticEventSource,
+    SessionStatus,
 )
 
 
@@ -1648,6 +1649,10 @@ class TerminalAgentService:
             session_id=session_id,
             payload=payload,
         )
+        self._disable_terminal_offline_protection_if_needed(
+            session_id=session_id,
+            trace_id=f"{trace_id}:offline-protection",
+        )
         return generation
 
     def resolve_start_command(
@@ -2007,6 +2012,7 @@ class TerminalAgentService:
         recovered_exits: set[tuple[str, int]] = set()
         recovered_losses: set[tuple[str, int]] = set()
         recovered_auto_restart_blocks: set[tuple[str, int, str]] = set()
+        latest_lost_session_ids: list[str] = []
         for session in self.control.repository.list_sessions():
             generation = 0
             events = self.control.repository.list_events(
@@ -2039,6 +2045,8 @@ class TerminalAgentService:
                         recovered_auto_restart_blocks.add((session.id, generation, reason))
             if generation > 0:
                 recovered_generations[session.id] = generation
+                if (session.id, generation) in recovered_losses:
+                    latest_lost_session_ids.append(session.id)
 
         with self._lifecycle_lock:
             for session_id, generation in recovered_generations.items():
@@ -2049,6 +2057,11 @@ class TerminalAgentService:
             self._reported_terminal_exits.update(recovered_exits)
             self._reported_terminal_losses.update(recovered_losses)
             self._reported_auto_restart_blocks.update(recovered_auto_restart_blocks)
+        for session_id in latest_lost_session_ids:
+            self._enable_terminal_offline_protection_if_needed(
+                session_id=session_id,
+                trace_id="terminal-lifecycle-recovery:offline-protection",
+            )
         return recovered_generations
 
     def start_lifecycle_monitor(self, *, interval_seconds: float = 1.0) -> bool:
@@ -2181,8 +2194,49 @@ class TerminalAgentService:
             },
             idempotency_key=f"terminal-lost:{session.id}:{generation}",
         )
+        self._enable_terminal_offline_protection_if_needed(
+            session_id=session.id,
+            trace_id=f"{trace_id}:offline-protection",
+        )
         with self._lifecycle_lock:
             self._reported_terminal_losses.add(loss_key)
+
+    def _terminal_lifecycle_actor(self) -> Actor:
+        return Actor(id="terminal-agent", roles={"admin"})
+
+    def _enable_terminal_offline_protection_if_needed(
+        self,
+        *,
+        session_id: str,
+        trace_id: str,
+    ) -> None:
+        session = self.control.repository.get_session(session_id)
+        if session.status in {SessionStatus.CLOSED, SessionStatus.ARCHIVED}:
+            return
+        if session.status == SessionStatus.RECOVERING:
+            return
+        self.control.set_terminal_agent_offline_protection(
+            actor=self._terminal_lifecycle_actor(),
+            session_id=session_id,
+            offline=True,
+            trace_id=trace_id,
+        )
+
+    def _disable_terminal_offline_protection_if_needed(
+        self,
+        *,
+        session_id: str,
+        trace_id: str,
+    ) -> None:
+        session = self.control.repository.get_session(session_id)
+        if session.status != SessionStatus.RECOVERING:
+            return
+        self.control.set_terminal_agent_offline_protection(
+            actor=self._terminal_lifecycle_actor(),
+            session_id=session_id,
+            offline=False,
+            trace_id=trace_id,
+        )
 
     def _emit_auto_restart_skipped_once(
         self,

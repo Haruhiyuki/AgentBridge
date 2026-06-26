@@ -26,6 +26,8 @@ from agentbridge.domain import (
     AgentType,
     ErrorCode,
     LeaseOwnerType,
+    SemanticEventSource,
+    SessionStatus,
     Visibility,
 )
 from agentbridge.pty_host import (
@@ -583,6 +585,13 @@ def test_terminal_lifecycle_monitor_reports_lost_recovered_session_once(tmp_path
         "reason": "backend_state_missing",
         "backend": "FakeTerminalBackend",
     }
+    protection_events = [
+        event
+        for event in control.repository.list_events(session_id=session.id)
+        if event.type == "terminal.offline_protection_enabled"
+    ]
+    assert len(protection_events) == 1
+    assert control.repository.get_session(session.id).status == SessionStatus.RECOVERING
     assert restarted_terminal.lifecycle_monitor_status()["reported_lost_count"] == 1
 
     recovered_terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
@@ -594,6 +603,50 @@ def test_terminal_lifecycle_monitor_reports_lost_recovered_session_once(tmp_path
         if event.type == "terminal.lost"
     ]
     assert len(lost_events) == 1
+    protection_events = [
+        event
+        for event in control.repository.list_events(session_id=session.id)
+        if event.type == "terminal.offline_protection_enabled"
+    ]
+    assert len(protection_events) == 1
+
+
+def test_terminal_lifecycle_recovery_projects_lost_event_to_offline_protection(
+    tmp_path,
+):
+    control = ControlPlane()
+    first_terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+    _, session = create_session(control, tmp_path)
+    first_terminal.start_session(
+        session_id=session.id,
+        command="fake-cli",
+        trace_id="terminal-start-before-lost-projection",
+    )
+    control.emit_event(
+        event_type="terminal.lost",
+        source=SemanticEventSource.TERMINAL_AGENT,
+        trace_id="terminal-lost-before-projection",
+        project_id=session.project_id,
+        session_id=session.id,
+        payload={
+            "generation": 1,
+            "reason": "backend_state_missing",
+            "backend": "FakeTerminalBackend",
+        },
+        idempotency_key=f"terminal-lost:{session.id}:1",
+    )
+
+    assert control.repository.get_session(session.id).status == SessionStatus.IDLE
+
+    TerminalAgentService(control, backend=FakeTerminalBackend())
+    protection_events = [
+        event
+        for event in control.repository.list_events(session_id=session.id)
+        if event.type == "terminal.offline_protection_enabled"
+    ]
+
+    assert len(protection_events) == 1
+    assert control.repository.get_session(session.id).status == SessionStatus.RECOVERING
 
 
 def test_terminal_lifecycle_monitor_auto_restarts_lost_session(tmp_path):
@@ -626,7 +679,9 @@ def test_terminal_lifecycle_monitor_auto_restarts_lost_session(tmp_path):
         "session.created",
         "terminal.started",
         "terminal.lost",
+        "terminal.offline_protection_enabled",
         "terminal.started",
+        "terminal.offline_protection_disabled",
     ]
     started_events = [
         event
@@ -642,6 +697,7 @@ def test_terminal_lifecycle_monitor_auto_restarts_lost_session(tmp_path):
         "restart_of_generation": 1,
         "restart_reason": "auto_lost_restart",
     }
+    assert control.repository.get_session(session.id).status == SessionStatus.IDLE
     assert recovered_terminal.lifecycle_monitor_status()["auto_restart_attempt_count"] == 1
 
 
@@ -676,6 +732,7 @@ def test_terminal_lifecycle_auto_restart_requires_allowlisted_command(tmp_path):
         "session.created",
         "terminal.started",
         "terminal.lost",
+        "terminal.offline_protection_enabled",
         "terminal.auto_restart.skipped",
     ]
     skipped_event = events[-1]
@@ -691,6 +748,7 @@ def test_terminal_lifecycle_auto_restart_requires_allowlisted_command(tmp_path):
     assert status["auto_restart_last_block_reason"] == (
         f"{session.id}: command_not_allowlisted"
     )
+    assert control.repository.get_session(session.id).status == SessionStatus.RECOVERING
 
 
 def test_terminal_lifecycle_auto_restart_attempts_are_bounded(tmp_path):
@@ -732,6 +790,7 @@ def test_terminal_lifecycle_auto_restart_attempts_are_bounded(tmp_path):
     ]
     assert len(started_events) == 2
     assert len(lost_events) == 2
+    assert control.repository.get_session(session.id).status == SessionStatus.RECOVERING
     assert recovered_terminal.lifecycle_monitor_status()["auto_restart_attempt_count"] == 1
 
 
@@ -766,7 +825,9 @@ def test_terminal_restart_uses_last_started_command_after_backend_state_loss(tmp
         "session.created",
         "terminal.started",
         "terminal.lost",
+        "terminal.offline_protection_enabled",
         "terminal.started",
+        "terminal.offline_protection_disabled",
     ]
     started_events = [
         event
@@ -774,6 +835,7 @@ def test_terminal_restart_uses_last_started_command_after_backend_state_loss(tmp
         if event.type == "terminal.started"
     ]
     assert started_events[-1].payload["generation"] == 2
+    assert control.repository.get_session(session.id).status == SessionStatus.IDLE
 
 
 def test_terminal_restart_does_not_replace_running_backend(tmp_path):
@@ -1428,9 +1490,12 @@ def test_pty_host_watchdog_restart_can_auto_restart_lost_terminal(
             "session.created",
             "terminal.started",
             "terminal.lost",
+            "terminal.offline_protection_enabled",
             "terminal.started",
+            "terminal.offline_protection_disabled",
         ]
-        assert events[-1].payload == {
+        started_events = [event for event in events if event.type == "terminal.started"]
+        assert started_events[-1].payload == {
             "workspace_id": session.workspace_id,
             "command": command,
             "generation": 2,
@@ -1439,6 +1504,7 @@ def test_pty_host_watchdog_restart_can_auto_restart_lost_terminal(
             "restart_of_generation": 1,
             "restart_reason": "auto_lost_restart",
         }
+        assert control.repository.get_session(session.id).status == SessionStatus.IDLE
         lifecycle_status = terminal.lifecycle_monitor_status()
         assert lifecycle_status["auto_restart_attempt_count"] == 1
         assert lifecycle_status["backend_supervision"]["watchdog_enabled"] is True
