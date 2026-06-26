@@ -41,6 +41,7 @@ from agentbridge.domain import (
     LeaseOwnerType,
     PolicyScope,
     Project,
+    ProjectBinding,
     RiskLevel,
     SemanticEvent,
     SemanticEventSource,
@@ -254,7 +255,7 @@ class ControlPlane:
         alias_in_chat: str | None,
         is_default: bool,
         trace_id: str,
-    ) -> None:
+    ) -> ProjectBinding:
         effective_actor = self.effective_actor(actor, chat_context_id)
         self.require_project_permission(
             effective_actor,
@@ -293,6 +294,26 @@ class ControlPlane:
                 "is_default": is_default,
             },
         )
+        return binding
+
+    def list_project_bindings(
+        self,
+        *,
+        actor: Actor,
+        chat_context_id: str,
+    ) -> list[ProjectBinding]:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        self.require_collection_permission(
+            effective_actor,
+            Permission.PROJECT_VIEW,
+            resource_type="chat_context",
+            resource_id=chat_context_id,
+            attributes={
+                "operation": "list_project_bindings",
+                **self._chat_policy_attributes(chat_context_id),
+            },
+        )
+        return self.repository.list_project_bindings(chat_context_id)
 
     def use_project(
         self,

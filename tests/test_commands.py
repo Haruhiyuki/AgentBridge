@@ -319,6 +319,99 @@ def test_select_command_rejects_out_of_range_number(tmp_path):
     assert exc_info.value.details == {"index": 2, "count": 1}
 
 
+def test_project_binding_commands_set_unique_default_and_aliases():
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+    alpha = control.create_project(
+        actor=maintainer,
+        name="Alpha",
+        slug="alpha",
+        trace_id="bind-alpha",
+    )
+    beta = control.create_project(
+        actor=maintainer,
+        name="Beta",
+        slug="beta",
+        trace_id="bind-beta",
+    )
+    gamma = control.create_project(
+        actor=maintainer,
+        name="Gamma",
+        slug="gamma",
+        trace_id="bind-gamma",
+    )
+
+    alpha_binding = execute(
+        commands,
+        "/agent project bind alpha --alias main --default",
+        maintainer,
+        context.id,
+        "bind-alpha-default",
+    )
+    beta_binding = execute(
+        commands,
+        "/agent project bind beta --alias backend",
+        maintainer,
+        context.id,
+        "bind-beta",
+    )
+    gamma_binding = execute(
+        commands,
+        "/agent project bind gamma",
+        maintainer,
+        context.id,
+        "bind-gamma",
+    )
+    default_result = execute(
+        commands,
+        "/agent project default backend",
+        maintainer,
+        context.id,
+        "default-beta",
+    )
+    bindings_result = execute(
+        commands,
+        "/agent project bindings",
+        maintainer,
+        context.id,
+        "list-bindings",
+    )
+    alias_info = execute(
+        commands,
+        "/agent project info backend",
+        maintainer,
+        context.id,
+        "project-info-binding-alias",
+    )
+
+    updated_context = control.repository.get_chat_context(context.id)
+    bindings = control.repository.list_project_bindings(context.id)
+    default_bindings = [binding for binding in bindings if binding.is_default]
+    binding_by_project = {binding.project_id: binding for binding in bindings}
+
+    assert alpha_binding.canonical_command == "project.bind"
+    assert alpha_binding.data["is_default"] is True
+    assert beta_binding.data["binding"]["alias_in_chat"] == "backend"
+    assert gamma_binding.data["project_id"] == gamma.id
+    assert default_result.canonical_command == "project.default"
+    assert default_result.data["project_id"] == beta.id
+    assert updated_context.active_project_id == beta.id
+    assert len(bindings) == 3
+    assert [binding.project_id for binding in default_bindings] == [beta.id]
+    assert binding_by_project[alpha.id].is_default is False
+    assert binding_by_project[beta.id].alias_in_chat == "backend"
+    assert alias_info.data["project_id"] == beta.id
+    assert [item["project_id"] for item in bindings_result.data["bindings"]] == [
+        alpha.id,
+        beta.id,
+        gamma.id,
+    ]
+    assert "默认 · Beta (beta)" in bindings_result.message
+    assert "/agent project default <project>" in bindings_result.message
+
+
 def test_project_create_command_sets_active_session_quota(tmp_path):
     control = ControlPlane()
     commands = CommandService(control)
@@ -1069,6 +1162,14 @@ def test_missing_argument_errors_include_recovery_commands():
         (
             "/agent project use",
             ["/agent project list", "/agent select project <编号>"],
+        ),
+        (
+            "/agent project bind",
+            ["/agent project list", "/agent project bind <project>"],
+        ),
+        (
+            "/agent project default",
+            ["/agent project bindings", "/agent project default <project>"],
         ),
         (
             "/agent session use",

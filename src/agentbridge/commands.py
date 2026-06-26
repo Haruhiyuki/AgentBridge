@@ -21,6 +21,7 @@ from agentbridge.domain import (
     LeaseOwnerType,
     PolicyScope,
     Project,
+    ProjectBinding,
     RiskLevel,
     Visibility,
     WorkspaceType,
@@ -34,6 +35,8 @@ COMMAND_ALIASES = {
     "信息": "info",
     "新建": "new",
     "创建": "create",
+    "绑定": "bind",
+    "默认": "default",
     "关闭": "close",
     "发送": "send",
     "继续": "continue",
@@ -209,6 +212,44 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
         ),
         required_permission="project.view",
         target_mode="project",
+    ),
+    command_spec(
+        "project.bindings",
+        aliases=["project bindings", "project binds", "项目 绑定 列表"],
+        summary="List project bindings for this chat context.",
+        usage="/agent project bindings",
+        required_permission="project.view",
+        target_mode="none",
+    ),
+    command_spec(
+        "project.bind",
+        aliases=["project bind", "项目 绑定"],
+        summary="Bind a project to this chat context.",
+        usage="/agent project bind <project> [--alias <alias>] [--default]",
+        argument_schema=command_arguments_schema(
+            {
+                "project": STRING_SCHEMA,
+                "alias_in_chat": OPTIONAL_STRING_SCHEMA,
+                "is_default": BOOLEAN_SCHEMA,
+            },
+            required=["project"],
+        ),
+        required_permission="project.manage",
+        target_mode="project",
+        risk=RiskLevel.MEDIUM.value,
+    ),
+    command_spec(
+        "project.default",
+        aliases=["project default", "项目 默认"],
+        summary="Set the default project binding for this chat context.",
+        usage="/agent project default <project>",
+        argument_schema=command_arguments_schema(
+            {"project": STRING_SCHEMA},
+            required=["project"],
+        ),
+        required_permission="project.manage",
+        target_mode="project",
+        risk=RiskLevel.MEDIUM.value,
     ),
     command_spec(
         "project.select",
@@ -862,6 +903,20 @@ class CommandService:
                 "project": positional[0],
                 "expected_version": parse_optional_int(options.get("version")),
             }
+        if action in {"bindings", "binds"}:
+            return "project.bindings", {}
+        if action == "bind":
+            if not positional:
+                raise missing_argument("project bind", "<project>")
+            return "project.bind", {
+                "project": positional[0],
+                "alias_in_chat": options.get("alias") or options.get("as"),
+                "is_default": bool(options.get("default")),
+            }
+        if action == "default":
+            if not positional:
+                raise missing_argument("project default", "<project>")
+            return "project.default", {"project": positional[0]}
         if action == "create":
             name = str(options.get("name") or " ".join(positional)).strip()
             if not name:
@@ -898,7 +953,7 @@ class CommandService:
         raise AgentBridgeError(
             ErrorCode.COMMAND_UNKNOWN,
             f"未知 project 子命令：{action}",
-            next_step="可用子命令：list、info、use、create。",
+            next_step="可用子命令：list、info、use、bind、bindings、default、create。",
         )
 
     def _parse_session(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
@@ -1292,6 +1347,37 @@ class CommandService:
                     "context": context.model_dump(mode="json"),
                 },
             )
+        if command == "project.bindings":
+            bindings = self.control.list_project_bindings(
+                actor=invocation.actor,
+                chat_context_id=invocation.chat_context_id,
+            )
+            projects = {
+                binding.project_id: self.control.repository.get_project(binding.project_id)
+                for binding in bindings
+            }
+            return self._result(
+                invocation,
+                "Project Bindings",
+                format_project_binding_list_message(bindings, projects),
+                {
+                    "chat_context_id": invocation.chat_context_id,
+                    "bindings": [
+                        binding.model_dump(mode="json") for binding in bindings
+                    ],
+                    "projects": {
+                        project_id: project.model_dump(mode="json")
+                        for project_id, project in projects.items()
+                    },
+                },
+            )
+        if command == "project.bind":
+            return self._execute_project_bind(
+                invocation,
+                is_default=bool(args.get("is_default")),
+            )
+        if command == "project.default":
+            return self._execute_project_bind(invocation, is_default=True)
         if command == "project.select":
             return self._execute_project_select(invocation)
         if command == "session.create":
@@ -2012,6 +2098,46 @@ class CommandService:
             },
         )
 
+    def _execute_project_bind(
+        self,
+        invocation: CommandInvocation,
+        *,
+        is_default: bool,
+    ) -> CommandResult:
+        project = self.control.repository.resolve_project(
+            str(invocation.args["project"]),
+            invocation.chat_context_id,
+        )
+        alias_value = invocation.args.get("alias_in_chat")
+        binding = self.control.bind_project(
+            actor=invocation.actor,
+            chat_context_id=invocation.chat_context_id,
+            project_id=project.id,
+            alias_in_chat=str(alias_value) if alias_value else None,
+            is_default=is_default,
+            trace_id=invocation.trace_id,
+        )
+        context = self.control.repository.get_chat_context(invocation.chat_context_id)
+        message = (
+            f"已绑定项目 {project.name} ({project.slug})"
+            f"{' 并设为默认' if binding.is_default else ''}。"
+        )
+        if binding.alias_in_chat:
+            message += f" 群内别名：{binding.alias_in_chat}。"
+        return self._result(
+            invocation,
+            "Project Bound",
+            message,
+            {
+                "project_id": project.id,
+                "binding_id": binding.id,
+                "is_default": binding.is_default,
+                "binding": binding.model_dump(mode="json"),
+                "project": project.model_dump(mode="json"),
+                "context": context.model_dump(mode="json"),
+            },
+        )
+
     def _execute_project_select(self, invocation: CommandInvocation) -> CommandResult:
         args = invocation.args
         projects = self.control.list_projects_for_context(
@@ -2358,6 +2484,28 @@ def format_project_list_message(projects: list[Project]) -> str:
     return "\n".join(lines)
 
 
+def format_project_binding_list_message(
+    bindings: list[ProjectBinding],
+    projects: dict[str, Project],
+) -> str:
+    if not bindings:
+        return "共 0 条项目绑定。使用 /agent project bind <project> [--default] 添加。"
+    lines = [f"共 {len(bindings)} 条项目绑定："]
+    for index, binding in enumerate(bindings, start=1):
+        project = projects[binding.project_id]
+        default_marker = "默认" if binding.is_default else "绑定"
+        alias = f" · alias={binding.alias_in_chat}" if binding.alias_in_chat else ""
+        lines.append(
+            f"{index}. {default_marker} · {project.name} ({project.slug}) · "
+            f"project_id={project.id}{alias}"
+        )
+    lines.append(
+        "使用 /agent project bind <project> [--alias <alias>] [--default] 绑定项目；"
+        "使用 /agent project default <project> 设置唯一默认项目。"
+    )
+    return "\n".join(lines)
+
+
 def format_session_list_message(sessions: list[AgentSession]) -> str:
     if not sessions:
         return "共 0 个会话。"
@@ -2485,6 +2633,14 @@ def missing_argument_next_step(command: str, argument: str) -> str:
         ("project create", "--name <name>"): (
             "请提供项目名，例如 /agent project create --name Backend "
             "--path <path> --root <root>。"
+        ),
+        ("project bind", "<project>"): (
+            "请执行 /agent project list 查看项目标识，再执行 "
+            "/agent project bind <project> [--alias <alias>] [--default]。"
+        ),
+        ("project default", "<project>"): (
+            "请执行 /agent project bindings 查看当前绑定，再执行 "
+            "/agent project default <project> 设置唯一默认项目。"
         ),
         ("session use", "<session>"): (
             "请执行 /agent session list 查看会话编号或短码，再执行 "

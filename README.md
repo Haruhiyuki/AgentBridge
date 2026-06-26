@@ -713,11 +713,18 @@ select from the current project or session list without copying IDs:
 
 ```text
 /agent project list
+/agent project bind backend --alias api --default
+/agent project bindings
+/agent project default frontend
 /agent select project 2
 /agent session list
 /agent select session 2
 /agent select session 2 --project backend
 ```
+
+Chat contexts can bind multiple projects; only one binding is default at a time, and
+setting a new default updates the active project pointer without moving existing
+Sessions between Workspaces.
 
 Project and session list responses include the visible one-based numbers and a short
 `select` command hint; those numbers are transient positions in the current list.

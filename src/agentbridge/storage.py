@@ -864,8 +864,32 @@ class InMemoryRepository:
         with self._lock:
             self.get_chat_context(chat_context_id)
             self.get_project(project_id)
-            for binding in self.bindings.values():
+            normalized_alias = alias_in_chat.strip() if alias_in_chat else None
+            for binding_id, binding in list(self.bindings.items()):
                 if binding.chat_context_id == chat_context_id and binding.project_id == project_id:
+                    updates: dict[str, object] = {}
+                    if alias_in_chat is not None:
+                        updates["alias_in_chat"] = normalized_alias
+                    if is_default:
+                        for other_id, other in list(self.bindings.items()):
+                            if (
+                                other.chat_context_id == chat_context_id
+                                and other.id != binding.id
+                                and other.is_default
+                            ):
+                                self.bindings[other_id] = other.model_copy(
+                                    update={"is_default": False}
+                                )
+                        updates["is_default"] = True
+                    if updates:
+                        binding = binding.model_copy(update=updates)
+                        self.bindings[binding_id] = binding
+                    if is_default:
+                        self.update_active_project(
+                            chat_context_id,
+                            project_id,
+                            expected_version=None,
+                        )
                     return binding
             if is_default:
                 for binding_id, binding in list(self.bindings.items()):
@@ -875,13 +899,25 @@ class InMemoryRepository:
                 id=new_id("pbind"),
                 chat_context_id=chat_context_id,
                 project_id=project_id,
-                alias_in_chat=alias_in_chat,
+                alias_in_chat=normalized_alias,
                 is_default=is_default,
             )
             self.bindings[binding.id] = binding
             if is_default:
                 self.update_active_project(chat_context_id, project_id, expected_version=None)
             return binding
+
+    def list_project_bindings(self, chat_context_id: str) -> list[ProjectBinding]:
+        with self._lock:
+            self.get_chat_context(chat_context_id)
+            return sorted(
+                [
+                    binding
+                    for binding in self.bindings.values()
+                    if binding.chat_context_id == chat_context_id
+                ],
+                key=lambda binding: binding.created_at,
+            )
 
     def update_active_project(
         self, chat_context_id: str, project_id: str, expected_version: int | None

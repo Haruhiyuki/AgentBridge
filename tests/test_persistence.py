@@ -279,6 +279,70 @@ def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
     assert len(second_repo.sessions) == 1
 
 
+def test_sqlalchemy_project_bindings_preserve_unique_default(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'agentbridge-bindings.db'}"
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    first_control = ControlPlane(repository=first_repo)
+    context = first_control.get_or_create_chat_context(
+        bot_instance_id="bot-test",
+        platform="onebot.v11",
+        chat_space_id="group-bindings",
+    )
+    alpha = first_control.create_project(
+        actor=maintainer,
+        name="Alpha",
+        slug="alpha",
+        trace_id="persist-binding-alpha",
+        chat_context_id=context.id,
+    )
+    beta = first_control.create_project(
+        actor=maintainer,
+        name="Beta",
+        slug="beta",
+        trace_id="persist-binding-beta",
+        chat_context_id=context.id,
+    )
+
+    first_control.bind_project(
+        actor=maintainer,
+        chat_context_id=context.id,
+        project_id=alpha.id,
+        alias_in_chat="main",
+        is_default=True,
+        trace_id="persist-binding-alpha-default",
+    )
+    beta_binding = first_control.bind_project(
+        actor=maintainer,
+        chat_context_id=context.id,
+        project_id=beta.id,
+        alias_in_chat="backend",
+        is_default=False,
+        trace_id="persist-binding-beta",
+    )
+    beta_default_binding = first_control.bind_project(
+        actor=maintainer,
+        chat_context_id=context.id,
+        project_id=beta.id,
+        alias_in_chat=None,
+        is_default=True,
+        trace_id="persist-binding-beta-default",
+    )
+
+    second_repo = SQLAlchemyRepository(database_url)
+    restored_context = second_repo.get_chat_context(context.id)
+    restored_bindings = second_repo.list_project_bindings(context.id)
+
+    assert beta_binding.id == beta_default_binding.id
+    assert beta_default_binding.alias_in_chat == "backend"
+    assert restored_context.active_project_id == beta.id
+    assert [binding.project_id for binding in restored_bindings] == [alpha.id, beta.id]
+    assert [binding.project_id for binding in restored_bindings if binding.is_default] == [
+        beta.id
+    ]
+    assert second_repo.resolve_project("backend", context.id).id == beta.id
+
+
 def test_sqlalchemy_repository_write_lock_reloads_stale_state_before_snapshot(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'write-lock.db'}"
     write_lock_path = tmp_path / "agentbridge.write.lock"
