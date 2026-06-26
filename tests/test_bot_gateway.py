@@ -523,6 +523,58 @@ def test_bot_gateway_capabilities_api_exposes_platform_contracts():
     assert filtered.json()["capabilities"] == [capabilities["onebot.v11"]]
 
 
+def test_bot_gateway_inbound_events_record_messages_and_execute_slash_commands():
+    app = create_app()
+    client = TestClient(app)
+
+    message = client.post(
+        "/api/v1/bot-gateway/inbound-events",
+        json={
+            "event_type": "bot.message.received",
+            "bot_instance_id": "discord-main",
+            "adapter": "discord",
+            "platform": "discord",
+            "scope": "channel",
+            "channel_id": "chan-1",
+            "user_id": "usr-1",
+            "message_id": "msg-1",
+            "text": "hello bridge",
+        },
+    )
+    slash = client.post(
+        "/api/v1/bot-gateway/inbound-events",
+        json={
+            "event_type": "bot.slash_command.received",
+            "bot_instance_id": "discord-main",
+            "adapter": "discord",
+            "platform": "discord",
+            "scope": "channel",
+            "channel_id": "chan-1",
+            "user_id": "usr-1",
+            "event_id": "slash-1",
+            "command": "health",
+            "default_roles": ["operator"],
+        },
+    )
+
+    assert message.status_code == 200
+    assert message.json()["handled"] is False
+    assert message.json()["event"]["type"] == "bot.message.received"
+    assert message.json()["event"]["payload"]["raw_text"] == "hello bridge"
+    assert message.json()["event"]["payload"]["actor_id"] == "discord:usr-1"
+    assert slash.status_code == 200
+    assert slash.json()["handled"] is True
+    assert slash.json()["result"]["canonical_command"] == "health"
+    assert slash.json()["event"]["type"] == "bot.slash_command.received"
+    assert slash.json()["event"]["payload"]["raw_text"] == "health"
+    assert slash.json()["event"]["payload"]["command_text"] == "/agent health"
+    events = app.state.control.repository.list_semantic_events(
+        event_type="bot.slash_command.received",
+        trace_id=slash.json()["event"]["trace_id"],
+    )
+    assert len(events) == 1
+
+
 def test_bot_gateway_delivery_results_api_tracks_ack_edit_delete(tmp_path):
     control = ControlPlane()
     context, session_id = create_session_with_turn(control, tmp_path)

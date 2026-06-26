@@ -648,7 +648,16 @@ curl -X POST http://127.0.0.1:8000/api/v1/onebot/events \
   -d '{"event":{"post_type":"message","message_type":"group","group_id":10001,"user_id":20002,"message_id":30003,"raw_message":"/agent health"}}'
 ```
 
-The same endpoint accepts action callback payloads that contain a rendered action
+Platform adapters can also use the normalized Bot Gateway upstream endpoint for
+message, command, slash command, action, select, modal, and attachment events:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/inbound-events \
+  -H 'content-type: application/json' \
+  -d '{"event_type":"bot.slash_command.received","platform":"discord","channel_id":"chan-1","user_id":"usr-1","event_id":"slash-1","command":"health"}'
+```
+
+The OneBot endpoint also accepts action callback payloads that contain a rendered action
 descriptor command, including nested `data.payload.command` or `payload.command` shapes:
 
 ```bash

@@ -70,6 +70,7 @@ from agentbridge.domain import (
     AuditEvent,
     BotDeliveryResultAction,
     BotDeliveryStatus,
+    ChatContext,
     DeviceIdentity,
     DeviceIdentityScope,
     DeviceIdentityStatus,
@@ -420,6 +421,31 @@ class DeliverEventsRequest(BaseModel):
     payload_field: str | None = None
     payload_value: str | None = None
     limit: int = 100
+
+
+class BotGatewayInboundEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_type: str
+    bot_instance_id: str = "bot-gateway"
+    adapter: str | None = None
+    platform: str
+    scope: str | None = None
+    channel_id: str | None = None
+    thread_id: str | None = None
+    user_id: str
+    message_id: str | None = None
+    event_id: str | None = None
+    reply_to: str | None = None
+    text: str | None = None
+    command: str | None = None
+    attachments: list[dict[str, object]] = Field(default_factory=list)
+    payload: dict[str, object] = Field(default_factory=dict)
+    default_roles: list[str] = Field(default_factory=lambda: ["member"])
+    chat_context_id: str | None = None
+    execute: bool | None = None
+    idempotency_key: str | None = None
+    trace_id: str | None = None
 
 
 class RetryBotDeliveriesRequest(BaseModel):
@@ -2004,6 +2030,18 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         return [record.model_dump(mode="json") for record in records]
 
+    @app.post("/api/v1/bot-gateway/inbound-events")
+    def ingest_bot_gateway_inbound_event(
+        payload: BotGatewayInboundEventRequest,
+        command_service: CommandService = Depends(get_commands),
+        control: ControlPlane = Depends(get_control),
+    ):
+        return handle_bot_gateway_inbound_event(
+            payload,
+            command_service=command_service,
+            control=control,
+        )
+
     @app.websocket("/api/v1/bot-gateway/session-events/ws")
     async def stream_bot_gateway_session_events(
         websocket: WebSocket,
@@ -2800,6 +2838,197 @@ def ensure_chat_context_id(payload: CommandRequest, control: ControlPlane) -> st
         return payload.chat_context_id
     context = control.get_or_create_chat_context(**payload.chat.model_dump())
     return context.id
+
+
+BOT_GATEWAY_UPSTREAM_EVENT_TYPES = {
+    "bot.message.received",
+    "bot.command.received",
+    "bot.slash_command.received",
+    "bot.action.clicked",
+    "bot.selection.submitted",
+    "bot.modal.submitted",
+    "bot.attachment.received",
+}
+
+BOT_GATEWAY_EXECUTABLE_UPSTREAM_EVENT_TYPES = {
+    "bot.command.received",
+    "bot.slash_command.received",
+    "bot.action.clicked",
+    "bot.selection.submitted",
+    "bot.modal.submitted",
+}
+
+
+def handle_bot_gateway_inbound_event(
+    payload: BotGatewayInboundEventRequest,
+    *,
+    command_service: CommandService,
+    control: ControlPlane,
+) -> dict[str, object]:
+    event_type = normalized_bot_gateway_upstream_event_type(payload.event_type)
+    context = bot_gateway_inbound_chat_context(payload, control)
+    platform_event_id = bot_gateway_platform_event_id(payload)
+    idempotency_key = (
+        payload.idempotency_key
+        or f"bot-gateway:{payload.platform}:{context.id}:{platform_event_id}"
+    )
+    trace_id = payload.trace_id or idempotency_key
+    raw_text = bot_gateway_inbound_raw_text(payload)
+    command_text = bot_gateway_inbound_command_text(
+        payload,
+        event_type=event_type,
+        raw_text=raw_text,
+    )
+    should_execute = bot_gateway_should_execute_inbound_event(
+        payload,
+        event_type=event_type,
+        command_text=command_text,
+    )
+    actor = Actor(
+        id=f"{payload.platform}:{payload.user_id}",
+        roles={role for role in payload.default_roles if role} or {"member"},
+    )
+    event = control.emit_event(
+        event_type=event_type,
+        source=SemanticEventSource.BOT_GATEWAY,
+        trace_id=trace_id,
+        project_id=context.active_project_id,
+        session_id=context.active_session_id,
+        payload={
+            "adapter": payload.adapter,
+            "platform": payload.platform,
+            "bot_instance_id": payload.bot_instance_id,
+            "scope": payload.scope,
+            "channel_id": payload.channel_id,
+            "chat_context_id": context.id,
+            "chat_space_id": context.chat_space_id,
+            "thread_id": payload.thread_id,
+            "user_id": payload.user_id,
+            "actor_id": actor.id,
+            "platform_event_id": platform_event_id,
+            "message_id": payload.message_id,
+            "reply_to": payload.reply_to,
+            "raw_text": raw_text,
+            "command_text": command_text,
+            "attachments": payload.attachments,
+            "payload": payload.payload,
+        },
+        idempotency_key=f"{idempotency_key}:{event_type}",
+    )
+    response: dict[str, object] = {
+        "handled": False,
+        "chat_context_id": context.id,
+        "event": event.model_dump(mode="json"),
+    }
+    if not should_execute:
+        return response
+    if not command_text:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "Bot Gateway 上行命令事件缺少命令文本。",
+            next_step="请提供 text 或 command，slash command 可直接提供子命令文本。",
+            status_code=400,
+            details={"event_type": event_type},
+        )
+    invocation = command_service.parse(
+        raw_text=command_text,
+        actor=actor,
+        chat_context_id=context.id,
+        idempotency_key=idempotency_key,
+        trace_id=trace_id,
+    )
+    result = command_service.execute(invocation)
+    response.update(
+        {
+            "handled": True,
+            "result": result.model_dump(mode="json"),
+        }
+    )
+    return response
+
+
+def normalized_bot_gateway_upstream_event_type(event_type: str) -> str:
+    normalized = event_type.strip()
+    if normalized not in BOT_GATEWAY_UPSTREAM_EVENT_TYPES:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "未知 Bot Gateway 上行事件类型。",
+            next_step="请使用设计文档中定义的 bot.* received/submitted 事件类型。",
+            status_code=400,
+            details={"event_type": event_type},
+        )
+    return normalized
+
+
+def bot_gateway_inbound_chat_context(
+    payload: BotGatewayInboundEventRequest,
+    control: ControlPlane,
+) -> ChatContext:
+    if payload.chat_context_id:
+        return control.repository.get_chat_context(payload.chat_context_id)
+    chat_space_id = bot_gateway_chat_space_id(payload)
+    return control.get_or_create_chat_context(
+        bot_instance_id=payload.bot_instance_id,
+        platform=payload.platform,
+        chat_space_id=chat_space_id,
+        thread_id=payload.thread_id,
+        user_id=payload.user_id if payload.scope == "private" else None,
+    )
+
+
+def bot_gateway_chat_space_id(payload: BotGatewayInboundEventRequest) -> str:
+    if payload.channel_id:
+        return payload.channel_id
+    if payload.scope == "private" and payload.user_id:
+        return f"private:{payload.user_id}"
+    raise AgentBridgeError(
+        ErrorCode.COMMAND_ARGUMENT_INVALID,
+        "Bot Gateway 上行事件缺少 channel_id。",
+        next_step="请提供 channel_id，或对私聊事件使用 scope=private 和 user_id。",
+        status_code=400,
+    )
+
+
+def bot_gateway_platform_event_id(payload: BotGatewayInboundEventRequest) -> str:
+    explicit = payload.event_id or payload.message_id
+    if explicit:
+        return explicit
+    body = json.dumps(payload.model_dump(mode="json"), sort_keys=True, ensure_ascii=False)
+    return f"event:{hashlib.sha256(body.encode('utf-8')).hexdigest()[:16]}"
+
+
+def bot_gateway_inbound_raw_text(payload: BotGatewayInboundEventRequest) -> str:
+    if payload.command is not None:
+        return payload.command.strip()
+    return (payload.text or "").strip()
+
+
+def bot_gateway_inbound_command_text(
+    payload: BotGatewayInboundEventRequest,
+    *,
+    event_type: str,
+    raw_text: str,
+) -> str | None:
+    if not raw_text:
+        return None
+    if raw_text == "/agent" or raw_text.startswith("/agent "):
+        return raw_text
+    if raw_text == "/ab" or raw_text.startswith("/ab "):
+        return raw_text
+    if event_type == "bot.slash_command.received":
+        return f"/agent {raw_text.lstrip('/')}".strip()
+    return raw_text
+
+
+def bot_gateway_should_execute_inbound_event(
+    payload: BotGatewayInboundEventRequest,
+    *,
+    event_type: str,
+    command_text: str | None,
+) -> bool:
+    if payload.execute is not None:
+        return payload.execute
+    return event_type in BOT_GATEWAY_EXECUTABLE_UPSTREAM_EVENT_TYPES and bool(command_text)
 
 
 def rendered_event_payload(
