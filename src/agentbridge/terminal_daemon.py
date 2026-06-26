@@ -729,7 +729,16 @@ class LocalTerminalAgentServer:
         if action == "replay_events":
             session_id = required_str(payload, "session_id")
             self.control.repository.get_session(session_id)
-            after_seq = non_negative_int_from_payload(payload, "after_seq", default=0)
+            consumer_id = optional_str_from_payload(payload, "consumer_id")
+            after_seq = optional_non_negative_int_from_payload(payload, "after_seq")
+            if after_seq is None and consumer_id:
+                offset = self.control.repository.get_event_consumer_offset(
+                    session_id=session_id,
+                    consumer_id=consumer_id,
+                )
+                after_seq = offset.last_seq if offset else 0
+            elif after_seq is None:
+                after_seq = 0
             limit = bounded_positive_int_from_payload(
                 payload,
                 "limit",
@@ -745,6 +754,14 @@ class LocalTerminalAgentServer:
                 "events": [event.model_dump(mode="json") for event in events],
                 "last_seq": events[-1].seq if events else after_seq,
             }
+        if action == "ack_events":
+            session_id = required_str(payload, "session_id")
+            offset = self.control.repository.ack_event_consumer(
+                session_id=session_id,
+                consumer_id=required_str(payload, "consumer_id"),
+                seq=non_negative_int_from_payload(payload, "seq", default=0),
+            )
+            return {"offset": offset.model_dump(mode="json")}
         if action == "probe_agent_launch_profiles":
             return {
                 "profiles": self.terminal.probe_agent_launch_versions(
@@ -910,9 +927,10 @@ class LocalTerminalAgentServer:
             f"未知本地 Terminal Agent action：{action}",
             next_step=(
                 "请使用 health、lifecycle_status、run_lifecycle_monitor_once、"
-                "replay_events、probe_agent_launch_profiles、detect_agent_adapters、"
-                "start_session、restart_session、acquire_human_lease、release_lease、"
-                "claim_next_turn、submit_input、snapshot、status、read_output 或 stream_output。"
+                "replay_events、ack_events、probe_agent_launch_profiles、"
+                "detect_agent_adapters、start_session、restart_session、"
+                "acquire_human_lease、release_lease、claim_next_turn、submit_input、"
+                "snapshot、status、read_output 或 stream_output。"
             ),
         )
 
@@ -984,8 +1002,34 @@ def required_str(payload: dict[str, Any], key: str) -> str:
     return value
 
 
+def optional_str_from_payload(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            f"{key} 必须是非空字符串。",
+            next_step=f"请在 payload 中提供非空字符串 {key}，或省略该字段。",
+        )
+    return value
+
+
 def non_negative_int_from_payload(payload: dict[str, Any], key: str, *, default: int) -> int:
     value = payload.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            f"{key} 必须是非负整数。",
+            next_step=f"请在 payload 中提供非负整数 {key}，或省略该字段。",
+        )
+    return max(value, 0)
+
+
+def optional_non_negative_int_from_payload(payload: dict[str, Any], key: str) -> int | None:
+    value = payload.get(key)
+    if value is None:
+        return None
     if isinstance(value, bool) or not isinstance(value, int):
         raise AgentBridgeError(
             ErrorCode.COMMAND_ARGUMENT_INVALID,

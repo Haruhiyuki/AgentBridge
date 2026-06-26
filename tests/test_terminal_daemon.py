@@ -302,12 +302,46 @@ def test_local_terminal_daemon_replays_session_events_after_seq(tmp_path):
             last_seq = replay["data"]["last_seq"]
             assert last_seq == replay["data"]["events"][0]["seq"]
 
+            acked = await client.request(
+                "ack_events",
+                {
+                    "session_id": session.id,
+                    "consumer_id": "local-daemon:terminal-agent",
+                    "seq": last_seq,
+                },
+            )
+            assert acked["ok"] is True
+            assert acked["data"]["offset"]["consumer_id"] == "local-daemon:terminal-agent"
+            assert acked["data"]["offset"]["last_seq"] == last_seq
+
+            second_turn = control.enqueue_turn(
+                actor=Actor(id="usr_1", roles={"maintainer"}),
+                session_id=session.id,
+                prompt="daemon replay after ack",
+                trace_id="daemon-replay-second-turn",
+            )
+            resumed = await client.request(
+                "replay_events",
+                {
+                    "session_id": session.id,
+                    "consumer_id": "local-daemon:terminal-agent",
+                    "limit": 10,
+                },
+            )
+            assert resumed["ok"] is True
+            assert [event["turn_id"] for event in resumed["data"]["events"]] == [
+                second_turn.id
+            ]
+
             empty = await client.request(
                 "replay_events",
-                {"session_id": session.id, "after_seq": last_seq},
+                {"session_id": session.id, "after_seq": resumed["data"]["last_seq"]},
             )
             assert empty["ok"] is True
-            assert empty["data"] == {"events": [], "last_seq": last_seq}
+            assert empty["data"] == {
+                "events": [],
+                "last_seq": resumed["data"]["last_seq"],
+            }
         finally:
             await server.stop()
 
