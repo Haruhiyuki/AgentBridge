@@ -619,6 +619,13 @@ def test_readiness_endpoint_reports_acceptance_evidence_manifest(monkeypatch, tm
     assert checks["acceptance.native_session"]["status"] == "pass"
     assert checks["acceptance.recovery"]["status"] == "pass"
     assert payload["sources"]["acceptance_evidence"]["section_count"] == 8
+    evidence_summary = payload["sources"]["acceptance_evidence"]["summary"]
+    assert evidence_summary["ready"] is True
+    assert evidence_summary["counts"]["passed"] == 8
+    assert evidence_summary["checklist_incomplete_count"] == 0
+    manifest_summary = checks["acceptance.evidence_manifest"]["evidence"]["summary"]
+    assert manifest_summary["ready"] is True
+    assert manifest_summary["counts"]["passed"] == 8
     assert (
         payload["sources"]["acceptance_evidence"]["sections"]["34.1"]["artifact_count"]
         == 1
@@ -663,6 +670,11 @@ def test_readiness_endpoint_warns_for_incomplete_acceptance_checklist(
     assert checks["acceptance.evidence_manifest"]["status"] == "pass"
     assert checks["acceptance.native_session"]["status"] == "warn"
     assert checks["acceptance.native_session"]["evidence"]["checklist_passed_count"] == 0
+    evidence_summary = payload["sources"]["acceptance_evidence"]["summary"]
+    assert evidence_summary["ready"] is False
+    assert evidence_summary["counts"]["passed"] == 1
+    assert evidence_summary["counts"]["missing"] == 7
+    assert evidence_summary["checklist_incomplete_count"] == 3
     assert "checklist item passed" in checks["acceptance.native_session"]["next_step"]
 
 

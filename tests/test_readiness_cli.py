@@ -230,6 +230,77 @@ def test_readiness_cli_actions_output_includes_acceptance_bundle_summary():
     ]
 
 
+def test_readiness_cli_actions_output_includes_acceptance_manifest_and_section_counts():
+    assert readiness_action_text(
+        readiness_payload(
+            "degraded",
+            checks=[
+                {
+                    "id": "acceptance.evidence_manifest",
+                    "category": "acceptance",
+                    "status": "warn",
+                    "summary": "MVP manual acceptance evidence manifest is available.",
+                    "next_step": "Set signed-off evidence manifest.",
+                    "evidence": {
+                        "section_count": 1,
+                        "summary": {
+                            "ready": False,
+                            "counts": {
+                                "passed": 1,
+                                "failed": 0,
+                                "blocked": 0,
+                                "not_run": 0,
+                                "missing": 7,
+                                "invalid": 0,
+                            },
+                            "artifact_error_count": 0,
+                            "checklist_incomplete_count": 3,
+                            "checklist_error_count": 0,
+                        },
+                    },
+                },
+                {
+                    "id": "acceptance.native_session",
+                    "category": "acceptance",
+                    "status": "warn",
+                    "summary": "Design-document section 34.1 is signed off.",
+                    "next_step": "Mark every checklist item passed.",
+                    "evidence": {
+                        "section": "34.1",
+                        "status": "passed",
+                        "artifact_count": 1,
+                        "artifact_error_count": 0,
+                        "checklist_total": 3,
+                        "checklist_passed_count": 1,
+                        "checklist_error_count": 0,
+                    },
+                },
+            ],
+        )
+    ).splitlines() == [
+        "status=degraded pass=0 warn=2 fail=0",
+        (
+            "warn acceptance/acceptance.evidence_manifest: "
+            "MVP manual acceptance evidence manifest is available."
+        ),
+        (
+            "  evidence: manifest_ready=false sections=1 passed=1 failed=0 "
+            "blocked=0 not_run=0 missing=7 invalid=0 artifact_errors=0 "
+            "checklist_incomplete=3 checklist_errors=0"
+        ),
+        "  next: Set signed-off evidence manifest.",
+        (
+            "warn acceptance/acceptance.native_session: "
+            "Design-document section 34.1 is signed off."
+        ),
+        (
+            "  evidence: section=34.1 status=passed artifacts=1 artifact_errors=0 "
+            "checklist=1/3 checklist_incomplete=2 checklist_errors=0"
+        ),
+        "  next: Mark every checklist item passed.",
+    ]
+
+
 def test_readiness_cli_fail_on_fail_only_for_not_ready():
     assert (
         readiness_exit_code(

@@ -29,6 +29,7 @@ from agentbridge.acceptance_cli import acceptance_json_bytes, verify_acceptance_
 from agentbridge.acceptance_evidence import (
     ACCEPTANCE_EVIDENCE_SCHEMA_VERSION,
     ACCEPTANCE_SECTIONS,
+    acceptance_evidence_summary,
     load_acceptance_manifest,
     read_acceptance_evidence,
 )
@@ -1246,6 +1247,7 @@ def readiness_acceptance_checks(
                 "schema_version": evidence.get("schema_version"),
                 "error": error,
                 "section_count": evidence.get("section_count", 0),
+                "summary": evidence.get("summary", {}),
             },
             next_step=manifest_next_step,
         )
@@ -1334,6 +1336,7 @@ def readiness_acceptance_evidence() -> dict[str, object]:
             default=bool(artifact_root),
         ),
     )
+    evidence["summary"] = acceptance_evidence_summary(evidence)
     if evidence.get("valid") and raw_path:
         try:
             manifest_payload = load_acceptance_manifest(Path(raw_path).expanduser())

@@ -116,11 +116,47 @@ def readiness_action_text(payload: dict[str, object]) -> str:
 
 
 def readiness_action_evidence_text(check: dict[str, object]) -> str | None:
-    if check.get("id") != "acceptance.evidence_bundle":
-        return None
+    check_id = str(check.get("id") or "")
     evidence = check.get("evidence")
     if not isinstance(evidence, dict):
         return None
+    if check_id == "acceptance.evidence_manifest":
+        return readiness_acceptance_manifest_evidence_text(evidence)
+    if check_id == "acceptance.evidence_bundle":
+        return readiness_acceptance_bundle_evidence_text(evidence)
+    if check_id.startswith("acceptance."):
+        return readiness_acceptance_section_evidence_text(evidence)
+    return None
+
+
+def readiness_acceptance_manifest_evidence_text(
+    evidence: dict[str, object],
+) -> str | None:
+    summary = evidence.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    counts = summary.get("counts")
+    counts_payload = counts if isinstance(counts, dict) else {}
+    return " ".join(
+        [
+            f"manifest_ready={str(bool(summary.get('ready'))).lower()}",
+            f"sections={evidence.get('section_count', 0)}",
+            f"passed={counts_payload.get('passed', 0)}",
+            f"failed={counts_payload.get('failed', 0)}",
+            f"blocked={counts_payload.get('blocked', 0)}",
+            f"not_run={counts_payload.get('not_run', 0)}",
+            f"missing={counts_payload.get('missing', 0)}",
+            f"invalid={counts_payload.get('invalid', 0)}",
+            f"artifact_errors={summary.get('artifact_error_count', 0)}",
+            f"checklist_incomplete={summary.get('checklist_incomplete_count', 0)}",
+            f"checklist_errors={summary.get('checklist_error_count', 0)}",
+        ]
+    )
+
+
+def readiness_acceptance_bundle_evidence_text(
+    evidence: dict[str, object],
+) -> str | None:
     summary = evidence.get("summary")
     if not isinstance(summary, dict):
         return None
@@ -139,6 +175,32 @@ def readiness_action_evidence_text(check: dict[str, object]) -> str | None:
             f"checklist_errors={summary.get('checklist_error_count', 0)}",
         ]
     )
+
+
+def readiness_acceptance_section_evidence_text(
+    evidence: dict[str, object],
+) -> str:
+    checklist_total = readiness_int(evidence.get("checklist_total"))
+    checklist_passed = readiness_int(evidence.get("checklist_passed_count"))
+    checklist_incomplete = max(checklist_total - checklist_passed, 0)
+    return " ".join(
+        [
+            f"section={evidence.get('section', 'unknown')}",
+            f"status={evidence.get('status', 'unknown')}",
+            f"artifacts={evidence.get('artifact_count', 0)}",
+            f"artifact_errors={evidence.get('artifact_error_count', 0)}",
+            f"checklist={checklist_passed}/{checklist_total}",
+            f"checklist_incomplete={checklist_incomplete}",
+            f"checklist_errors={evidence.get('checklist_error_count', 0)}",
+        ]
+    )
+
+
+def readiness_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def build_parser() -> argparse.ArgumentParser:

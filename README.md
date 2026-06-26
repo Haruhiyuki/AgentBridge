@@ -1014,8 +1014,10 @@ The app uses in-memory storage by default, so data is reset when the process exi
 protected operational report when API/device gates are configured and requires
 `terminal_read` for managed device credentials. `agentbridge-readiness` reads the same
 report using `AGENTBRIDGE_API_URL`, API token, or managed-device credentials, prints
-degraded/failing checks with operator next steps through `--format actions`, and can
-return non-zero for degraded or not-ready deployments. The readiness report treats
+degraded/failing checks with operator next steps through `--format actions`, includes
+acceptance manifest, section, and bundle artifact/checklist counts for non-passing
+acceptance checks, and can return non-zero for degraded or not-ready deployments. The
+readiness report treats
 missing product auth gates as warnings and configured-but-unusable token files, static
 device keys, managed devices, or client certificate fingerprints as failures. Set
 `AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE` to an
