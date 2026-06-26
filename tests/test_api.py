@@ -7487,6 +7487,8 @@ def test_rendered_events_api_returns_documents_and_text_messages(tmp_path):
     rendered = rendered_response.json()
     assert rendered[0]["document"]["blocks"][0]["title"] == "会话"
     assert "Render Session" in rendered[0]["text_messages"][0]
+    # 事件类型供流式消费者（bot 插件）判断一轮是否结束。
+    assert "type" in rendered[0]
 
 
 def test_rendered_events_api_returns_tool_progress_messages(tmp_path):

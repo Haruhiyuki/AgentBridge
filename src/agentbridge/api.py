@@ -62,6 +62,7 @@ from agentbridge.bot_gateway import (
     BotRateLimitPolicy,
     InMemoryBotTransport,
 )
+from agentbridge.chat_stream import chat_messages_from_events
 from agentbridge.commands import CommandService, command_registry_payload
 from agentbridge.control_plane import ControlPlane
 from agentbridge.device_auth import normalize_certificate_fingerprint, verify_device_key
@@ -2437,6 +2438,23 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             rendered.append(rendered_event_payload(event=event, renderer=renderer))
         return rendered
 
+    @app.get("/api/v1/sessions/{session_id}/chat-events")
+    def list_chat_events(
+        session_id: str,
+        control: ControlPlane = Depends(get_control),
+        after_seq: int | None = None,
+    ):
+        """面向聊天用户的事件投影：已过滤管道噪声、合并 assistant 回答的聊天消息。
+
+        Bot 适配器只需轮询本端点并原样转发 ``messages[*].text``，无需自己做任何过滤/合并/限频；
+        当某条消息 ``kind`` 为 ``answer``/``error`` 时表示该轮结束。
+        下次以 ``after_seq=cursor`` 继续轮询。
+        """
+        control.repository.get_session(session_id)
+        events = control.repository.list_events(session_id=session_id, limit=1_000_000)
+        messages, cursor = chat_messages_from_events(events, after_seq=after_seq or 0)
+        return {"messages": messages, "cursor": cursor}
+
     @app.websocket("/api/v1/sessions/{session_id}/events/ws")
     async def stream_events(
         websocket: WebSocket,
@@ -4029,6 +4047,7 @@ def rendered_event_payload(
     return {
         "event_id": event.id,
         "seq": event.seq,
+        "type": event.type,
         "document": document.model_dump(mode="json"),
         "text_messages": renderer.render(document),
     }
@@ -5233,7 +5252,7 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         method == "GET"
         and len(path_segments) >= 6
         and path_segments[:4] == ["", "api", "v1", "sessions"]
-        and path_segments[5] in {"events", "rendered-events"}
+        and path_segments[5] in {"events", "rendered-events", "chat-events"}
     ):
         return DeviceIdentityScope.AUDIT_READ
     if path in {"/api/v1/readiness", "/api/v1/terminal/lifecycle-monitor"}:
