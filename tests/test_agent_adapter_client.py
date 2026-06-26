@@ -1,4 +1,5 @@
 import json
+import sys
 from io import BytesIO, StringIO
 from urllib.error import HTTPError
 
@@ -12,6 +13,7 @@ from agentbridge.agent_adapter_client import (
     CodexAppServerAdapterClient,
     adapter_response_matches_request,
     bridge_codex_app_server_jsonl_stream,
+    bridge_codex_app_server_stdio_proxy,
     build_parser,
     claude_adapter_event_type_from_hook_payload,
     claude_hook_failure_stdout_json,
@@ -284,6 +286,7 @@ def test_handshake_payload_for_agent_uses_supported_schema_and_capabilities():
         "codex.app_server",
         "codex.app_server.json_rpc",
         "codex.app_server.jsonl_stream",
+        "codex.app_server.stdio_proxy",
     ]
     assert payload["warnings"] == []
     assert payload["schema_snapshot"]["schema_version"] == "codex-app-server.v1"
@@ -410,6 +413,37 @@ def test_cli_parser_accepts_codex_app_server_stream_options():
     assert args.wait_timeout_seconds == 12.5
     assert args.poll_interval_seconds == 0.2
     assert args.output_format == "action"
+
+
+def test_cli_parser_accepts_codex_app_server_proxy_command():
+    args = build_parser().parse_args(
+        [
+            "codex-app-server-proxy",
+            "--session-id",
+            "ses_1",
+            "--bridge-output-file",
+            "bridge.jsonl",
+            "--bridge-output-format",
+            "json-rpc",
+            "--",
+            "codex",
+            "app-server",
+            "--listen",
+            "stdio://",
+        ]
+    )
+
+    assert args.command == "codex-app-server-proxy"
+    assert args.session_id == "ses_1"
+    assert str(args.bridge_output_file) == "bridge.jsonl"
+    assert args.bridge_output_format == "json-rpc"
+    assert args.app_server_command == [
+        "--",
+        "codex",
+        "app-server",
+        "--listen",
+        "stdio://",
+    ]
 
 
 def test_formats_claude_permission_response_as_hook_stdout_json():
@@ -835,6 +869,112 @@ def test_codex_app_server_jsonl_stream_reports_invalid_lines_without_stopping():
     }
     assert "line 1 failed open" in error_file.getvalue()
     assert calls[0][2]["adapter_event_type"] == "item/agentMessage/delta"
+
+
+def test_codex_app_server_stdio_proxy_forwards_stdout_and_collects_events(tmp_path):
+    script = tmp_path / "fake_codex_app_server.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json",
+                "messages = [",
+                "    {'id': 1, 'result': {'thread': {'id': 'thr_1'}}},",
+                "    {'method': 'item/agentMessage/delta', 'params': {'delta': 'hello'}},",
+                "    {",
+                "        'method': 'item/commandExecution/requestApproval',",
+                "        'id': 42,",
+                "        'params': {",
+                "            'item': {'id': 'cmd-1', 'command': 'pytest'},",
+                "            'reason': 'Run tests',",
+                "        },",
+                "    },",
+                "]",
+                "for message in messages:",
+                "    print(json.dumps(message), flush=True)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def transport(method, url, headers, payload, timeout_seconds):
+        calls.append((method, url, payload))
+        if method == "POST" and payload["adapter_event_type"] == "item/agentMessage/delta":
+            return {"id": "evt_delta", "seq": 2}
+        if method == "POST":
+            return {
+                "id": "evt_request",
+                "seq": 4,
+                "interaction_id": "int_1",
+                "payload": {"adapter_item_id": "cmd-1"},
+            }
+        return {
+            "responses": [
+                {
+                    "seq": 5,
+                    "request_event_id": "evt_request",
+                    "interaction_id": "int_1",
+                    "adapter_event_type": "item/commandExecution/requestApproval",
+                    "adapter_item_id": "cmd-1",
+                    "ready": True,
+                    "decision": "approved",
+                    "approve": True,
+                }
+            ]
+        }
+
+    control_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(base_url="http://bridge.local", session_id="ses_1"),
+        transport=transport,
+    )
+    downstream_output = StringIO()
+    bridge_output = StringIO()
+    error_file = StringIO()
+
+    summary = bridge_codex_app_server_stdio_proxy(
+        control_client=control_client,
+        command_args=[sys.executable, str(script)],
+        upstream_input=StringIO(),
+        downstream_output=downstream_output,
+        bridge_output=bridge_output,
+        error_file=error_file,
+        poll_interval_seconds=0.01,
+    )
+
+    assert summary == {
+        "command": [sys.executable, str(script)],
+        "return_code": 0,
+        "processed": 2,
+        "skipped": 1,
+        "emitted": 1,
+        "errors": 0,
+    }
+    forwarded_lines = downstream_output.getvalue().splitlines()
+    assert [json.loads(line).get("method") for line in forwarded_lines] == [
+        None,
+        "item/agentMessage/delta",
+        "item/commandExecution/requestApproval",
+    ]
+    assert json.loads(bridge_output.getvalue()) == {
+        "id": 42,
+        "result": {
+            "agentbridge": {
+                "action": "approval_decision",
+                "decision": "approved",
+                "approve": True,
+                "answer": None,
+                "reason": None,
+                "adapter_item_id": "cmd-1",
+                "interaction_id": "int_1",
+                "request_event_id": "evt_request",
+                "request_seq": None,
+                "payload": None,
+            }
+        },
+    }
+    assert error_file.getvalue() == ""
+    assert [call[0] for call in calls] == ["POST", "POST", "GET"]
 
 
 def test_cli_format_response_prints_native_stdout_json(capsys):

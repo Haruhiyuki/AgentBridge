@@ -4,7 +4,9 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -602,6 +604,129 @@ def bridge_codex_app_server_jsonl_stream(
         "emitted": emitted,
         "errors": errors,
     }
+
+
+def bridge_codex_app_server_stdio_proxy(
+    *,
+    control_client: AgentAdapterControlClient,
+    command_args: list[str],
+    upstream_input: TextIO,
+    downstream_output: TextIO,
+    bridge_output: TextIO | None = None,
+    error_file: TextIO | None = None,
+    schema_version: str | None = None,
+    trace_id: str = "codex-app-server-adapter",
+    wait_timeout_seconds: float = 300.0,
+    poll_interval_seconds: float = 1.0,
+    bridge_output_format: str = "json-rpc",
+    strict: bool = False,
+) -> dict[str, object]:
+    if not command_args:
+        raise ValueError("Codex app-server proxy command_args must not be empty")
+    if bridge_output_format not in CODEX_APP_SERVER_STREAM_OUTPUT_FORMATS:
+        raise ValueError(
+            f"unsupported Codex app-server bridge_output_format: {bridge_output_format}"
+        )
+    process = subprocess.Popen(
+        command_args,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        raise RuntimeError("Codex app-server proxy failed to open process pipes")
+    stdin_thread = threading.Thread(
+        target=forward_text_stream,
+        args=(upstream_input, process.stdin),
+        kwargs={"close_output": True},
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=forward_text_stream,
+        args=(process.stderr, error_file),
+        daemon=True,
+    )
+    stdin_thread.start()
+    stderr_thread.start()
+
+    processed = 0
+    skipped = 0
+    emitted = 0
+    errors = 0
+    for line_number, raw_line in enumerate(process.stdout, start=1):
+        downstream_output.write(raw_line)
+        downstream_output.flush()
+        if not raw_line.strip():
+            skipped += 1
+            continue
+        try:
+            decoded = json.loads(raw_line)
+            if not isinstance(decoded, dict):
+                raise ValueError("Codex app-server JSONL message must be a JSON object")
+            message = {str(key): value for key, value in decoded.items()}
+        except (json.JSONDecodeError, ValueError) as exc:
+            errors += 1
+            if strict:
+                process.terminate()
+                raise ValueError(
+                    f"Codex app-server stdout line {line_number} is invalid: {exc}"
+                ) from exc
+            write_codex_app_server_stream_error(
+                error_file,
+                line_number=line_number,
+                error=str(exc),
+            )
+            continue
+        if "method" not in message:
+            skipped += 1
+            continue
+        processed += 1
+        payload = codex_app_server_stream_message_output(
+            control_client=control_client,
+            message=message,
+            schema_version=schema_version,
+            trace_id=trace_id,
+            wait_timeout_seconds=wait_timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            output_format=bridge_output_format,
+            strict=strict,
+            error_file=error_file,
+            line_number=line_number,
+        )
+        if payload is None or bridge_output is None:
+            continue
+        write_json_line(bridge_output, payload)
+        emitted += 1
+    return_code = process.wait()
+    stdin_thread.join(timeout=1.0)
+    stderr_thread.join(timeout=1.0)
+    return {
+        "command": command_args,
+        "return_code": return_code,
+        "processed": processed,
+        "skipped": skipped,
+        "emitted": emitted,
+        "errors": errors,
+    }
+
+
+def forward_text_stream(
+    input_file: TextIO,
+    output_file: TextIO | None,
+    *,
+    close_output: bool = False,
+) -> None:
+    try:
+        for line in input_file:
+            if output_file is None:
+                continue
+            output_file.write(line)
+            output_file.flush()
+    finally:
+        if close_output and output_file is not None:
+            output_file.close()
 
 
 def codex_app_server_stream_message_output(
@@ -1363,6 +1488,7 @@ def default_adapter_capabilities(agent_type: AgentType) -> list[str]:
             "codex.app_server",
             "codex.app_server.json_rpc",
             "codex.app_server.jsonl_stream",
+            "codex.app_server.stdio_proxy",
         ]
     raise ValueError(f"structured adapter capabilities are not supported for {agent_type.value}")
 
@@ -1518,6 +1644,15 @@ def open_text_input_from_args(args: argparse.Namespace) -> tuple[TextIO, bool]:
     if input_file is None or str(input_file) == "-":
         return sys.stdin, False
     return input_file.open("r", encoding="utf-8"), True
+
+
+def open_text_output_path(path: Path | None) -> tuple[TextIO | None, bool]:
+    if path is None:
+        return None, False
+    if str(path) == "-":
+        return sys.stderr, False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path.open("a", encoding="utf-8"), True
 
 
 def parse_agent_type(value: str) -> AgentType:
@@ -1760,6 +1895,37 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Return an error on invalid lines or non-interaction delivery failures",
     )
+
+    codex_app_server_proxy = subparsers.add_parser(
+        "codex-app-server-proxy",
+        help="Run a Codex app-server stdio subprocess while collecting JSONL events",
+    )
+    add_auth_arguments(codex_app_server_proxy)
+    codex_app_server_proxy.add_argument("--schema-version")
+    codex_app_server_proxy.add_argument("--trace-id", default="codex-app-server-adapter")
+    codex_app_server_proxy.add_argument("--wait-timeout-seconds", type=float, default=300.0)
+    codex_app_server_proxy.add_argument("--poll-interval-seconds", type=float, default=1.0)
+    codex_app_server_proxy.add_argument(
+        "--bridge-output-format",
+        choices=sorted(CODEX_APP_SERVER_STREAM_OUTPUT_FORMATS),
+        default="json-rpc",
+        help="JSONL side-channel payload to emit for AgentBridge interaction responses",
+    )
+    codex_app_server_proxy.add_argument(
+        "--bridge-output-file",
+        type=Path,
+        help="Append AgentBridge response JSONL to this side-channel file; '-' writes stderr",
+    )
+    codex_app_server_proxy.add_argument(
+        "--strict",
+        action="store_true",
+        help="Terminate on invalid child stdout lines or non-interaction delivery failures",
+    )
+    codex_app_server_proxy.add_argument(
+        "app_server_command",
+        nargs=argparse.REMAINDER,
+        help="Command to launch after '--'; defaults to: codex app-server",
+    )
     return parser
 
 
@@ -1893,6 +2059,33 @@ def main(argv: list[str] | None = None) -> int:
                 if should_close_input:
                     input_file.close()
             return 0
+        if args.command == "codex-app-server-proxy":
+            command_args = args.app_server_command or ["codex", "app-server"]
+            if command_args and command_args[0] == "--":
+                command_args = command_args[1:]
+            bridge_output, should_close_bridge_output = open_text_output_path(
+                args.bridge_output_file
+            )
+            control_client = AgentAdapterControlClient(build_config_from_args(args))
+            try:
+                summary = bridge_codex_app_server_stdio_proxy(
+                    control_client=control_client,
+                    command_args=command_args,
+                    upstream_input=sys.stdin,
+                    downstream_output=sys.stdout,
+                    bridge_output=bridge_output,
+                    error_file=sys.stderr,
+                    schema_version=args.schema_version,
+                    trace_id=args.trace_id,
+                    wait_timeout_seconds=args.wait_timeout_seconds,
+                    poll_interval_seconds=args.poll_interval_seconds,
+                    bridge_output_format=args.bridge_output_format,
+                    strict=args.strict,
+                )
+            finally:
+                if should_close_bridge_output and bridge_output is not None:
+                    bridge_output.close()
+            return int(summary["return_code"] or 0)
         if args.command == "claude-hook":
             hook_payload = load_hook_payload_from_args(args)
             control_client = AgentAdapterControlClient(build_config_from_args(args))
