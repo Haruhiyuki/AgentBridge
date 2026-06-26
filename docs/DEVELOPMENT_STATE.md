@@ -12,6 +12,13 @@ The authoritative design input is `AgentBridge_项目总设计文档_v0.2_多项
 
 Current milestone: M0 backend foundation.
 
+Current delivery status for the first QQ bot trial:
+
+- Local AgentBridge API is running on `127.0.0.1:8000` with SQLAlchemy SQLite state under `.runtime/`, token-file protected API/admin/WebSocket access, PTY terminal backend, and Codex launch profile resolving to `/opt/homebrew/bin/codex` (`codex-cli 0.141.0`).
+- The first NoneBot integration has been installed in `/Volumes/data/mybot/qqgroup/qqgroup/plugins/agentbridge_gateway.py`, exposing `/agentbridge` and `/abg` while allowing only QQ user `1398934598`.
+- `/abg ask <task>` now creates an AgentBridge session and starts a one-shot `codex exec` run through the PTY backend, waits up to 90 seconds, and returns the Codex final message or terminal error tail to the group chat.
+- The live path from AgentBridge to Codex has been verified, but the current Codex account returned a usage-limit error with the CLI retry message `try again at 5:35 AM`; once that limit resets, the same bot command should produce a real Codex answer.
+
 Implemented in this slice:
 
 - Python/FastAPI project skeleton.
