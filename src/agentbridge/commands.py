@@ -14,7 +14,9 @@ from agentbridge.domain import (
     CommandInvocation,
     CommandResult,
     ErrorCode,
+    Interaction,
     InteractionStatus,
+    InteractionType,
     LeaseOwnerType,
     PolicyScope,
     RiskLevel,
@@ -37,6 +39,8 @@ COMMAND_ALIASES = {
     "批准": "approve",
     "拒绝": "deny",
     "审批": "approval",
+    "问题": "question",
+    "计划": "plan",
     "取消": "cancel",
     "控制": "control",
     "状态": "status",
@@ -65,6 +69,7 @@ KNOWN_ROOTS = {
     "deny",
     "approval",
     "approvals",
+    "question",
     "plan",
     "queue",
     "diff",
@@ -221,6 +226,10 @@ class CommandService:
             return self._parse_approval(tokens)
         if root == "approvals":
             return self._parse_approvals(tokens)
+        if root == "question":
+            return self._parse_question(tokens)
+        if root == "plan":
+            return self._parse_plan(tokens)
         raise AgentBridgeError(
             ErrorCode.COMMAND_UNKNOWN,
             f"子命令暂未实现：{root}",
@@ -506,6 +515,76 @@ class CommandService:
     def _parse_approvals(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
         _, options = parse_options(tokens)
         return "interaction.list", {"pending": bool(options.get("pending", True))}
+
+    def _parse_question(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
+        if not tokens:
+            return "interaction.list", {
+                "pending": True,
+                "interaction_type": InteractionType.QUESTION.value,
+            }
+        action = self._canonical_token(tokens[0])
+        positional, options = parse_options(tokens[1:])
+        if action == "show":
+            if not positional:
+                raise missing_argument("question show", "<interaction-id>")
+            return "interaction.show", {
+                "interaction": positional[0],
+                "interaction_type": InteractionType.QUESTION.value,
+            }
+        if action == "list":
+            return "interaction.list", {
+                "pending": bool(options.get("pending", True)),
+                "interaction_type": InteractionType.QUESTION.value,
+            }
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_UNKNOWN,
+            f"未知 question 子命令：{action}",
+            next_step="可用子命令：show、list。",
+        )
+
+    def _parse_plan(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
+        if not tokens:
+            return "plan.list", {"pending": True, "session": None}
+        action = self._canonical_token(tokens[0])
+        positional, options = parse_options(tokens[1:])
+        if action == "show":
+            if not positional:
+                raise missing_argument("plan show", "<interaction-id>")
+            return "interaction.show", {
+                "interaction": positional[0],
+                "interaction_type": InteractionType.PLAN.value,
+            }
+        if action == "list":
+            return "plan.list", {
+                "pending": bool(options.get("pending", True)),
+                "session": options.get("session") or options.get("s"),
+            }
+        if action == "approve":
+            if not positional:
+                raise missing_argument("plan approve", "<interaction-id>")
+            return "plan.approve", {"interaction": positional[0]}
+        if action in {"revise", "revision"}:
+            if not positional:
+                raise missing_argument("plan revise", "<interaction-id>")
+            feedback = " ".join(positional[1:]).strip()
+            if not feedback:
+                raise missing_argument("plan revise", "<feedback>")
+            return "plan.revise", {
+                "interaction": positional[0],
+                "feedback": feedback,
+            }
+        if action in {"cancel", "deny"}:
+            if not positional:
+                raise missing_argument("plan cancel", "<interaction-id>")
+            return "plan.cancel", {
+                "interaction": positional[0],
+                "reason": " ".join(positional[1:]).strip() or None,
+            }
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_UNKNOWN,
+            f"未知 plan 子命令：{action}",
+            next_step="可用子命令：show、list、approve、revise、cancel。",
+        )
 
     def _execute_uncached(self, invocation: CommandInvocation) -> CommandResult:
         command = invocation.canonical_command
@@ -963,9 +1042,13 @@ class CommandService:
                 },
             )
         if command == "interaction.list":
+            session_id: str | None = None
+            if args.get("session"):
+                session_id = self._resolve_session_arg(invocation).id
             interactions = self.control.list_interactions(
                 actor=invocation.actor,
                 chat_context_id=invocation.chat_context_id,
+                session_id=session_id,
                 status=None,
             )
             if args.get("pending"):
@@ -974,6 +1057,12 @@ class CommandService:
                     for interaction in interactions
                     if interaction.status
                     in {InteractionStatus.PENDING, InteractionStatus.PARTIALLY_APPROVED}
+                ]
+            if args.get("interaction_type"):
+                interactions = [
+                    interaction
+                    for interaction in interactions
+                    if interaction.type.value == args["interaction_type"]
                 ]
             return self._result(
                 invocation,
@@ -991,6 +1080,11 @@ class CommandService:
                 interaction_id=str(args["interaction"]),
                 chat_context_id=invocation.chat_context_id,
             )
+            if args.get("interaction_type"):
+                self._require_interaction_type(
+                    interaction,
+                    InteractionType(str(args["interaction_type"])),
+                )
             return self._result(
                 invocation,
                 "Interaction",
@@ -999,6 +1093,112 @@ class CommandService:
                     "session_id": interaction.session_id,
                     "interaction_id": interaction.id,
                     "interaction": interaction.model_dump(mode="json"),
+                },
+            )
+        if command == "plan.list":
+            session_id = self._resolve_session_arg(invocation).id if args.get("session") else None
+            interactions = self.control.list_interactions(
+                actor=invocation.actor,
+                chat_context_id=invocation.chat_context_id,
+                session_id=session_id,
+                status=None,
+            )
+            plans = [
+                interaction
+                for interaction in interactions
+                if interaction.type == InteractionType.PLAN
+            ]
+            if args.get("pending"):
+                plans = [
+                    interaction
+                    for interaction in plans
+                    if interaction.status
+                    in {InteractionStatus.PENDING, InteractionStatus.PARTIALLY_APPROVED}
+                ]
+            return self._result(
+                invocation,
+                "Plans",
+                f"共 {len(plans)} 个计划交互。",
+                {
+                    "interactions": [
+                        interaction.model_dump(mode="json") for interaction in plans
+                    ]
+                },
+            )
+        if command == "plan.approve":
+            current = self.control.get_interaction(
+                actor=invocation.actor,
+                interaction_id=str(args["interaction"]),
+                chat_context_id=invocation.chat_context_id,
+            )
+            self._require_interaction_type(current, InteractionType.PLAN)
+            interaction = self.control.answer_interaction(
+                actor=invocation.actor,
+                interaction_id=current.id,
+                answer="approved",
+                trace_id=invocation.trace_id,
+                chat_context_id=invocation.chat_context_id,
+            )
+            return self._result(
+                invocation,
+                "Plan Approved",
+                f"已批准计划 {interaction.id}。",
+                {
+                    "session_id": interaction.session_id,
+                    "interaction_id": interaction.id,
+                    "interaction": interaction.model_dump(mode="json"),
+                    "plan_decision": "approved",
+                },
+            )
+        if command == "plan.revise":
+            current = self.control.get_interaction(
+                actor=invocation.actor,
+                interaction_id=str(args["interaction"]),
+                chat_context_id=invocation.chat_context_id,
+            )
+            self._require_interaction_type(current, InteractionType.PLAN)
+            interaction = self.control.answer_interaction(
+                actor=invocation.actor,
+                interaction_id=current.id,
+                answer=str(args["feedback"]),
+                trace_id=invocation.trace_id,
+                chat_context_id=invocation.chat_context_id,
+            )
+            return self._result(
+                invocation,
+                "Plan Revision Requested",
+                f"已提交计划修改意见 {interaction.id}。",
+                {
+                    "session_id": interaction.session_id,
+                    "interaction_id": interaction.id,
+                    "interaction": interaction.model_dump(mode="json"),
+                    "plan_decision": "revise",
+                    "feedback": str(args["feedback"]),
+                },
+            )
+        if command == "plan.cancel":
+            current = self.control.get_interaction(
+                actor=invocation.actor,
+                interaction_id=str(args["interaction"]),
+                chat_context_id=invocation.chat_context_id,
+            )
+            self._require_interaction_type(current, InteractionType.PLAN)
+            interaction = self.control.cancel_interaction(
+                actor=invocation.actor,
+                interaction_id=current.id,
+                reason=str(args["reason"]) if args.get("reason") else None,
+                trace_id=invocation.trace_id,
+                chat_context_id=invocation.chat_context_id,
+            )
+            return self._result(
+                invocation,
+                "Plan Cancelled",
+                f"已取消计划 {interaction.id}。",
+                {
+                    "session_id": interaction.session_id,
+                    "interaction_id": interaction.id,
+                    "interaction": interaction.model_dump(mode="json"),
+                    "reason": args.get("reason"),
                 },
             )
         if command == "interaction.answer":
@@ -1220,6 +1420,27 @@ class CommandService:
             ErrorCode.TARGET_SESSION_REQUIRED,
             "当前聊天上下文没有活动会话。",
             next_step="请执行 /agent session new 或 /agent session use <session>。",
+        )
+
+    def _require_interaction_type(
+        self,
+        interaction: Interaction,
+        expected_type: InteractionType,
+    ) -> None:
+        if interaction.type == expected_type:
+            return
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            (
+                "Interaction 类型不匹配："
+                f"需要 {expected_type.value}，实际是 {interaction.type.value}。"
+            ),
+            next_step="请确认 Interaction ID 来自对应的问题、计划或审批消息。",
+            details={
+                "interaction_id": interaction.id,
+                "expected_type": expected_type.value,
+                "actual_type": interaction.type.value,
+            },
         )
 
     def _result(

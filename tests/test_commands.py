@@ -559,6 +559,135 @@ def test_approval_cancel_command_blocks_late_votes(tmp_path):
     assert exc_info.value.code == ErrorCode.RESOURCE_CONFLICT
 
 
+def test_question_and_plan_commands_use_typed_interactions(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+
+    execute(
+        commands,
+        f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+        maintainer,
+        context.id,
+        "plan-project",
+    )
+    session_result = execute(
+        commands,
+        "/agent session new Plan Commands",
+        maintainer,
+        context.id,
+        "plan-session",
+    )
+    session_id = str(session_result.data["session_id"])
+    question = control.create_interaction(
+        actor=maintainer,
+        session_id=session_id,
+        interaction_type=InteractionType.QUESTION,
+        prompt="Which environment?",
+        trace_id="question-create",
+        chat_context_id=context.id,
+    )
+    plan = control.create_interaction(
+        actor=maintainer,
+        session_id=session_id,
+        interaction_type=InteractionType.PLAN,
+        prompt="Plan: update tests before deploy.",
+        trace_id="plan-create",
+        chat_context_id=context.id,
+    )
+
+    question_show = execute(
+        commands,
+        f"/agent question show {question.id}",
+        maintainer,
+        context.id,
+        "question-show",
+    )
+    plan_show = execute(
+        commands,
+        f"/agent plan show {plan.id}",
+        maintainer,
+        context.id,
+        "plan-show",
+    )
+    plan_list = execute(
+        commands,
+        "/agent plan list",
+        maintainer,
+        context.id,
+        "plan-list",
+    )
+    plan_approve = execute(
+        commands,
+        f"/agent plan approve {plan.id}",
+        maintainer,
+        context.id,
+        "plan-approve",
+    )
+    revise_plan = control.create_interaction(
+        actor=maintainer,
+        session_id=session_id,
+        interaction_type=InteractionType.PLAN,
+        prompt="Plan: migrate database directly.",
+        trace_id="plan-revise-create",
+        chat_context_id=context.id,
+    )
+    plan_revise = execute(
+        commands,
+        f"/agent plan revise {revise_plan.id} Use expand-contract migration first",
+        maintainer,
+        context.id,
+        "plan-revise",
+    )
+    cancel_plan = control.create_interaction(
+        actor=maintainer,
+        session_id=session_id,
+        interaction_type=InteractionType.PLAN,
+        prompt="Plan: skip tests.",
+        trace_id="plan-cancel-create",
+        chat_context_id=context.id,
+    )
+    plan_cancel = execute(
+        commands,
+        f"/agent plan cancel {cancel_plan.id} stale plan",
+        maintainer,
+        context.id,
+        "plan-cancel",
+    )
+    events = control.repository.list_events(session_id=session_id, limit=20)
+
+    assert question_show.canonical_command == "interaction.show"
+    assert question_show.data["interaction"]["type"] == "question"
+    assert plan_show.canonical_command == "interaction.show"
+    assert plan_show.data["interaction"]["type"] == "plan"
+    assert plan_list.canonical_command == "plan.list"
+    assert [item["id"] for item in plan_list.data["interactions"]] == [plan.id]
+    assert plan_approve.canonical_command == "plan.approve"
+    assert plan_approve.data["plan_decision"] == "approved"
+    assert plan_approve.data["interaction"]["answer"] == "approved"
+    assert plan_revise.canonical_command == "plan.revise"
+    assert plan_revise.data["plan_decision"] == "revise"
+    assert plan_revise.data["interaction"]["answer"] == (
+        "Use expand-contract migration first"
+    )
+    assert plan_cancel.canonical_command == "plan.cancel"
+    assert plan_cancel.data["interaction"]["status"] == "cancelled"
+    assert plan_cancel.data["interaction"]["answer"] == "stale plan"
+    assert "question.requested" in [event.type for event in events]
+    assert "plan.requested" in [event.type for event in events]
+
+    with pytest.raises(AgentBridgeError) as exc_info:
+        execute(
+            commands,
+            f"/agent plan approve {question.id}",
+            maintainer,
+            context.id,
+            "plan-type-mismatch",
+        )
+    assert exc_info.value.code == ErrorCode.COMMAND_ARGUMENT_INVALID
+
+
 def test_unknown_ascii_command_is_rejected_but_non_command_text_becomes_prompt():
     control = ControlPlane()
     commands = CommandService(control)

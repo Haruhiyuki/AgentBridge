@@ -120,9 +120,9 @@ Implemented in this slice:
 - Rate-limit policy API through `GET /api/v1/bot-gateway/rate-limits`.
 - Bot Gateway now treats platform limit responses with `retry_after_seconds` as adaptive `retrying` deliveries and schedules `next_retry_at` from the observed delay.
 - OneBot HTTP outbound parses HTTP 429/`Retry-After` and reset headers into adaptive Bot Gateway retry metadata.
-- Control Plane interaction APIs for questions and approvals.
+- Control Plane interaction APIs for questions, approvals, and plan checkpoints.
 - REST interaction routes: create, list, show, answer, and vote.
-- `/agent approvals`, `/agent approval show`, `/agent answer`, `/agent approve`, and `/agent deny`.
+- `/agent approvals`, `/agent approval show`, `/agent question show/list`, `/agent answer`, `/agent approve`, `/agent deny`, and `/agent plan show/list/approve/revise/cancel`.
 - Basic approval quorum handling with `pending`, `partially_approved`, and `resolved` states.
 - Approval request and vote semantic events with Bot-rendered plain-text actions.
 - Interaction expiration through `expires_at` or API `ttl_seconds`, with `interaction.expired` events.
@@ -226,7 +226,8 @@ Not implemented yet:
 - The retry worker reuses the Bot Gateway retry path instead of writing records directly. This keeps manual retry, background retry, and future scheduler behavior consistent.
 - Platform rate-limit policies intentionally schedule unsent records as `retrying` instead of sleeping inside request handlers. This keeps API calls bounded and leaves actual waiting to the retry worker.
 - Observed platform rate-limit responses are also stored as `retrying`, but keep the incremented attempt count because the platform was actually contacted.
-- Interaction commands now route through the same command parser and audit chain as project/session commands. Approval voting is permission-gated by `approval.vote`; answering questions is gated by `session.send`.
+- Interaction commands now route through the same command parser and audit chain as project/session commands. Approval voting is permission-gated by `approval.vote`; answering questions and plan revision feedback are gated by `session.send`; plan cancellation uses `session.manage`.
+- Manual Control Plane interaction creation emits type-specific request events for approvals, questions, and plans (`approval.requested`, `question.requested`, and `plan.requested`) so Bot renderers and adapter response polling can use the same event vocabulary.
 - Interaction expiry is a terminal state and never auto-approves. Reads and interaction actions opportunistically advance due interactions to `expired` so pending lists do not show stale approval requests.
 - Approval policy snapshots are copied onto each approval interaction so later policy changes do not rewrite historical approval requirements.
 - Approval quorum overrides are intentionally scoped and snapshotted at interaction creation. Chat-context overrides win over project overrides, and explicit per-interaction `required_votes` remains the strongest override.

@@ -26,7 +26,7 @@ This repository currently contains the first executable backend slice:
 - Optional NoneBot wrapper that normalizes message and action callback events into the existing `/agent` command path.
 - Background Bot delivery retry worker with configurable interval and batch-size guardrails.
 - Platform-scoped Bot delivery rate-limit policies that schedule unsent messages for retry.
-- Interaction and approval flow APIs with `/agent answer`, `/agent approve`, `/agent deny`, and `/agent approvals`.
+- Interaction and approval flow APIs with `/agent answer`, `/agent approve`, `/agent deny`, `/agent approvals`, `/agent question`, and `/agent plan`.
 - Interaction expiration and cancellation lifecycle with audit and semantic events.
 - Risk-aware approval policy with configurable quorum and dangerous approval roles.
 - Project/chat-context approval quorum overrides through REST and `/agent policy`.
@@ -721,10 +721,16 @@ Users can inspect and resolve them through commands:
 ```text
 /agent approvals
 /agent approval show <interaction-id>
+/agent question show <interaction-id>
 /agent answer <interaction-id> Use expand-contract migration
 /agent approve <interaction-id> once
 /agent deny <interaction-id> too risky
 /agent approval cancel <interaction-id> superseded
+/agent plan list
+/agent plan show <interaction-id>
+/agent plan approve <interaction-id>
+/agent plan revise <interaction-id> Use expand-contract migration first
+/agent plan cancel <interaction-id> obsolete
 ```
 
 On OneBot-style text-only platforms, replying to the rendered question or approval

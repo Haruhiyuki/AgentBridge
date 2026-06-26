@@ -1075,11 +1075,7 @@ class ControlPlane:
             requested_by=effective_actor.id,
             policy_snapshot=policy_snapshot,
         )
-        event_type = (
-            "approval.requested"
-            if interaction_type == InteractionType.APPROVAL
-            else "interaction.requested"
-        )
+        event_type = interaction_request_event_type(interaction_type)
         self.audit(
             action=event_type,
             actor=effective_actor,
@@ -3067,6 +3063,16 @@ class ControlPlane:
             payload=payload,
             idempotency_key=idempotency_key,
         )
+
+
+def interaction_request_event_type(interaction_type: InteractionType) -> str:
+    if interaction_type == InteractionType.APPROVAL:
+        return "approval.requested"
+    if interaction_type == InteractionType.QUESTION:
+        return "question.requested"
+    if interaction_type == InteractionType.PLAN:
+        return "plan.requested"
+    return "interaction.requested"
 
 
 def interaction_type_from_adapter_event(event_type: str) -> InteractionType:
