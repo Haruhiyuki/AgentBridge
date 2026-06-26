@@ -167,6 +167,66 @@ def test_terminal_agent_probes_configured_agent_version(tmp_path, monkeypatch):
     assert profiles["claude"]["stdout"] == "Claude Test 1.2.3\n"
 
 
+def test_terminal_agent_detects_adapter_capabilities_from_handshake(
+    tmp_path,
+    monkeypatch,
+):
+    claude_wrapper = tmp_path / "claude-agentbridge-wrapper"
+    claude_wrapper.write_text("#!/bin/sh\nprintf 'Claude Test 1.2.3\\n'\n", encoding="utf-8")
+    claude_wrapper.chmod(0o755)
+    handshake = tmp_path / "claude-agentbridge-handshake"
+    handshake.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' "
+        '\'{"protocol":"agentbridge.adapter.v1",'
+        '"schema_version":"claude-hooks.v1",'
+        '"capabilities":["claude.hooks.session_start","claude.hooks.stop"],'
+        '"compatible":true}\'\n',
+        encoding="utf-8",
+    )
+    handshake.chmod(0o755)
+    monkeypatch.setenv("AGENTBRIDGE_AGENT_CLAUDE_COMMAND", str(claude_wrapper))
+    monkeypatch.setenv("AGENTBRIDGE_AGENT_CLAUDE_HANDSHAKE_COMMAND", str(handshake))
+
+    terminal = TerminalAgentService(ControlPlane(), backend=FakeTerminalBackend())
+
+    reports = terminal.detect_agent_adapter_capabilities(agent_types=[AgentType.CLAUDE])
+
+    report = reports["claude"]
+    assert report["status"] == "ready"
+    assert report["adapter"] == "claude_hooks"
+    assert report["schema_gate"]["status"] == "ready"
+    assert report["version_probe"]["version_text"] == "Claude Test 1.2.3"
+    assert report["handshake_probe"]["status"] == "ok"
+    assert report["handshake_probe"]["protocol"] == "agentbridge.adapter.v1"
+    assert report["handshake_probe"]["schema_version"] == "claude-hooks.v1"
+    assert report["capabilities"] == [
+        "claude.hooks.session_start",
+        "claude.hooks.stop",
+    ]
+    assert "claude.hooks.permission_request" in report["expected_capabilities"]
+
+
+def test_terminal_agent_blocks_structured_adapter_without_handshake(
+    tmp_path,
+    monkeypatch,
+):
+    claude_wrapper = tmp_path / "claude-agentbridge-wrapper"
+    claude_wrapper.write_text("#!/bin/sh\nprintf 'Claude Test 1.2.3\\n'\n", encoding="utf-8")
+    claude_wrapper.chmod(0o755)
+    monkeypatch.setenv("AGENTBRIDGE_AGENT_CLAUDE_COMMAND", str(claude_wrapper))
+
+    terminal = TerminalAgentService(ControlPlane(), backend=FakeTerminalBackend())
+
+    reports = terminal.detect_agent_adapter_capabilities(agent_types=[AgentType.CLAUDE])
+
+    report = reports["claude"]
+    assert report["status"] == "handshake_not_configured"
+    assert report["schema_gate"]["reason"] == "handshake_command_not_configured"
+    assert report["handshake_probe"]["status"] == "skipped"
+    assert report["handshake_probe"]["error"] == "handshake_command_not_configured"
+
+
 def test_terminal_agent_enforces_current_writer_lease_epoch(tmp_path):
     control = ControlPlane()
     backend = FakeTerminalBackend()

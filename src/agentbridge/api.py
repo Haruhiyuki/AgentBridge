@@ -355,6 +355,15 @@ class AgentLaunchProbeRequest(BaseModel):
     trace_id: str = "terminal-agent-launch-probe-api"
 
 
+class AgentAdapterDetectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    agent_types: list[AgentType] | None = None
+    timeout_seconds: float = Field(default=2.0, ge=0.1, le=10.0)
+    trace_id: str = "terminal-agent-adapter-detect-api"
+
+
 class CommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1784,6 +1793,30 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         return {
             "profiles": terminal_service.probe_agent_launch_versions(
+                agent_types=payload.agent_types,
+                timeout_seconds=payload.timeout_seconds,
+            )
+        }
+
+    @app.post("/api/v1/terminal/agent-adapters/detect")
+    def detect_terminal_agent_adapter_capabilities(
+        payload: AgentAdapterDetectRequest,
+        control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
+    ):
+        control.require_collection_permission(
+            payload.actor.to_actor(),
+            Permission.TERMINAL_CONTROL,
+            resource_type="terminal_lifecycle",
+            attributes={
+                "operation": "terminal_agent_adapter_detect",
+                "agent_types": [
+                    agent_type.value for agent_type in (payload.agent_types or [])
+                ],
+            },
+        )
+        return {
+            "adapters": terminal_service.detect_agent_adapter_capabilities(
                 agent_types=payload.agent_types,
                 timeout_seconds=payload.timeout_seconds,
             )
@@ -3504,6 +3537,7 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
     if path in {
         "/api/v1/terminal/lifecycle-monitor/run-once",
         "/api/v1/terminal/agent-launch/probe",
+        "/api/v1/terminal/agent-adapters/detect",
     }:
         return DeviceIdentityScope.TERMINAL_CONTROL
     if (

@@ -3439,6 +3439,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
       <div class="toolbar">
         <strong>Agent Launch Profiles</strong>
         <button id="probe-agents" type="button">Probe Versions</button>
+        <button id="detect-adapters" type="button">Detect Adapters</button>
       </div>
       <div class="table-wrap">
         <table aria-label="Agent launch profiles">
@@ -3455,6 +3456,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
         </table>
       </div>
       <pre id="agent-probe">{}</pre>
+      <pre id="agent-adapters">{}</pre>
     </section>
     <section>
       <div class="toolbar">
@@ -3615,6 +3617,20 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
       setStatus("Probe complete");
     }
 
+    async function detectAdapters() {
+      setStatus("Detecting adapters");
+      const payload = {
+        actor: actor(),
+        trace_id: "admin-ui-agent-adapter-detect",
+      };
+      const result = await requestJson("/api/v1/terminal/agent-adapters/detect", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      $("agent-adapters").textContent = JSON.stringify(result.adapters || {}, null, 2);
+      setStatus("Adapter detect complete");
+    }
+
     async function run(action) {
       try {
         await action();
@@ -3626,6 +3642,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
     $("refresh").addEventListener("click", () => run(refresh));
     $("run-once").addEventListener("click", () => run(runOnce));
     $("probe-agents").addEventListener("click", () => run(probeAgents));
+    $("detect-adapters").addEventListener("click", () => run(detectAdapters));
     refresh().catch((error) => setStatus(error.message));
   </script>
 </body>

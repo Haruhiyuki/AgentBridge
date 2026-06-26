@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from threading import Event, RLock, Thread, current_thread
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import uuid4
 
 from agentbridge.control_plane import ControlPlane
@@ -148,6 +148,84 @@ class AgentLaunchVersionProbe:
         }
 
 
+@dataclass(frozen=True)
+class AgentAdapterHandshakeProbe:
+    agent_type: AgentType
+    adapter: str
+    command: str | None
+    source: str | None
+    executable: str | None
+    executable_path: str | None
+    status: str
+    exit_code: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    duration_ms: int | None = None
+    payload: dict[str, object] | None = None
+    protocol: str | None = None
+    schema_version: str | None = None
+    capabilities: list[str] = field(default_factory=list)
+    compatible: bool | None = None
+    warnings: list[str] = field(default_factory=list)
+    error: str | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "agent_type": self.agent_type.value,
+            "adapter": self.adapter,
+            "command": self.command,
+            "source": self.source,
+            "executable": self.executable,
+            "executable_path": self.executable_path,
+            "status": self.status,
+            "exit_code": self.exit_code,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "duration_ms": self.duration_ms,
+            "payload": self.payload,
+            "protocol": self.protocol,
+            "schema_version": self.schema_version,
+            "capabilities": self.capabilities,
+            "compatible": self.compatible,
+            "warnings": self.warnings,
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True)
+class AgentAdapterCapabilityReport:
+    agent_type: AgentType
+    adapter: str
+    structured_adapter: bool
+    launch_profile: AgentLaunchDetection
+    version_probe: AgentLaunchVersionProbe
+    handshake_probe: AgentAdapterHandshakeProbe
+    status: str
+    schema_gate: dict[str, object]
+    capabilities: list[str]
+    expected_capabilities: list[str]
+    input_transports: list[str]
+    recommended_mode: str
+    next_step: str
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "agent_type": self.agent_type.value,
+            "adapter": self.adapter,
+            "structured_adapter": self.structured_adapter,
+            "launch_profile": self.launch_profile.to_payload(),
+            "version_probe": self.version_probe.to_payload(),
+            "handshake_probe": self.handshake_probe.to_payload(),
+            "status": self.status,
+            "schema_gate": self.schema_gate,
+            "capabilities": self.capabilities,
+            "expected_capabilities": self.expected_capabilities,
+            "input_transports": self.input_transports,
+            "recommended_mode": self.recommended_mode,
+            "next_step": self.next_step,
+        }
+
+
 DEFAULT_AGENT_COMMANDS: dict[AgentType, str] = {
     AgentType.CLAUDE: "claude",
     AgentType.CODEX: "codex",
@@ -166,7 +244,53 @@ AGENT_VERSION_COMMAND_ENV_BY_TYPE: dict[AgentType, str] = {
     AgentType.GENERIC_TUI: "AGENTBRIDGE_AGENT_GENERIC_TUI_VERSION_COMMAND",
 }
 
+AGENT_ADAPTER_HANDSHAKE_COMMAND_ENV_BY_TYPE: dict[AgentType, str] = {
+    AgentType.CLAUDE: "AGENTBRIDGE_AGENT_CLAUDE_HANDSHAKE_COMMAND",
+    AgentType.CODEX: "AGENTBRIDGE_AGENT_CODEX_HANDSHAKE_COMMAND",
+    AgentType.GENERIC_TUI: "AGENTBRIDGE_AGENT_GENERIC_TUI_HANDSHAKE_COMMAND",
+}
+
 DEFAULT_VERSION_PROBE_AGENT_TYPES = {AgentType.CLAUDE, AgentType.CODEX}
+STRUCTURED_ADAPTER_AGENT_TYPES = {AgentType.CLAUDE, AgentType.CODEX}
+AGENT_ADAPTER_HANDSHAKE_PROTOCOL = "agentbridge.adapter.v1"
+
+AGENT_ADAPTER_KIND_BY_TYPE: dict[AgentType, str] = {
+    AgentType.CLAUDE: "claude_hooks",
+    AgentType.CODEX: "codex_app_server",
+    AgentType.GENERIC_TUI: "generic_tui",
+}
+
+AGENT_ADAPTER_EXPECTED_CAPABILITIES: dict[AgentType, list[str]] = {
+    AgentType.CLAUDE: [
+        "claude.hooks.session_start",
+        "claude.hooks.message_display",
+        "claude.hooks.permission_request",
+        "claude.hooks.stop",
+    ],
+    AgentType.CODEX: [
+        "codex.app_server.json_rpc",
+        "codex.turn.start",
+        "codex.approval.request",
+        "codex.event_stream",
+    ],
+    AgentType.GENERIC_TUI: [
+        "pty.input",
+        "pty.output",
+        "human_lease",
+    ],
+}
+
+AGENT_ADAPTER_INPUT_TRANSPORTS: dict[AgentType, list[str]] = {
+    AgentType.CLAUDE: ["pty_input_driver", "claude_channel_optional"],
+    AgentType.CODEX: ["codex_app_server_turn_start", "codex_remote_tui"],
+    AgentType.GENERIC_TUI: ["pty_input_driver"],
+}
+
+AGENT_ADAPTER_RECOMMENDED_MODE: dict[AgentType, str] = {
+    AgentType.CLAUDE: "pty_with_claude_hooks",
+    AgentType.CODEX: "app_server_with_remote_tui",
+    AgentType.GENERIC_TUI: "pty_only",
+}
 
 
 @dataclass(frozen=True)
@@ -175,6 +299,8 @@ class AgentLaunchConfig:
     source_by_agent: dict[AgentType, str] = field(default_factory=dict)
     version_command_by_agent: dict[AgentType, str] = field(default_factory=dict)
     version_source_by_agent: dict[AgentType, str] = field(default_factory=dict)
+    handshake_command_by_agent: dict[AgentType, str] = field(default_factory=dict)
+    handshake_source_by_agent: dict[AgentType, str] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls) -> AgentLaunchConfig:
@@ -206,11 +332,21 @@ class AgentLaunchConfig:
             if default_version_command is not None:
                 version_command_by_agent[agent_type] = default_version_command
                 version_source_by_agent[agent_type] = "built_in"
+        handshake_command_by_agent: dict[AgentType, str] = {}
+        handshake_source_by_agent: dict[AgentType, str] = {}
+        for agent_type in AgentType:
+            env_name = AGENT_ADAPTER_HANDSHAKE_COMMAND_ENV_BY_TYPE[agent_type]
+            configured_command = os.environ.get(env_name, "").strip()
+            if configured_command:
+                handshake_command_by_agent[agent_type] = configured_command
+                handshake_source_by_agent[agent_type] = f"env:{env_name}"
         return cls(
             command_by_agent=command_by_agent,
             source_by_agent=source_by_agent,
             version_command_by_agent=version_command_by_agent,
             version_source_by_agent=version_source_by_agent,
+            handshake_command_by_agent=handshake_command_by_agent,
+            handshake_source_by_agent=handshake_source_by_agent,
         )
 
     def profile_for(self, agent_type: AgentType) -> AgentLaunchProfile:
@@ -283,6 +419,12 @@ class AgentLaunchConfig:
         return (
             self.version_command_by_agent.get(agent_type),
             self.version_source_by_agent.get(agent_type),
+        )
+
+    def handshake_command_for(self, agent_type: AgentType) -> tuple[str | None, str | None]:
+        return (
+            self.handshake_command_by_agent.get(agent_type),
+            self.handshake_source_by_agent.get(agent_type),
         )
 
     def probe_version(
@@ -418,6 +560,330 @@ class AgentLaunchConfig:
             version_text=self._first_probe_output_line(stdout, stderr),
             duration_ms=duration_ms,
         )
+
+    def probe_adapter_handshake(
+        self,
+        agent_type: AgentType,
+        *,
+        version_probe: AgentLaunchVersionProbe,
+        timeout_seconds: float,
+        output_limit_chars: int = 4096,
+    ) -> AgentAdapterHandshakeProbe:
+        adapter = AGENT_ADAPTER_KIND_BY_TYPE[agent_type]
+        if agent_type not in STRUCTURED_ADAPTER_AGENT_TYPES:
+            return AgentAdapterHandshakeProbe(
+                agent_type=agent_type,
+                adapter=adapter,
+                command=None,
+                source=None,
+                executable=None,
+                executable_path=None,
+                status="skipped",
+                error="structured_adapter_not_supported",
+            )
+        handshake_command, handshake_source = self.handshake_command_for(agent_type)
+        if handshake_command is None:
+            return AgentAdapterHandshakeProbe(
+                agent_type=agent_type,
+                adapter=adapter,
+                command=None,
+                source=None,
+                executable=None,
+                executable_path=None,
+                status="skipped",
+                error="handshake_command_not_configured",
+            )
+        try:
+            handshake_argv = shlex.split(handshake_command)
+        except ValueError as exc:
+            return AgentAdapterHandshakeProbe(
+                agent_type=agent_type,
+                adapter=adapter,
+                command=handshake_command,
+                source=handshake_source,
+                executable=None,
+                executable_path=None,
+                status="parse_error",
+                error=str(exc),
+            )
+        if not handshake_argv:
+            return AgentAdapterHandshakeProbe(
+                agent_type=agent_type,
+                adapter=adapter,
+                command=handshake_command,
+                source=handshake_source,
+                executable=None,
+                executable_path=None,
+                status="parse_error",
+                error="empty_handshake_command",
+            )
+        executable = handshake_argv[0]
+        executable_path = self._resolve_executable_path(executable)
+        if executable_path is None:
+            return AgentAdapterHandshakeProbe(
+                agent_type=agent_type,
+                adapter=adapter,
+                command=handshake_command,
+                source=handshake_source,
+                executable=executable,
+                executable_path=None,
+                status="unavailable",
+                error="handshake_executable_not_found",
+            )
+        launch_detection = self.detect(agent_type)
+        env = {
+            **os.environ,
+            "AGENTBRIDGE_AGENT_TYPE": agent_type.value,
+            "AGENTBRIDGE_AGENT_ADAPTER": adapter,
+            "AGENTBRIDGE_AGENT_LAUNCH_COMMAND": launch_detection.command,
+            "AGENTBRIDGE_AGENT_LAUNCH_EXECUTABLE_PATH": (
+                launch_detection.executable_path or ""
+            ),
+            "AGENTBRIDGE_AGENT_VERSION_TEXT": version_probe.version_text or "",
+            "AGENTBRIDGE_AGENT_VERSION_STATUS": version_probe.status,
+            "AGENTBRIDGE_AGENT_EXECUTABLE_PATH": launch_detection.executable_path
+            or "",
+            "AGENTBRIDGE_AGENT_VERSION_EXECUTABLE_PATH": (
+                version_probe.version_executable_path or ""
+            ),
+            "AGENTBRIDGE_ADAPTER_HANDSHAKE_PROTOCOL": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+        }
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(
+                [executable_path, *handshake_argv[1:]],
+                capture_output=True,
+                check=False,
+                env=env,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            return AgentAdapterHandshakeProbe(
+                agent_type=agent_type,
+                adapter=adapter,
+                command=handshake_command,
+                source=handshake_source,
+                executable=executable,
+                executable_path=executable_path,
+                status="timeout",
+                stdout=self._truncate_probe_output(exc.stdout, output_limit_chars),
+                stderr=self._truncate_probe_output(exc.stderr, output_limit_chars),
+                duration_ms=duration_ms,
+                error=f"timed out after {timeout_seconds:.3g}s",
+            )
+        except OSError as exc:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            return AgentAdapterHandshakeProbe(
+                agent_type=agent_type,
+                adapter=adapter,
+                command=handshake_command,
+                source=handshake_source,
+                executable=executable,
+                executable_path=executable_path,
+                status="failed",
+                duration_ms=duration_ms,
+                error=str(exc),
+            )
+        duration_ms = int((time.monotonic() - started) * 1000)
+        stdout = self._truncate_probe_output(completed.stdout, output_limit_chars)
+        stderr = self._truncate_probe_output(completed.stderr, output_limit_chars)
+        if completed.returncode != 0:
+            return AgentAdapterHandshakeProbe(
+                agent_type=agent_type,
+                adapter=adapter,
+                command=handshake_command,
+                source=handshake_source,
+                executable=executable,
+                executable_path=executable_path,
+                status="failed",
+                exit_code=completed.returncode,
+                stdout=stdout,
+                stderr=stderr,
+                duration_ms=duration_ms,
+            )
+        try:
+            parsed_payload = json.loads(completed.stdout or "{}")
+            handshake = self._normalize_handshake_payload(parsed_payload)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            return AgentAdapterHandshakeProbe(
+                agent_type=agent_type,
+                adapter=adapter,
+                command=handshake_command,
+                source=handshake_source,
+                executable=executable,
+                executable_path=executable_path,
+                status="parse_error",
+                exit_code=completed.returncode,
+                stdout=stdout,
+                stderr=stderr,
+                duration_ms=duration_ms,
+                error=str(exc),
+            )
+        status = "ok"
+        error = None
+        if handshake["protocol"] != AGENT_ADAPTER_HANDSHAKE_PROTOCOL:
+            status = "schema_mismatch"
+            error = "adapter_protocol_mismatch"
+        elif handshake["compatible"] is False:
+            status = "incompatible"
+            error = "adapter_reported_incompatible"
+        return AgentAdapterHandshakeProbe(
+            agent_type=agent_type,
+            adapter=adapter,
+            command=handshake_command,
+            source=handshake_source,
+            executable=executable,
+            executable_path=executable_path,
+            status=status,
+            exit_code=completed.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            duration_ms=duration_ms,
+            payload=handshake["payload"],
+            protocol=handshake["protocol"],
+            schema_version=handshake["schema_version"],
+            capabilities=handshake["capabilities"],
+            compatible=handshake["compatible"],
+            warnings=handshake["warnings"],
+            error=error,
+        )
+
+    def adapter_capability_report(
+        self,
+        agent_type: AgentType,
+        *,
+        timeout_seconds: float,
+        output_limit_chars: int = 4096,
+    ) -> AgentAdapterCapabilityReport:
+        launch_profile = self.detect(agent_type)
+        version_probe = self.probe_version(
+            agent_type,
+            timeout_seconds=timeout_seconds,
+            output_limit_chars=output_limit_chars,
+        )
+        handshake_probe = self.probe_adapter_handshake(
+            agent_type,
+            version_probe=version_probe,
+            timeout_seconds=timeout_seconds,
+            output_limit_chars=output_limit_chars,
+        )
+        schema_gate = self._adapter_schema_gate(
+            agent_type,
+            launch_profile=launch_profile,
+            version_probe=version_probe,
+            handshake_probe=handshake_probe,
+        )
+        return AgentAdapterCapabilityReport(
+            agent_type=agent_type,
+            adapter=AGENT_ADAPTER_KIND_BY_TYPE[agent_type],
+            structured_adapter=agent_type in STRUCTURED_ADAPTER_AGENT_TYPES,
+            launch_profile=launch_profile,
+            version_probe=version_probe,
+            handshake_probe=handshake_probe,
+            status=str(schema_gate["status"]),
+            schema_gate=schema_gate,
+            capabilities=handshake_probe.capabilities,
+            expected_capabilities=AGENT_ADAPTER_EXPECTED_CAPABILITIES[agent_type],
+            input_transports=AGENT_ADAPTER_INPUT_TRANSPORTS[agent_type],
+            recommended_mode=AGENT_ADAPTER_RECOMMENDED_MODE[agent_type],
+            next_step=str(schema_gate["next_step"]),
+        )
+
+    @classmethod
+    def _adapter_schema_gate(
+        cls,
+        agent_type: AgentType,
+        *,
+        launch_profile: AgentLaunchDetection,
+        version_probe: AgentLaunchVersionProbe,
+        handshake_probe: AgentAdapterHandshakeProbe,
+    ) -> dict[str, object]:
+        if agent_type not in STRUCTURED_ADAPTER_AGENT_TYPES:
+            return {
+                "status": "pty_only",
+                "reason": "generic_tui_has_no_structured_adapter",
+                "required_protocol": None,
+                "next_step": (
+                    "Use PTY input/output only; structured approvals require "
+                    "a native adapter."
+                ),
+            }
+        if not launch_profile.available:
+            return {
+                "status": "launch_unavailable",
+                "reason": launch_profile.unavailable_reason,
+                "required_protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+                "next_step": "Install the agent CLI or configure its launch command.",
+            }
+        if version_probe.status != "ok":
+            return {
+                "status": "version_probe_failed",
+                "reason": version_probe.error or version_probe.status,
+                "required_protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+                "next_step": "Fix the version probe before enabling structured adapter APIs.",
+            }
+        if handshake_probe.status == "ok":
+            return {
+                "status": "ready",
+                "reason": "handshake_accepted",
+                "required_protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+                "next_step": "Structured adapter capability gate is open for this profile.",
+            }
+        if handshake_probe.status == "skipped":
+            return {
+                "status": "handshake_not_configured",
+                "reason": handshake_probe.error,
+                "required_protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+                "next_step": (
+                    "Configure an adapter handshake command before enabling "
+                    "structured events."
+                ),
+            }
+        return {
+            "status": handshake_probe.status,
+            "reason": handshake_probe.error or handshake_probe.status,
+            "required_protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+            "next_step": "Review adapter handshake output and schema compatibility.",
+        }
+
+    @staticmethod
+    def _normalize_handshake_payload(value: Any) -> dict[str, object]:
+        if not isinstance(value, dict):
+            raise ValueError("handshake payload must be a JSON object")
+        payload = {str(key): item for key, item in value.items()}
+        protocol_value = (
+            payload.get("protocol")
+            or payload.get("adapter_protocol")
+            or payload.get("adapter_protocol_version")
+        )
+        protocol = str(protocol_value) if protocol_value is not None else None
+        schema_version_value = payload.get("schema_version")
+        schema_version = (
+            str(schema_version_value) if schema_version_value is not None else None
+        )
+        capabilities_value = payload.get("capabilities") or []
+        if not isinstance(capabilities_value, list) or not all(
+            isinstance(item, str) for item in capabilities_value
+        ):
+            raise ValueError("capabilities must be a string array")
+        compatible_value = payload.get("compatible", True)
+        if not isinstance(compatible_value, bool):
+            raise ValueError("compatible must be a boolean")
+        warnings_value = payload.get("warnings") or []
+        if not isinstance(warnings_value, list) or not all(
+            isinstance(item, str) for item in warnings_value
+        ):
+            raise ValueError("warnings must be a string array")
+        return {
+            "payload": payload,
+            "protocol": protocol,
+            "schema_version": schema_version,
+            "capabilities": capabilities_value,
+            "compatible": compatible_value,
+            "warnings": warnings_value,
+        }
 
     @staticmethod
     def _truncate_probe_output(value: object, limit: int) -> str:
@@ -1184,6 +1650,22 @@ class TerminalAgentService:
         timeout = min(max(timeout_seconds, 0.1), 10.0)
         return {
             agent_type.value: self.agent_launch_config.probe_version(
+                agent_type,
+                timeout_seconds=timeout,
+            ).to_payload()
+            for agent_type in selected_agent_types
+        }
+
+    def detect_agent_adapter_capabilities(
+        self,
+        *,
+        agent_types: list[AgentType] | None = None,
+        timeout_seconds: float = 2.0,
+    ) -> dict[str, dict[str, object]]:
+        selected_agent_types = agent_types or list(AgentType)
+        timeout = min(max(timeout_seconds, 0.1), 10.0)
+        return {
+            agent_type.value: self.agent_launch_config.adapter_capability_report(
                 agent_type,
                 timeout_seconds=timeout,
             ).to_payload()

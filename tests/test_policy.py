@@ -530,12 +530,16 @@ def test_admin_home_and_terminal_lifecycle_ui_routes():
     assert "/api/v1/terminal/lifecycle-monitor" in html
     assert "/api/v1/terminal/lifecycle-monitor/run-once" in html
     assert "/api/v1/terminal/agent-launch/probe" in html
+    assert "/api/v1/terminal/agent-adapters/detect" in html
     assert "Agent Launch Profiles" in html
     assert 'id="agent-profiles"' in html
     assert 'id="probe-agents"' in html
+    assert 'id="detect-adapters"' in html
+    assert 'id="agent-adapters"' in html
     assert 'id="allowlist"' in html
     assert 'id="blocks"' in html
     assert "async function probeAgents()" in html
+    assert "async function detectAdapters()" in html
     assert "async function runOnce()" in html
 
 

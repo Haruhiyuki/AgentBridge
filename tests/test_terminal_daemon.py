@@ -77,6 +77,13 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
             assert probe["ok"] is True
             assert probe["data"]["profiles"]["claude"]["agent_type"] == "claude"
 
+            detect = await client.request(
+                "detect_agent_adapters",
+                {"agent_types": ["generic_tui"], "timeout_seconds": 0.1},
+            )
+            assert detect["ok"] is True
+            assert detect["data"]["adapters"]["generic_tui"]["status"] == "pty_only"
+
             started = await client.request(
                 "start_session",
                 {

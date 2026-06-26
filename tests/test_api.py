@@ -6344,6 +6344,53 @@ def test_terminal_agent_launch_probe_api_requires_control_and_returns_versions(
     assert profile["version_source"] == "built_in"
 
 
+def test_terminal_agent_adapter_detect_api_requires_control_and_reports_gate(
+    monkeypatch,
+    tmp_path,
+):
+    claude_wrapper = tmp_path / "claude-agentbridge-wrapper"
+    claude_wrapper.write_text("#!/bin/sh\nprintf 'Claude API 2.0.0\\n'\n", encoding="utf-8")
+    claude_wrapper.chmod(0o755)
+    handshake = tmp_path / "claude-agentbridge-handshake"
+    handshake.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' "
+        '\'{"protocol":"agentbridge.adapter.v1",'
+        '"schema_version":"claude-hooks.v1",'
+        '"capabilities":["claude.hooks.session_start"],'
+        '"compatible":true}\'\n',
+        encoding="utf-8",
+    )
+    handshake.chmod(0o755)
+    monkeypatch.setenv("AGENTBRIDGE_AGENT_CLAUDE_COMMAND", str(claude_wrapper))
+    monkeypatch.setenv("AGENTBRIDGE_AGENT_CLAUDE_HANDSHAKE_COMMAND", str(handshake))
+    app = create_app()
+    client = TestClient(app)
+
+    denied_response = client.post(
+        "/api/v1/terminal/agent-adapters/detect",
+        json={"actor": {"id": "usr_member", "roles": ["member"]}},
+    )
+    detect_response = client.post(
+        "/api/v1/terminal/agent-adapters/detect",
+        json={
+            "actor": {"id": "usr_1", "roles": ["maintainer"]},
+            "agent_types": ["claude"],
+            "timeout_seconds": 1.0,
+            "trace_id": "terminal-agent-adapter-detect-test",
+        },
+    )
+
+    assert denied_response.status_code == 403
+    assert detect_response.status_code == 200
+    adapter = detect_response.json()["adapters"]["claude"]
+    assert adapter["status"] == "ready"
+    assert adapter["schema_gate"]["status"] == "ready"
+    assert adapter["version_probe"]["version_text"] == "Claude API 2.0.0"
+    assert adapter["handshake_probe"]["protocol"] == "agentbridge.adapter.v1"
+    assert adapter["capabilities"] == ["claude.hooks.session_start"]
+
+
 def test_managed_device_identity_requires_terminal_control_scope_for_terminal_http_apis(
     tmp_path,
 ):
@@ -6393,12 +6440,18 @@ def test_managed_device_identity_requires_terminal_control_scope_for_terminal_ht
         json={"actor": actor, "agent_types": ["claude"]},
         headers=key_headers,
     )
+    detect_response = client.post(
+        "/api/v1/terminal/agent-adapters/detect",
+        json={"actor": actor, "agent_types": ["claude"]},
+        headers=key_headers,
+    )
 
     assert create_response.status_code == 200
     assert regular_http_response.status_code == 200
     assert start_response.status_code == 403
     assert run_once_response.status_code == 403
     assert probe_response.status_code == 403
+    assert detect_response.status_code == 403
 
 
 def test_managed_device_identity_requires_terminal_read_scope_for_terminal_http_reads(
@@ -6590,6 +6643,11 @@ def test_managed_device_identity_terminal_control_scope_allows_terminal_http_api
         json={"actor": actor, "agent_types": ["claude"]},
         headers=headers,
     )
+    detect_response = client.post(
+        "/api/v1/terminal/agent-adapters/detect",
+        json={"actor": actor, "agent_types": ["claude"]},
+        headers=headers,
+    )
 
     assert create_response.status_code == 200
     assert start_response.status_code == 200
@@ -6600,6 +6658,8 @@ def test_managed_device_identity_terminal_control_scope_allows_terminal_http_api
     assert run_once_response.json()["monitor"]["run_count"] == 1
     assert probe_response.status_code == 200
     assert probe_response.json()["profiles"]["claude"]["agent_type"] == "claude"
+    assert detect_response.status_code == 200
+    assert detect_response.json()["adapters"]["claude"]["agent_type"] == "claude"
 
 
 def test_terminal_start_api_uses_session_agent_default_command(tmp_path):

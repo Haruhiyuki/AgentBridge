@@ -125,6 +125,10 @@ export AGENTBRIDGE_AGENT_GENERIC_TUI_COMMAND="sh"
 # Optional explicit version probes; Claude/Codex default to "<executable> --version".
 # export AGENTBRIDGE_AGENT_CLAUDE_VERSION_COMMAND="claude --version"
 # export AGENTBRIDGE_AGENT_CODEX_VERSION_COMMAND="codex-agentbridge --version"
+# Optional structured adapter handshake probes. The command must print JSON using
+# protocol "agentbridge.adapter.v1" and a string-array "capabilities" field.
+# export AGENTBRIDGE_AGENT_CLAUDE_HANDSHAKE_COMMAND="agentbridge-claude-handshake"
+# export AGENTBRIDGE_AGENT_CODEX_HANDSHAKE_COMMAND="agentbridge-codex-handshake"
 ```
 
 `GET /api/v1/terminal/lifecycle-monitor`, the local daemon `lifecycle_status` action,
@@ -134,8 +138,12 @@ This readiness check does not execute the agent command. Operators with terminal
 permission can explicitly run bounded version probes through
 `POST /api/v1/terminal/agent-launch/probe`, the local daemon
 `probe_agent_launch_profiles` action, or the Terminal Lifecycle Admin page. Version
-probe output is captured with timeout and length limits; protocol handshakes remain part
-of the future structured Claude/Codex adapters.
+probe output is captured with timeout and length limits. Structured adapter capability
+detection is available through `POST /api/v1/terminal/agent-adapters/detect`, the local
+daemon `detect_agent_adapters` action, and the Admin page. Claude/Codex remain gated as
+not ready unless an explicit handshake command reports `agentbridge.adapter.v1`
+compatibility; this keeps future Hook/app-server integration behind a schema gate instead
+of enabling unknown protocol versions by default.
 
 Terminal input is accepted only when the request carries the current writer lease `epoch`, owner type, and owner ID. Stale Bot/Web inputs are rejected after human or higher-priority control preempts the lease. Workspace creation through the API and Project/Session Admin UI can configure `is_writable` and `max_write_sessions`; `read_only` workspaces are normalized to non-writable with zero write slots, and writer lease acquisition enforces the resulting Workspace capacity across shared sessions. The PTY backend keeps a bounded cursor-addressable output window from the PTY master fd; stale readers receive a reset frame with the retained tail. When `AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH` is set, PTY start/status/termination updates an atomic JSON host-state registry containing session ID, cwd, command, host pid, child pid, status, exit code, and output cursor metadata for future host supervision. The `pty_host` backend talks to `agentbridge-pty-host` over a chmod `0600` Unix socket, so a restarted API/daemon process can recreate its backend client and continue reading/writing PTYs owned by the host process. Set `AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE` on both host and clients to reread the shared PTY Host token for each request, allowing rotation without restarting either side; an unreadable or empty token file keeps a configured token gate closed when there is no static fallback token. With `AGENTBRIDGE_TERMINAL_PTY_HOST_AUTO_START=true`, the client backend removes a Unix socket only when health probing proves there is no listener, starts `agentbridge-pty-host`, waits for health, and retries the request once; if health reaches a live host but token auth fails, times out, or returns a protocol error, it preserves the socket and reports the error instead of starting a competing host. With `AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_ENABLED=true`, API and daemon lifespans start a background watchdog that keeps the host healthy and restarts it after a crash; `AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_INTERVAL_SECONDS` controls the poll interval. Combine the watchdog with `AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=true` and a command allowlist to have the lifecycle monitor mark host-crash-lost PTY sessions as `terminal.lost` and restart them only when the latest persisted command is approved for replay. For service-manager deployments, use the systemd/launchd guide and templates in `docs/operations/PTY_HOST_SERVICE_MANAGER.md`. Fake and tmux remain test/MVP backends.
 

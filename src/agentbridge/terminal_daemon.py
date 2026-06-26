@@ -733,6 +733,13 @@ class LocalTerminalAgentServer:
                     timeout_seconds=float(payload.get("timeout_seconds") or 2.0),
                 )
             }
+        if action == "detect_agent_adapters":
+            return {
+                "adapters": self.terminal.detect_agent_adapter_capabilities(
+                    agent_types=agent_types_from_payload(payload),
+                    timeout_seconds=float(payload.get("timeout_seconds") or 2.0),
+                )
+            }
         if action == "start_session":
             session_id = required_str(payload, "session_id")
             command = payload.get("command")
@@ -829,9 +836,9 @@ class LocalTerminalAgentServer:
             f"未知本地 Terminal Agent action：{action}",
             next_step=(
                 "请使用 health、lifecycle_status、run_lifecycle_monitor_once、"
-                "probe_agent_launch_profiles、start_session、restart_session、"
-                "acquire_human_lease、release_lease、submit_input、snapshot、status、"
-                "read_output 或 stream_output。"
+                "probe_agent_launch_profiles、detect_agent_adapters、start_session、"
+                "restart_session、acquire_human_lease、release_lease、submit_input、"
+                "snapshot、status、read_output 或 stream_output。"
             ),
         )
 
