@@ -82,7 +82,8 @@ acceptance readiness actions to include the corresponding `evidence_summary` fie
 After all sections are signed off,
 `agentbridge-acceptance bundle` packages the manifest, a bundle index, and verified
 artifact files into a portable ZIP for release review; `agentbridge-acceptance
-verify-bundle` validates the ZIP offline without extracting it. Readiness warns when
+verify-bundle` validates the ZIP offline without extracting it and fails bundle index
+summary counts that do not match the bundled manifest. Readiness warns when
 `AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE` is unset, fails invalid bundles, warns for verified
 draft bundles, fails bundles built from a different configured manifest hash, and passes
 only when the configured bundle validates with `ready=true` and matches

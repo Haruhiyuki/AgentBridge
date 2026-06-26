@@ -43,6 +43,21 @@ ACCEPTANCE_ADMIN_EXPORT_SECTIONS = {
     "agentbridge.admin_device_identity_export.v1": ("34.4",),
     "agentbridge.admin_bot_delivery_export.v1": ("34.3", "34.7", "34.8"),
 }
+ACCEPTANCE_BUNDLE_SUMMARY_COUNT_KEYS = (
+    "passed",
+    "failed",
+    "blocked",
+    "not_run",
+    "missing",
+    "invalid",
+)
+ACCEPTANCE_BUNDLE_SUMMARY_SCALAR_KEYS = (
+    "ready",
+    "total",
+    "artifact_error_count",
+    "checklist_error_count",
+    "checklist_incomplete_count",
+)
 AcceptanceOutputFormat = Literal["json", "summary"]
 AcceptanceBundleOutputFormat = Literal["json", "summary"]
 
@@ -1153,10 +1168,11 @@ def verify_acceptance_bundle_payload(
         artifact_index=artifact_index,
         errors=errors,
     )
-    if isinstance(summary.get("ready"), bool) and summary.get("ready") != ready:
-        errors.append("bundle_summary_ready_mismatch")
+    manifest_summary = acceptance_bundle_manifest_summary(manifest_payload, ready=ready)
+    if summary:
+        validate_acceptance_bundle_summary(summary, manifest_summary, errors=errors)
     valid = not errors
-    manifest_summary = acceptance_bundle_manifest_summary(
+    verification_summary = acceptance_bundle_manifest_summary(
         manifest_payload,
         ready=ready if valid else False,
     )
@@ -1167,7 +1183,7 @@ def verify_acceptance_bundle_payload(
         "artifact_count": len(artifact_index),
         "errors": errors,
         "manifest_sha256": manifest_sha256,
-        "summary": manifest_summary,
+        "summary": verification_summary,
     }
 
 
@@ -1338,6 +1354,28 @@ def acceptance_bundle_manifest_summary(
     )
     summary["ready"] = ready
     return summary
+
+
+def validate_acceptance_bundle_summary(
+    summary: dict[str, object],
+    expected_summary: dict[str, object],
+    *,
+    errors: list[str],
+) -> None:
+    if not expected_summary:
+        return
+    for key in ACCEPTANCE_BUNDLE_SUMMARY_SCALAR_KEYS:
+        if summary.get(key) != expected_summary.get(key):
+            errors.append(f"bundle_summary_{key}_mismatch")
+    raw_counts = summary.get("counts")
+    expected_counts = expected_summary.get("counts")
+    if not isinstance(raw_counts, dict):
+        errors.append("bundle_summary_counts_must_be_object")
+        return
+    expected_counts_payload = expected_counts if isinstance(expected_counts, dict) else {}
+    for key in ACCEPTANCE_BUNDLE_SUMMARY_COUNT_KEYS:
+        if raw_counts.get(key) != expected_counts_payload.get(key):
+            errors.append(f"bundle_summary_count_{key}_mismatch")
 
 
 def verify_acceptance_bundle_section_checklist(
