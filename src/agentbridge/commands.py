@@ -1468,10 +1468,13 @@ class CommandService:
                 trace_id=invocation.trace_id,
                 chat_context_id=invocation.chat_context_id,
             )
+            message = f"任务已进入 [{session.short_code}] 队列。"
+            if turn.queue_reason == "human_control":
+                message += " 本地控制中，任务会等待人工释放后继续。"
             return self._result(
                 invocation,
                 "Turn Queued",
-                f"任务已进入 [{session.short_code}] 队列。",
+                message,
                 {
                     "project_id": session.project_id,
                     "session_id": session.id,

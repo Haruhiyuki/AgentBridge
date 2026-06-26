@@ -460,6 +460,7 @@ class Turn(BaseModel):
     actor_id: str
     status: TurnStatus = TurnStatus.QUEUED
     queue_order: int = 0
+    queue_reason: str | None = None
     queued_at: datetime = Field(default_factory=utc_now)
     started_at: datetime | None = None
     completed_at: datetime | None = None

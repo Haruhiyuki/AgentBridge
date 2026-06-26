@@ -1226,7 +1226,14 @@ class InMemoryRepository:
             self.leases.pop(session_id, None)
             return updated
 
-    def enqueue_turn(self, *, session_id: str, prompt: str, actor: Actor) -> Turn:
+    def enqueue_turn(
+        self,
+        *,
+        session_id: str,
+        prompt: str,
+        actor: Actor,
+        queue_reason: str | None = None,
+    ) -> Turn:
         with self._lock:
             session = self.get_session(session_id)
             if session.status in {
@@ -1286,6 +1293,7 @@ class InMemoryRepository:
                 prompt=prompt.strip(),
                 actor_id=actor.id,
                 queue_order=self._next_session_queue_order_locked(session_id),
+                queue_reason=queue_reason,
             )
             self.turns[turn.id] = turn
             return turn

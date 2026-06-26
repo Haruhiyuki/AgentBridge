@@ -168,10 +168,19 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
             )
         )
     elif event.type == "turn.queued":
+        details = f"Turn：{event.turn_id}\nPrompt 长度：{payload.get('prompt_length')}"
+        if payload.get("queue_reason") == "human_control":
+            lease_details = []
+            if payload.get("lease_owner_id"):
+                lease_details.append(f"owner={payload.get('lease_owner_id')}")
+            if payload.get("lease_epoch") is not None:
+                lease_details.append(f"epoch={payload.get('lease_epoch')}")
+            lease_suffix = f"（{'；'.join(lease_details)}）" if lease_details else ""
+            details += f"\n本地控制中：任务已排队等待人工释放{lease_suffix}。"
         blocks.append(
             progress_block(
                 "任务已排队",
-                f"Turn：{event.turn_id}\nPrompt 长度：{payload.get('prompt_length')}",
+                details,
             )
         )
     elif event.type == "tool.started":

@@ -103,6 +103,28 @@ def test_terminal_auto_restart_skipped_event_renders_operator_warning():
     ]
 
 
+def test_turn_queued_event_renders_human_control_reason():
+    event = make_event(
+        "turn.queued",
+        {
+            "prompt_length": 25,
+            "queue_reason": "human_control",
+            "lease_owner_type": "human",
+            "lease_owner_id": "local-user",
+            "lease_epoch": 2,
+        },
+    )
+    event = event.model_copy(update={"turn_id": "turn_1"})
+
+    document = document_from_event(event)
+    messages = OneBotV11TextRenderer().render(document)
+
+    assert "任务已排队" in messages[0]
+    assert "本地控制中" in messages[0]
+    assert "owner=local-user" in messages[0]
+    assert "epoch=2" in messages[0]
+
+
 def test_approval_request_event_renders_approver_actions():
     event = make_event(
         "approval.requested",

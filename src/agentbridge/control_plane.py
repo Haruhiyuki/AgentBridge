@@ -507,9 +507,34 @@ class ControlPlane:
             chat_context_id=chat_context_id,
             attributes={"operation": "enqueue_turn", "prompt_length": len(prompt)},
         )
-        turn = self.repository.enqueue_turn(
-            session_id=session_id, prompt=prompt, actor=effective_actor
+        lease = self.repository.current_lease(session_id)
+        queue_reason = (
+            "human_control"
+            if lease is not None and lease.owner_type == LeaseOwnerType.HUMAN
+            else None
         )
+        turn = self.repository.enqueue_turn(
+            session_id=session_id,
+            prompt=prompt,
+            actor=effective_actor,
+            queue_reason=queue_reason,
+        )
+        queue_details: dict[str, object] = {"turn_id": turn.id}
+        event_payload: dict[str, object] = {
+            "actor_id": actor.id,
+            "prompt_length": len(turn.prompt),
+        }
+        if queue_reason:
+            queue_details["queue_reason"] = queue_reason
+            event_payload["queue_reason"] = queue_reason
+            if lease is not None:
+                lease_details = {
+                    "lease_owner_type": lease.owner_type.value,
+                    "lease_owner_id": lease.owner_id,
+                    "lease_epoch": lease.epoch,
+                }
+                queue_details.update(lease_details)
+                event_payload.update(lease_details)
         self.audit(
             action="turn.queued",
             actor=effective_actor,
@@ -518,7 +543,7 @@ class ControlPlane:
             chat_context_id=chat_context_id,
             project_id=session.project_id,
             session_id=session_id,
-            details={"turn_id": turn.id},
+            details=queue_details,
         )
         self.emit_event(
             event_type="turn.queued",
@@ -527,7 +552,7 @@ class ControlPlane:
             project_id=session.project_id,
             session_id=session_id,
             turn_id=turn.id,
-            payload={"actor_id": actor.id, "prompt_length": len(turn.prompt)},
+            payload=event_payload,
         )
         return turn
 

@@ -91,6 +91,64 @@ def test_project_session_and_turn_command_flow(tmp_path):
     assert len(command_audits) == 3
 
 
+def test_turn_enqueue_marks_queue_when_human_controls_session(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+
+    project_result = execute(
+        commands,
+        f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+        maintainer,
+        context.id,
+        "human-queue-project",
+    )
+    session_result = execute(
+        commands,
+        "/agent session new Human Control",
+        maintainer,
+        context.id,
+        "human-queue-session",
+    )
+    lease = control.acquire_lease(
+        actor=maintainer,
+        session_id=session_result.data["session_id"],
+        owner_type=LeaseOwnerType.HUMAN,
+        owner_id="local-user",
+        ttl_seconds=300,
+        trace_id="human-queue-lease",
+    )
+
+    result = execute(
+        commands,
+        "/agent ask continue after local edit",
+        maintainer,
+        context.id,
+        "human-queue-turn",
+    )
+
+    assert result.canonical_command == "turn.enqueue"
+    assert "本地控制中" in result.message
+    assert result.data["turn"]["queue_reason"] == "human_control"
+
+    queued_event = control.repository.list_events(
+        session_id=session_result.data["session_id"]
+    )[-1]
+    assert queued_event.type == "turn.queued"
+    assert queued_event.payload["queue_reason"] == "human_control"
+    assert queued_event.payload["lease_owner_type"] == LeaseOwnerType.HUMAN.value
+    assert queued_event.payload["lease_owner_id"] == "local-user"
+    assert queued_event.payload["lease_epoch"] == lease.epoch
+
+    queued_audit = [
+        event for event in control.repository.audit_events if event.action == "turn.queued"
+    ][0]
+    assert queued_audit.project_id == project_result.data["project_id"]
+    assert queued_audit.details["queue_reason"] == "human_control"
+    assert queued_audit.details["lease_epoch"] == lease.epoch
+
+
 def test_top_level_use_alias_switches_session_across_projects(tmp_path):
     control = ControlPlane()
     commands = CommandService(control)
