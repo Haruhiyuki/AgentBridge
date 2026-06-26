@@ -45,6 +45,7 @@ from agentbridge.domain import (
     RiskLevel,
     SemanticEvent,
     SemanticEventSource,
+    SessionStatus,
     Turn,
     TurnStatus,
     Visibility,
@@ -508,11 +509,12 @@ class ControlPlane:
             attributes={"operation": "enqueue_turn", "prompt_length": len(prompt)},
         )
         lease = self.repository.current_lease(session_id)
-        queue_reason = (
-            "human_control"
-            if lease is not None and lease.owner_type == LeaseOwnerType.HUMAN
-            else None
-        )
+        if session.status == SessionStatus.RECOVERING:
+            queue_reason = "terminal_agent_offline"
+        elif lease is not None and lease.owner_type == LeaseOwnerType.HUMAN:
+            queue_reason = "human_control"
+        else:
+            queue_reason = None
         turn = self.repository.enqueue_turn(
             session_id=session_id,
             prompt=prompt,
@@ -1001,6 +1003,97 @@ class ControlPlane:
             },
         )
         return lease
+
+    def set_terminal_agent_offline_protection(
+        self,
+        *,
+        actor: Actor,
+        session_id: str,
+        offline: bool,
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> tuple[AgentSession, int]:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        session = self.require_terminal_control(
+            effective_actor,
+            session_id=session_id,
+            chat_context_id=chat_context_id,
+            attributes={
+                "operation": "terminal_offline_protection",
+                "offline": offline,
+            },
+        )
+        updated_session, removed_lease, next_epoch = (
+            self.repository.set_terminal_agent_offline_protection(
+                session_id=session_id,
+                offline=offline,
+            )
+        )
+        action = (
+            "terminal.offline_protection_enabled"
+            if offline
+            else "terminal.offline_protection_disabled"
+        )
+        details: dict[str, object] = {
+            "offline": offline,
+            "status": updated_session.status.value,
+            "next_epoch": next_epoch,
+        }
+        if removed_lease is not None:
+            details.update(
+                {
+                    "removed_lease_owner_type": removed_lease.owner_type.value,
+                    "removed_lease_owner_id": removed_lease.owner_id,
+                    "removed_lease_epoch": removed_lease.epoch,
+                }
+            )
+        self.audit(
+            action=action,
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            details=details,
+        )
+        self.emit_event(
+            event_type=action,
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            payload=details,
+        )
+        if not offline:
+            queued_turns, queue_version, queue_paused = self.repository.queue_snapshot(
+                session_id
+            )
+            unblocked_turns = [
+                turn
+                for turn in queued_turns
+                if turn.queue_reason == "terminal_agent_offline"
+            ]
+            if unblocked_turns:
+                next_turn = unblocked_turns[0]
+                self.emit_event(
+                    event_type="turn.queue_unblocked",
+                    source=SemanticEventSource.CONTROL_PLANE,
+                    trace_id=trace_id,
+                    project_id=session.project_id,
+                    session_id=session_id,
+                    turn_id=next_turn.id,
+                    payload={
+                        "queue_reason": "terminal_agent_offline",
+                        "next_epoch": next_epoch,
+                        "next_turn_id": next_turn.id,
+                        "unblocked_turn_count": len(unblocked_turns),
+                        "queued_turn_count": len(queued_turns),
+                        "queue_version": queue_version,
+                        "queue_paused": queue_paused,
+                    },
+                )
+        return updated_session, next_epoch
 
     def release_lease(
         self,

@@ -14,6 +14,7 @@ from agentbridge.domain import (
     LeaseOwnerType,
     RiskLevel,
     SemanticEventSource,
+    SessionStatus,
     Visibility,
 )
 
@@ -166,6 +167,118 @@ def test_turn_enqueue_marks_queue_when_human_controls_session(tmp_path):
     assert unblocked_event.payload["next_turn_id"] == result.data["turn_id"]
     assert unblocked_event.payload["unblocked_turn_count"] == 1
     assert unblocked_event.payload["queue_paused"] is False
+
+
+def test_terminal_offline_protection_queues_bot_input_and_blocks_old_epoch(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+
+    execute(
+        commands,
+        f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+        maintainer,
+        context.id,
+        "offline-protection-project",
+    )
+    session_result = execute(
+        commands,
+        "/agent session new Offline Protection",
+        maintainer,
+        context.id,
+        "offline-protection-session",
+    )
+    session_id = session_result.data["session_id"]
+    bot_lease = control.acquire_lease(
+        actor=maintainer,
+        session_id=session_id,
+        owner_type=LeaseOwnerType.BOT,
+        owner_id="bot",
+        ttl_seconds=300,
+        trace_id="offline-protection-bot-lease",
+    )
+
+    protected_session, next_epoch = control.set_terminal_agent_offline_protection(
+        actor=maintainer,
+        session_id=session_id,
+        offline=True,
+        trace_id="offline-protection-enable",
+    )
+
+    assert protected_session.status == SessionStatus.RECOVERING
+    assert next_epoch == bot_lease.epoch + 1
+    assert control.repository.current_lease(session_id) is None
+
+    result = execute(
+        commands,
+        "/agent ask continue after terminal reconnects",
+        maintainer,
+        context.id,
+        "offline-protection-turn",
+    )
+
+    assert result.canonical_command == "turn.enqueue"
+    assert "离线保护中" in result.message
+    assert result.data["turn"]["queue_reason"] == "terminal_agent_offline"
+    queued_event = control.repository.list_events(session_id=session_id)[-1]
+    assert queued_event.type == "turn.queued"
+    assert queued_event.payload["queue_reason"] == "terminal_agent_offline"
+
+    with pytest.raises(AgentBridgeError) as exc_info:
+        control.acquire_lease(
+            actor=maintainer,
+            session_id=session_id,
+            owner_type=LeaseOwnerType.BOT,
+            owner_id="bot",
+            ttl_seconds=300,
+            trace_id="offline-protection-bot-reacquire",
+        )
+    assert exc_info.value.code == ErrorCode.LEASE_CONFLICT
+    assert exc_info.value.details["offline_protection"] is True
+
+    with pytest.raises(AgentBridgeError) as exc_info:
+        control.claim_next_turn(
+            actor=maintainer,
+            session_id=session_id,
+            trace_id="offline-protection-claim",
+        )
+    assert exc_info.value.code == ErrorCode.RESOURCE_CONFLICT
+    assert exc_info.value.details["offline_protection"] is True
+
+    human_lease = control.acquire_lease(
+        actor=maintainer,
+        session_id=session_id,
+        owner_type=LeaseOwnerType.HUMAN,
+        owner_id="local-user",
+        ttl_seconds=300,
+        trace_id="offline-protection-human-lease",
+    )
+    assert human_lease.epoch == next_epoch + 1
+    assert control.repository.get_session(session_id).status == SessionStatus.RECOVERING
+
+    assert (
+        control.release_lease(
+            actor=maintainer,
+            session_id=session_id,
+            epoch=human_lease.epoch,
+            trace_id="offline-protection-human-release",
+        )
+        == human_lease.epoch + 1
+    )
+    restored_session, restored_epoch = control.set_terminal_agent_offline_protection(
+        actor=maintainer,
+        session_id=session_id,
+        offline=False,
+        trace_id="offline-protection-disable",
+    )
+    events = control.repository.list_events(session_id=session_id)
+
+    assert restored_session.status == SessionStatus.IDLE
+    assert restored_epoch == human_lease.epoch + 1
+    assert events[-2].type == "terminal.offline_protection_disabled"
+    assert events[-1].type == "turn.queue_unblocked"
+    assert events[-1].payload["queue_reason"] == "terminal_agent_offline"
 
 
 def test_top_level_use_alias_switches_session_across_projects(tmp_path):

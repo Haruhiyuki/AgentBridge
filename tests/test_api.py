@@ -7400,6 +7400,81 @@ def test_terminal_lifecycle_monitor_status_and_run_once_api(tmp_path):
     }
 
 
+def test_terminal_offline_protection_api_blocks_bot_claims(tmp_path):
+    control = ControlPlane()
+    client = TestClient(create_app(control))
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-terminal-offline-protection",
+        prefix="terminal-offline-protection",
+        name="Terminal Offline Protection",
+    )
+    bot_lease_response = client.post(
+        f"/api/v1/sessions/{session_id}/lease/acquire",
+        json={
+            "actor": actor,
+            "owner_type": "bot",
+            "owner_id": "bot",
+            "trace_id": "terminal-offline-protection-bot-lease",
+        },
+    )
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/terminal/offline-protection",
+        json={
+            "actor": actor,
+            "offline": True,
+            "trace_id": "terminal-offline-protection-enable",
+        },
+    )
+    turn_response = client.post(
+        f"/api/v1/sessions/{session_id}/turns",
+        json={
+            "actor": actor,
+            "prompt": "Queue while terminal offline",
+            "trace_id": "terminal-offline-protection-turn",
+        },
+    )
+    claim_response = client.post(
+        f"/api/v1/sessions/{session_id}/queue/claim-next",
+        json={"actor": actor, "trace_id": "terminal-offline-protection-claim"},
+    )
+    bot_reacquire_response = client.post(
+        f"/api/v1/sessions/{session_id}/lease/acquire",
+        json={
+            "actor": actor,
+            "owner_type": "bot",
+            "owner_id": "bot",
+            "trace_id": "terminal-offline-protection-bot-reacquire",
+        },
+    )
+    disable_response = client.post(
+        f"/api/v1/sessions/{session_id}/terminal/offline-protection",
+        json={
+            "actor": actor,
+            "offline": False,
+            "trace_id": "terminal-offline-protection-disable",
+        },
+    )
+
+    assert bot_lease_response.status_code == 200
+    assert response.status_code == 200
+    assert response.json()["offline"] is True
+    assert response.json()["next_epoch"] == bot_lease_response.json()["epoch"] + 1
+    assert response.json()["session"]["status"] == "recovering"
+    assert turn_response.status_code == 200
+    assert turn_response.json()["queue_reason"] == "terminal_agent_offline"
+    assert claim_response.status_code == 409
+    assert claim_response.json()["details"]["offline_protection"] is True
+    assert bot_reacquire_response.status_code == 409
+    assert bot_reacquire_response.json()["details"]["offline_protection"] is True
+    assert disable_response.status_code == 200
+    assert disable_response.json()["offline"] is False
+    assert disable_response.json()["session"]["status"] == "idle"
+
+
 def test_terminal_agent_launch_probe_api_requires_control_and_returns_versions(
     monkeypatch,
     tmp_path,
@@ -7787,6 +7862,59 @@ def test_terminal_start_api_uses_session_agent_default_command(tmp_path):
     assert started_events[-1].payload["command"] == "claude"
     assert started_events[-1].payload["agent_type"] == "claude"
     assert started_events[-1].payload["command_source"] == "built_in"
+
+
+def test_terminal_websocket_sets_offline_protection_and_blocks_bot_lease(tmp_path):
+    control = ControlPlane()
+    client = TestClient(create_app(control))
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-terminal-ws-offline-protection",
+        prefix="terminal-ws-offline-protection",
+        name="Terminal WS Offline Protection",
+    )
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/terminal/ws"
+    ) as websocket:
+        websocket.send_json(
+            {
+                "id": "offline",
+                "type": "set_offline_protection",
+                "payload": {
+                    "actor": actor,
+                    "offline": True,
+                    "trace_id": "terminal-ws-offline-protection-enable",
+                },
+            }
+        )
+        protected = websocket.receive_json()
+        websocket.send_json(
+            {
+                "id": "bot-lease",
+                "type": "acquire_lease",
+                "payload": {
+                    "actor": actor,
+                    "owner_type": "bot",
+                    "owner_id": "bot",
+                    "trace_id": "terminal-ws-offline-protection-bot-lease",
+                },
+            }
+        )
+        blocked = websocket.receive_json()
+
+    assert protected["type"] == "terminal.result"
+    assert protected["id"] == "offline"
+    assert protected["ok"] is True
+    assert protected["data"]["offline"] is True
+    assert protected["data"]["session"]["status"] == "recovering"
+    assert blocked["type"] == "terminal.error"
+    assert blocked["id"] == "bot-lease"
+    assert blocked["ok"] is False
+    assert blocked["error"]["error_code"] == "LEASE_CONFLICT"
+    assert blocked["error"]["details"]["offline_protection"] is True
 
 
 def test_terminal_restart_api_uses_last_started_command_after_backend_state_loss(tmp_path):

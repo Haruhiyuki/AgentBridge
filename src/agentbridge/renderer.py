@@ -177,6 +177,8 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 lease_details.append(f"epoch={payload.get('lease_epoch')}")
             lease_suffix = f"（{'；'.join(lease_details)}）" if lease_details else ""
             details += f"\n本地控制中：任务已排队等待人工释放{lease_suffix}。"
+        elif payload.get("queue_reason") == "terminal_agent_offline":
+            details += "\nTerminal Agent 离线保护中：任务已排队等待终端重连。"
         blocks.append(
             progress_block(
                 "任务已排队",
@@ -184,11 +186,16 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
             )
         )
     elif event.type == "turn.queue_unblocked":
+        resume_reason = (
+            "Terminal Agent 离线保护已解除，Bot 可以继续同一会话。"
+            if payload.get("queue_reason") == "terminal_agent_offline"
+            else "本地控制已释放，Bot 可以继续同一会话。"
+        )
         blocks.append(
             progress_block(
                 "队列可继续",
                 (
-                    "本地控制已释放，Bot 可以继续同一会话。\n"
+                    f"{resume_reason}\n"
                     f"下一个 Turn：{payload.get('next_turn_id') or event.turn_id}\n"
                     f"可继续任务数：{payload.get('unblocked_turn_count')}\n"
                     f"队列状态：{'paused' if payload.get('queue_paused') else 'active'}\n"
@@ -466,6 +473,28 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                     f"generation={payload.get('generation')}；"
                     f"reason={payload.get('reason')}；"
                     f"backend={payload.get('backend')}"
+                ),
+            )
+        )
+    elif event.type == "terminal.offline_protection_enabled":
+        visibility = RenderVisibility.OPERATORS
+        blocks.append(
+            warning_block(
+                "离线保护已开启",
+                (
+                    f"Session 状态：{payload.get('status')}；"
+                    f"next_epoch={payload.get('next_epoch')}"
+                ),
+            )
+        )
+    elif event.type == "terminal.offline_protection_disabled":
+        visibility = RenderVisibility.OPERATORS
+        blocks.append(
+            progress_block(
+                "离线保护已解除",
+                (
+                    f"Session 状态：{payload.get('status')}；"
+                    f"next_epoch={payload.get('next_epoch')}"
                 ),
             )
         )

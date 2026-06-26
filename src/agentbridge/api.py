@@ -356,6 +356,14 @@ class RestartTerminalRequest(BaseModel):
     trace_id: str = "api"
 
 
+class TerminalOfflineProtectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    offline: bool
+    trace_id: str = "api"
+
+
 class TerminalInputRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1851,6 +1859,24 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             command=command,
             trace_id=payload.trace_id,
         ).to_payload()
+
+    @app.post("/api/v1/sessions/{session_id}/terminal/offline-protection")
+    def set_terminal_offline_protection(
+        session_id: str,
+        payload: TerminalOfflineProtectionRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        session, next_epoch = control.set_terminal_agent_offline_protection(
+            actor=payload.actor.to_actor(),
+            session_id=session_id,
+            offline=payload.offline,
+            trace_id=payload.trace_id,
+        )
+        return {
+            "offline": payload.offline,
+            "next_epoch": next_epoch,
+            "session": session.model_dump(mode="json"),
+        }
 
     @app.post("/api/v1/sessions/{session_id}/terminal/input")
     def submit_terminal_input(
@@ -3693,6 +3719,22 @@ def handle_terminal_ws_action(
             trace_id=str(payload.get("trace_id") or "terminal-ws"),
         )
         return {"next_epoch": next_epoch}
+    if action == "set_offline_protection":
+        actor = actor_from_terminal_ws_payload(payload)
+        offline = payload.get("offline")
+        if not isinstance(offline, bool):
+            raise TypeError("offline must be a boolean")
+        session, next_epoch = control.set_terminal_agent_offline_protection(
+            actor=actor,
+            session_id=session_id,
+            offline=offline,
+            trace_id=str(payload.get("trace_id") or "terminal-ws"),
+        )
+        return {
+            "offline": offline,
+            "next_epoch": next_epoch,
+            "session": session.model_dump(mode="json"),
+        }
     if action == "claim_next_turn":
         actor = actor_from_terminal_ws_payload(payload)
         expected_queue_version = payload.get("expected_queue_version")
@@ -3784,7 +3826,8 @@ def handle_terminal_ws_action(
         f"未知 Terminal WebSocket action：{action}",
         next_step=(
             "请使用 health、replay_events、ack_events、start_session、restart_session、"
-            "acquire_lease、release_lease、claim_next_turn、submit_input、snapshot 或 status。"
+            "acquire_lease、release_lease、set_offline_protection、claim_next_turn、"
+            "submit_input、snapshot 或 status。"
         ),
     )
 
@@ -4321,7 +4364,7 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         len(path_segments) >= 7
         and path_segments[:4] == ["", "api", "v1", "sessions"]
         and path_segments[5] == "terminal"
-        and path_segments[6] in {"start", "restart", "input"}
+        and path_segments[6] in {"start", "restart", "input", "offline-protection"}
     ):
         return DeviceIdentityScope.TERMINAL_CONTROL
     if method == "GET" and path.endswith("/approval-policy"):

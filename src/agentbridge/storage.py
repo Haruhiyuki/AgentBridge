@@ -1515,6 +1515,19 @@ class InMemoryRepository:
             turn = self._get_session_turn(session_id=session_id, turn_id=turn_id)
             if turn.status == TurnStatus.RUNNING:
                 return turn
+            if session.status == SessionStatus.RECOVERING and turn.status == TurnStatus.QUEUED:
+                raise AgentBridgeError(
+                    ErrorCode.RESOURCE_CONFLICT,
+                    "Terminal Agent 处于离线保护，不能开始 queued Turn。",
+                    next_step="请等待 Terminal Agent 重连并退出离线保护后再领取 Turn。",
+                    status_code=409,
+                    details={
+                        "session_id": session_id,
+                        "turn_id": turn_id,
+                        "offline_protection": True,
+                        "session_status": session.status.value,
+                    },
+                )
             if session.queue_paused and turn.status == TurnStatus.QUEUED:
                 raise AgentBridgeError(
                     ErrorCode.RESOURCE_CONFLICT,
@@ -1693,6 +1706,22 @@ class InMemoryRepository:
                     next_step="请恢复会话或创建新会话。",
                     status_code=409,
                 )
+            if (
+                session.status == SessionStatus.RECOVERING
+                and owner_type != LeaseOwnerType.HUMAN
+            ):
+                raise AgentBridgeError(
+                    ErrorCode.LEASE_CONFLICT,
+                    "Terminal Agent 处于离线保护，只允许本地 Human 获取写入租约。",
+                    next_step="请等待 Terminal Agent 重连，或由本地用户接管后手动操作。",
+                    status_code=409,
+                    details={
+                        "session_id": session_id,
+                        "owner_type": owner_type.value,
+                        "offline_protection": True,
+                        "session_status": session.status.value,
+                    },
+                )
             current = self.leases.get(session_id)
             if current and current.is_active():
                 if current.owner_type == owner_type and current.owner_id == owner_id:
@@ -1728,10 +1757,64 @@ class InMemoryRepository:
             self.lease_epochs[session_id] = epoch
             self.leases[session_id] = lease
             if owner_type == LeaseOwnerType.HUMAN:
+                status = (
+                    SessionStatus.RECOVERING
+                    if session.status == SessionStatus.RECOVERING
+                    else SessionStatus.HUMAN_CONTROLLED
+                )
                 self.sessions[session.id] = session.model_copy(
-                    update={"status": SessionStatus.HUMAN_CONTROLLED, "updated_at": utc_now()}
+                    update={"status": status, "updated_at": utc_now()}
                 )
             return lease
+
+    def set_terminal_agent_offline_protection(
+        self,
+        *,
+        session_id: str,
+        offline: bool,
+    ) -> tuple[AgentSession, WriterLease | None, int]:
+        with self._lock:
+            session = self.get_session(session_id)
+            if session.status in {SessionStatus.CLOSED, SessionStatus.ARCHIVED}:
+                raise AgentBridgeError(
+                    ErrorCode.RESOURCE_CONFLICT,
+                    "已关闭或归档的会话不能切换 Terminal Agent 离线保护。",
+                    next_step="请恢复会话或创建新会话。",
+                    status_code=409,
+                    details={"session_id": session_id, "status": session.status.value},
+                )
+            removed_lease: WriterLease | None = None
+            next_epoch = self.lease_epochs.get(session_id, 0)
+            current = self.leases.get(session_id)
+            if offline:
+                if current is not None and current.owner_type != LeaseOwnerType.HUMAN:
+                    removed_lease = current
+                    next_epoch = max(next_epoch, current.epoch) + 1
+                    self.lease_epochs[session_id] = next_epoch
+                    self.leases.pop(session_id, None)
+                updated = session.model_copy(
+                    update={
+                        "status": SessionStatus.RECOVERING,
+                        "updated_at": utc_now(),
+                    }
+                )
+                self.sessions[session_id] = updated
+                return updated, removed_lease, next_epoch
+
+            active_lease = self.current_lease(session_id)
+            target_status = (
+                SessionStatus.HUMAN_CONTROLLED
+                if active_lease is not None
+                and active_lease.owner_type == LeaseOwnerType.HUMAN
+                else SessionStatus.IDLE
+            )
+            if session.status == target_status:
+                return session, removed_lease, next_epoch
+            updated = session.model_copy(
+                update={"status": target_status, "updated_at": utc_now()}
+            )
+            self.sessions[session_id] = updated
+            return updated, removed_lease, next_epoch
 
     def _require_workspace_write_capacity(self, session: AgentSession) -> None:
         workspace = self.get_workspace(session.workspace_id)

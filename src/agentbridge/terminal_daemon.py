@@ -832,6 +832,26 @@ class LocalTerminalAgentServer:
                 trace_id=str(payload.get("trace_id") or "local-terminal"),
             )
             return {"next_epoch": next_epoch}
+        if action == "set_offline_protection":
+            actor = actor_from_payload(payload)
+            offline = payload.get("offline")
+            if not isinstance(offline, bool):
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "offline 必须是布尔值。",
+                    next_step="请传入 true/false。",
+                )
+            session, next_epoch = self.control.set_terminal_agent_offline_protection(
+                actor=actor,
+                session_id=required_str(payload, "session_id"),
+                offline=offline,
+                trace_id=str(payload.get("trace_id") or "local-terminal"),
+            )
+            return {
+                "offline": offline,
+                "next_epoch": next_epoch,
+                "session": session.model_dump(mode="json"),
+            }
         if action == "claim_next_turn":
             actor = actor_from_payload(payload)
             expected_queue_version = payload.get("expected_queue_version")
@@ -929,8 +949,9 @@ class LocalTerminalAgentServer:
                 "请使用 health、lifecycle_status、run_lifecycle_monitor_once、"
                 "replay_events、ack_events、probe_agent_launch_profiles、"
                 "detect_agent_adapters、start_session、restart_session、"
-                "acquire_human_lease、release_lease、claim_next_turn、submit_input、"
-                "snapshot、status、read_output 或 stream_output。"
+                "acquire_human_lease、release_lease、set_offline_protection、"
+                "claim_next_turn、submit_input、snapshot、status、read_output 或 "
+                "stream_output。"
             ),
         )
 

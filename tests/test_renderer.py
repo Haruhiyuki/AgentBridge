@@ -80,6 +80,29 @@ def test_terminal_lost_event_renders_operator_warning():
     ]
 
 
+def test_terminal_offline_protection_events_render_operator_notice():
+    enabled = make_event(
+        "terminal.offline_protection_enabled",
+        {"status": "recovering", "next_epoch": 2},
+    )
+    disabled = make_event(
+        "terminal.offline_protection_disabled",
+        {"status": "idle", "next_epoch": 3},
+    )
+
+    enabled_document = document_from_event(enabled)
+    disabled_document = document_from_event(disabled)
+    enabled_messages = OneBotV11TextRenderer().render(enabled_document)
+    disabled_messages = OneBotV11TextRenderer().render(disabled_document)
+
+    assert enabled_document.visibility == "operators"
+    assert "离线保护已开启" in enabled_messages[0]
+    assert "next_epoch=2" in enabled_messages[0]
+    assert disabled_document.visibility == "operators"
+    assert "离线保护已解除" in disabled_messages[0]
+    assert "next_epoch=3" in disabled_messages[0]
+
+
 def test_terminal_auto_restart_skipped_event_renders_operator_warning():
     event = make_event(
         "terminal.auto_restart.skipped",
@@ -125,6 +148,24 @@ def test_turn_queued_event_renders_human_control_reason():
     assert "epoch=2" in messages[0]
 
 
+def test_turn_queued_event_renders_terminal_offline_reason():
+    event = make_event(
+        "turn.queued",
+        {
+            "prompt_length": 25,
+            "queue_reason": "terminal_agent_offline",
+        },
+    )
+    event = event.model_copy(update={"turn_id": "turn_1"})
+
+    document = document_from_event(event)
+    messages = OneBotV11TextRenderer().render(document)
+
+    assert "任务已排队" in messages[0]
+    assert "Terminal Agent 离线保护中" in messages[0]
+    assert "等待终端重连" in messages[0]
+
+
 def test_turn_queue_unblocked_event_renders_resume_notice():
     event = make_event(
         "turn.queue_unblocked",
@@ -150,6 +191,29 @@ def test_turn_queue_unblocked_event_renders_resume_notice():
     assert "下一个 Turn：turn_1" in messages[0]
     assert "可继续任务数：2" in messages[0]
     assert "队列状态：active" in messages[0]
+    assert "next_epoch=3" in messages[0]
+
+
+def test_terminal_offline_queue_unblocked_event_renders_resume_notice():
+    event = make_event(
+        "turn.queue_unblocked",
+        {
+            "queue_reason": "terminal_agent_offline",
+            "next_turn_id": "turn_1",
+            "unblocked_turn_count": 2,
+            "queue_version": "queue-v1",
+            "queue_paused": False,
+            "next_epoch": 3,
+        },
+    )
+    event = event.model_copy(update={"turn_id": "turn_1"})
+
+    document = document_from_event(event)
+    messages = OneBotV11TextRenderer().render(document)
+
+    assert "队列可继续" in messages[0]
+    assert "Terminal Agent 离线保护已解除" in messages[0]
+    assert "Bot 可以继续同一会话" in messages[0]
     assert "next_epoch=3" in messages[0]
 
 

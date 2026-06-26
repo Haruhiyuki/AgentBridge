@@ -342,6 +342,7 @@ class SQLAlchemyRepository(InMemoryRepository):
         "start_next_turn",
         "finish_turn",
         "acquire_lease",
+        "set_terminal_agent_offline_protection",
         "release_lease",
         "create_interaction",
         "answer_interaction",

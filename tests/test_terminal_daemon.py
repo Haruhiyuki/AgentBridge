@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import agentbridge.terminal_daemon as terminal_daemon
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, TurnStatus, Visibility
+from agentbridge.domain import Actor, LeaseOwnerType, SessionStatus, TurnStatus, Visibility
 from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService, TerminalStatus
 from agentbridge.terminal_daemon import (
     DesktopTerminalLauncher,
@@ -202,6 +202,67 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
         finally:
             await server.stop()
             assert not socket_path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_local_terminal_daemon_sets_offline_protection(tmp_path):
+    async def scenario():
+        control = ControlPlane()
+        terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+        session = create_session(control, tmp_path)
+        maintainer = Actor(id="usr_1", roles={"maintainer"})
+        bot_lease = control.acquire_lease(
+            actor=maintainer,
+            session_id=session.id,
+            owner_type=LeaseOwnerType.BOT,
+            owner_id="bot",
+            ttl_seconds=300,
+            trace_id="daemon-offline-bot-lease",
+        )
+        socket_path = Path(f"/tmp/agentbridge-{uuid4().hex}.sock")
+        server = LocalTerminalAgentServer(
+            control=control,
+            terminal=terminal,
+            auth_token="secret-token",
+            lifecycle_monitor_enabled=False,
+        )
+        await server.start(socket_path)
+        try:
+            client = LocalTerminalAgentClient(socket_path, "secret-token")
+            protected = await client.request(
+                "set_offline_protection",
+                {
+                    "session_id": session.id,
+                    "actor_id": "usr_1",
+                    "roles": ["maintainer"],
+                    "offline": True,
+                    "trace_id": "daemon-offline-enable",
+                },
+            )
+            restored = await client.request(
+                "set_offline_protection",
+                {
+                    "session_id": session.id,
+                    "actor_id": "usr_1",
+                    "roles": ["maintainer"],
+                    "offline": False,
+                    "trace_id": "daemon-offline-disable",
+                },
+            )
+
+            assert protected["ok"] is True
+            assert protected["data"]["offline"] is True
+            assert protected["data"]["next_epoch"] == bot_lease.epoch + 1
+            assert protected["data"]["session"]["status"] == "recovering"
+            assert control.repository.current_lease(session.id) is None
+            assert restored["ok"] is True
+            assert restored["data"]["offline"] is False
+            assert restored["data"]["session"]["status"] == "idle"
+            assert control.repository.get_session(session.id).status == SessionStatus.IDLE
+        finally:
+            await server.stop()
+            socket_path.unlink(missing_ok=True)
 
     asyncio.run(scenario())
 
