@@ -12,7 +12,11 @@ from agentbridge.agent_adapter_client import (
     CodexAppServerAdapterClient,
     adapter_response_matches_request,
     build_parser,
+    claude_adapter_event_type_from_hook_payload,
+    claude_hook_failure_stdout_json,
+    claude_hook_idempotency_key,
     format_adapter_response_for_agent,
+    handle_claude_hook_payload,
     handshake_payload_for_agent,
     main,
     urllib_json_transport,
@@ -458,6 +462,156 @@ def test_cli_format_response_prints_native_stdout_json(capsys):
         "hookSpecificOutput": {
             "hookEventName": "PermissionRequest",
             "decision": {"behavior": "allow"},
+        }
+    }
+
+
+def test_claude_hook_bridge_waits_for_permission_and_outputs_hook_json():
+    calls = []
+
+    def transport(method, url, headers, payload, timeout_seconds):
+        calls.append((method, url, payload))
+        if method == "POST":
+            return {
+                "id": "evt_permission",
+                "seq": 3,
+                "interaction_id": "int_permission",
+                "payload": {"adapter_item_id": "toolu_1"},
+            }
+        return {
+            "responses": [
+                {
+                    "seq": 4,
+                    "request_event_id": "evt_permission",
+                    "interaction_id": "int_permission",
+                    "adapter_event_type": "PermissionRequest",
+                    "ready": True,
+                    "decision": "approved",
+                    "approve": True,
+                }
+            ]
+        }
+
+    control_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(base_url="http://bridge.local", session_id="ses_1"),
+        transport=transport,
+    )
+
+    result = handle_claude_hook_payload(
+        control_client=control_client,
+        hook_payload={
+            "session_id": "claude-native-1",
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "tool_input": {"command": "pytest"},
+            "tool_use_id": "toolu_1",
+        },
+        poll_interval_seconds=0.01,
+    )
+
+    assert result["adapter_event_type"] == "PermissionRequest"
+    assert result["idempotency_key"] == "claude-hook:PermissionRequest:toolu_1"
+    assert result["stdout_json"] == {
+        "hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": {"behavior": "allow"},
+        }
+    }
+    assert calls[0] == (
+        "POST",
+        "http://bridge.local/api/v1/sessions/ses_1/agent-adapter/events",
+        {
+            "agent_type": "claude",
+            "adapter_event_type": "PermissionRequest",
+            "trace_id": "claude-hook-adapter",
+            "schema_version": "claude-hooks.v1",
+            "payload": {
+                "session_id": "claude-native-1",
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "Bash",
+                "tool_input": {"command": "pytest"},
+                "tool_use_id": "toolu_1",
+            },
+            "idempotency_key": "claude-hook:PermissionRequest:toolu_1",
+        },
+    )
+
+
+def test_claude_hook_bridge_reports_non_interaction_hook_without_stdout():
+    calls = []
+
+    def transport(method, url, headers, payload, timeout_seconds):
+        calls.append((method, url, payload))
+        return {"id": "evt_message", "seq": 9}
+
+    control_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(base_url="http://bridge.local", session_id="ses_1"),
+        transport=transport,
+    )
+
+    result = handle_claude_hook_payload(
+        control_client=control_client,
+        hook_payload={
+            "session_id": "claude-native-1",
+            "hook_event_name": "MessageDisplay",
+            "text": "hello",
+        },
+    )
+
+    assert result["adapter_event_type"] == "MessageDisplay"
+    assert result["stdout_json"] is None
+    assert calls == [
+        (
+            "POST",
+            "http://bridge.local/api/v1/sessions/ses_1/agent-adapter/events",
+            {
+                "agent_type": "claude",
+                "adapter_event_type": "MessageDisplay",
+                "trace_id": "claude-hook-adapter",
+                "schema_version": "claude-hooks.v1",
+                "payload": {
+                    "session_id": "claude-native-1",
+                    "hook_event_name": "MessageDisplay",
+                    "text": "hello",
+                },
+                "idempotency_key": result["idempotency_key"],
+            },
+        )
+    ]
+
+
+def test_claude_hook_payload_maps_pre_tool_use_questions():
+    payload = {
+        "session_id": "claude-native-1",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "AskUserQuestion",
+        "tool_use_id": "toolu_question",
+    }
+
+    assert claude_adapter_event_type_from_hook_payload(payload) == "AskUserQuestion"
+    assert (
+        claude_hook_idempotency_key("AskUserQuestion", payload)
+        == "claude-hook:AskUserQuestion:toolu_question"
+    )
+
+
+def test_claude_hook_failure_defaults_interactions_to_deny():
+    stdout_json = claude_hook_failure_stdout_json(
+        {
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_1",
+        },
+        "timed out",
+    )
+
+    assert stdout_json == {
+        "hookSpecificOutput": {
+            "hookEventName": "PermissionRequest",
+            "decision": {
+                "behavior": "deny",
+                "message": "AgentBridge adapter failed closed: timed out",
+            },
         }
     }
 

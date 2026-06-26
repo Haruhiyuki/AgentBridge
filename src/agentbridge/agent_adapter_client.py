@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -28,6 +29,17 @@ JsonTransport = Callable[
     [str, str, dict[str, str], dict[str, object] | None, float],
     dict[str, object],
 ]
+CLAUDE_INTERACTION_HOOK_EVENTS = {
+    "PermissionRequest",
+    "AskUserQuestion",
+    "QuestionRequested",
+    "PlanRequested",
+}
+CLAUDE_QUESTION_TOOL_EVENT_BY_TOOL_NAME = {
+    "AskUserQuestion": "AskUserQuestion",
+    "QuestionRequested": "QuestionRequested",
+    "ExitPlanMode": "PlanRequested",
+}
 
 
 class AgentAdapterClientError(RuntimeError):
@@ -333,6 +345,104 @@ def adapter_client_for_agent(
     if agent_type == AgentType.CODEX:
         return CodexAppServerAdapterClient(control_client, schema_version=schema_version)
     raise ValueError(f"structured adapter client is not supported for {agent_type.value}")
+
+
+def handle_claude_hook_payload(
+    *,
+    control_client: AgentAdapterControlClient,
+    hook_payload: Mapping[str, object],
+    schema_version: str | None = None,
+    trace_id: str = "claude-hook-adapter",
+    wait_timeout_seconds: float = 300.0,
+    poll_interval_seconds: float = 1.0,
+) -> dict[str, object]:
+    adapter_event_type = claude_adapter_event_type_from_hook_payload(hook_payload)
+    client = ClaudeHookAdapterClient(control_client, schema_version=schema_version)
+    idempotency_key = claude_hook_idempotency_key(adapter_event_type, hook_payload)
+    if adapter_event_type in CLAUDE_INTERACTION_HOOK_EVENTS:
+        result = client.emit_and_wait(
+            adapter_event_type,
+            hook_payload,
+            trace_id=trace_id,
+            idempotency_key=idempotency_key,
+            timeout_seconds=wait_timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+        native_response = format_adapter_response_for_agent(
+            AgentType.CLAUDE,
+            result["response"],
+        )
+        return {
+            "adapter_event_type": adapter_event_type,
+            "idempotency_key": idempotency_key,
+            "event": result["event"],
+            "response": result["response"],
+            "native_response": native_response,
+            "stdout_json": native_response["stdout_json"],
+        }
+    event = client.emit(
+        adapter_event_type,
+        hook_payload,
+        trace_id=trace_id,
+        idempotency_key=idempotency_key,
+    )
+    return {
+        "adapter_event_type": adapter_event_type,
+        "idempotency_key": idempotency_key,
+        "event": event,
+        "stdout_json": None,
+    }
+
+
+def claude_adapter_event_type_from_hook_payload(payload: Mapping[str, object]) -> str:
+    hook_event_name = (
+        string_value(payload.get("hook_event_name"))
+        or string_value(payload.get("hookEventName"))
+        or string_value(payload.get("event"))
+    )
+    if not hook_event_name:
+        raise ValueError("Claude hook payload must include hook_event_name")
+    if hook_event_name == "PreToolUse":
+        tool_name = string_value(payload.get("tool_name")) or string_value(payload.get("toolName"))
+        mapped_tool_event = CLAUDE_QUESTION_TOOL_EVENT_BY_TOOL_NAME.get(tool_name or "")
+        if mapped_tool_event is not None:
+            return mapped_tool_event
+    return hook_event_name
+
+
+def claude_hook_idempotency_key(
+    adapter_event_type: str,
+    payload: Mapping[str, object],
+) -> str:
+    for key in ("tool_use_id", "toolUseId", "request_id", "requestId", "event_id", "eventId"):
+        value = string_value(payload.get(key))
+        if value:
+            return f"claude-hook:{adapter_event_type}:{value}"
+    session_id = string_value(payload.get("session_id")) or string_value(payload.get("sessionId"))
+    canonical_payload = json.dumps(
+        {str(key): value for key, value in payload.items()},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()[:24]
+    if session_id:
+        return f"claude-hook:{adapter_event_type}:{session_id}:{digest}"
+    return f"claude-hook:{adapter_event_type}:{digest}"
+
+
+def claude_hook_failure_stdout_json(
+    hook_payload: Mapping[str, object],
+    error: str,
+) -> dict[str, object]:
+    adapter_event_type = claude_adapter_event_type_from_hook_payload(hook_payload)
+    response = {
+        "decision": "denied",
+        "reason": f"AgentBridge adapter failed closed: {error}",
+        "adapter_event_type": adapter_event_type,
+        "request_payload": {"raw_event": dict(hook_payload)},
+    }
+    return claude_hook_stdout_json(response)
 
 
 def adapter_response_matches_request(
@@ -687,6 +797,17 @@ def load_response_from_args(args: argparse.Namespace) -> dict[str, object]:
     return {str(key): value for key, value in decoded.items()}
 
 
+def load_hook_payload_from_args(args: argparse.Namespace) -> dict[str, object]:
+    if args.input_file is not None:
+        raw = sys.stdin.read() if str(args.input_file) == "-" else args.input_file.read_text()
+    else:
+        raw = sys.stdin.read()
+    decoded = json.loads(raw)
+    if not isinstance(decoded, dict):
+        raise ValueError("hook payload must be a JSON object")
+    return {str(key): value for key, value in decoded.items()}
+
+
 def parse_agent_type(value: str) -> AgentType:
     try:
         return AgentType(value)
@@ -806,6 +927,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print only the native stdout JSON payload when the selected format provides one",
     )
+
+    claude_hook = subparsers.add_parser(
+        "claude-hook",
+        help="Run as a Claude Code command hook bridge for the current AgentBridge session",
+    )
+    add_auth_arguments(claude_hook)
+    claude_hook.add_argument("--schema-version")
+    claude_hook.add_argument("--input-file", type=Path)
+    claude_hook.add_argument("--trace-id", default="claude-hook-adapter")
+    claude_hook.add_argument("--wait-timeout-seconds", type=float, default=300.0)
+    claude_hook.add_argument("--poll-interval-seconds", type=float, default=1.0)
+    claude_hook.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the AgentBridge bridge result instead of Claude hook stdout JSON",
+    )
+    claude_hook.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return an error on non-interaction hook delivery failures instead of failing open",
+    )
     return parser
 
 
@@ -843,6 +985,35 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(stdout_json, ensure_ascii=False, sort_keys=True))
             else:
                 print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            return 0
+        if args.command == "claude-hook":
+            hook_payload = load_hook_payload_from_args(args)
+            control_client = AgentAdapterControlClient(build_config_from_args(args))
+            try:
+                result = handle_claude_hook_payload(
+                    control_client=control_client,
+                    hook_payload=hook_payload,
+                    schema_version=args.schema_version,
+                    trace_id=args.trace_id,
+                    wait_timeout_seconds=args.wait_timeout_seconds,
+                    poll_interval_seconds=args.poll_interval_seconds,
+                )
+            except (AgentAdapterClientError, AgentBridgeError, OSError, ValueError) as exc:
+                adapter_event_type = claude_adapter_event_type_from_hook_payload(hook_payload)
+                if adapter_event_type in CLAUDE_INTERACTION_HOOK_EVENTS:
+                    payload = claude_hook_failure_stdout_json(hook_payload, str(exc))
+                    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+                    return 0
+                if args.strict:
+                    raise
+                print(f"agent adapter client failed open: {exc}", file=sys.stderr)
+                return 0
+            if args.json:
+                print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+                return 0
+            stdout_json = result.get("stdout_json")
+            if isinstance(stdout_json, dict):
+                print(json.dumps(stdout_json, ensure_ascii=False, sort_keys=True))
             return 0
 
         control_client = AgentAdapterControlClient(build_config_from_args(args))
