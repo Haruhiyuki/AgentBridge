@@ -29,6 +29,7 @@ agentbridge-api = "agentbridge.api:run"
 agentbridge-adapter-client = "agentbridge.agent_adapter_client:run"
 agentbridge-audit-verify = "agentbridge.audit_verify:run"
 agentbridge-console = "agentbridge.console_client:run"
+agentbridge-readiness = "agentbridge.readiness_cli:run"
 agentbridge-terminal-agent = "agentbridge.terminal_daemon:run"
 agentbridge-pty-host = "agentbridge.pty_host:run"
 

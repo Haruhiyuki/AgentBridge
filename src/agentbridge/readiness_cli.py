@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+from agentbridge.agent_adapter_client import (
+    AgentAdapterClientError,
+    secret_value,
+    urllib_json_transport,
+)
+
+READINESS_EXIT_DEGRADED = 2
+READINESS_EXIT_NOT_READY = 3
+
+
+@dataclass(frozen=True)
+class ReadinessClientConfig:
+    base_url: str
+    api_token: str | None = None
+    device_id: str | None = None
+    device_key: str | None = None
+    timeout_seconds: float = 10.0
+
+
+def readiness_headers(config: ReadinessClientConfig) -> dict[str, str]:
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if config.api_token:
+        headers["Authorization"] = f"Bearer {config.api_token}"
+    if config.device_id and config.device_key:
+        headers["X-AgentBridge-Device-ID"] = config.device_id
+        headers["X-AgentBridge-Device-Key"] = config.device_key
+    return headers
+
+
+def fetch_readiness(config: ReadinessClientConfig) -> dict[str, object]:
+    return urllib_json_transport(
+        "GET",
+        config.base_url.rstrip("/") + "/api/v1/readiness",
+        readiness_headers(config),
+        None,
+        config.timeout_seconds,
+    )
+
+
+def readiness_exit_code(
+    payload: dict[str, object],
+    *,
+    fail_on_warn: bool,
+    fail_on_fail: bool,
+) -> int:
+    status = str(payload.get("status") or "")
+    if status == "not_ready":
+        return READINESS_EXIT_NOT_READY if fail_on_fail or fail_on_warn else 0
+    if status == "degraded":
+        return READINESS_EXIT_DEGRADED if fail_on_warn else 0
+    return 0
+
+
+def readiness_summary_text(payload: dict[str, object]) -> str:
+    summary = payload.get("summary")
+    counts = summary.get("counts") if isinstance(summary, dict) else {}
+    if not isinstance(counts, dict):
+        counts = {}
+    return " ".join(
+        [
+            f"status={payload.get('status')}",
+            f"pass={counts.get('pass', 0)}",
+            f"warn={counts.get('warn', 0)}",
+            f"fail={counts.get('fail', 0)}",
+        ]
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Fetch AgentBridge product readiness status."
+    )
+    parser.add_argument("--api-url", help="AgentBridge API base URL")
+    parser.add_argument("--api-token", help="API bearer token")
+    parser.add_argument("--api-token-file", type=Path, help="File containing API token")
+    parser.add_argument("--device-id", help="Managed/static device ID")
+    parser.add_argument("--device-key", help="Managed/static device key")
+    parser.add_argument("--device-key-file", type=Path, help="File containing device key")
+    parser.add_argument("--timeout-seconds", type=float, default=10.0)
+    parser.add_argument(
+        "--format",
+        choices=["json", "summary"],
+        default="json",
+        help="Output format",
+    )
+    exit_policy = parser.add_mutually_exclusive_group()
+    exit_policy.add_argument(
+        "--fail-on-warn",
+        action="store_true",
+        help="Exit non-zero for degraded or not_ready readiness status",
+    )
+    exit_policy.add_argument(
+        "--fail-on-fail",
+        action="store_true",
+        help="Exit non-zero only for not_ready readiness status",
+    )
+    return parser
+
+
+def build_config_from_args(args: argparse.Namespace) -> ReadinessClientConfig:
+    api_token = secret_value(
+        args.api_token,
+        args.api_token_file,
+        "AGENTBRIDGE_API_TOKEN",
+        "AGENTBRIDGE_API_TOKEN_FILE",
+    )
+    device_key = secret_value(
+        args.device_key,
+        args.device_key_file,
+        "AGENTBRIDGE_DEVICE_KEY",
+        "AGENTBRIDGE_DEVICE_KEY_FILE",
+    )
+    return ReadinessClientConfig(
+        base_url=args.api_url
+        or os.environ.get("AGENTBRIDGE_API_URL")
+        or "http://127.0.0.1:8000",
+        api_token=api_token,
+        device_id=args.device_id or os.environ.get("AGENTBRIDGE_DEVICE_ID"),
+        device_key=device_key,
+        timeout_seconds=args.timeout_seconds,
+    )
+
+
+def print_readiness(payload: dict[str, object], output_format: Literal["json", "summary"]) -> None:
+    if output_format == "summary":
+        print(readiness_summary_text(payload))
+        return
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        payload = fetch_readiness(build_config_from_args(args))
+        print_readiness(payload, args.format)
+        return readiness_exit_code(
+            payload,
+            fail_on_warn=args.fail_on_warn,
+            fail_on_fail=args.fail_on_fail,
+        )
+    except (AgentAdapterClientError, OSError, ValueError) as exc:
+        print(f"agentbridge readiness failed: {exc}", file=sys.stderr)
+        return 1
+
+
+def run() -> None:
+    raise SystemExit(main())
