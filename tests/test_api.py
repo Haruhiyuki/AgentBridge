@@ -454,7 +454,8 @@ def test_readiness_endpoint_fails_for_missing_verified_acceptance_artifact(
 
 
 def test_readiness_endpoint_passes_for_verified_acceptance_bundle(monkeypatch, tmp_path):
-    _manifest, bundle = create_acceptance_bundle_fixture(tmp_path)
+    manifest, bundle = create_acceptance_bundle_fixture(tmp_path)
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", str(manifest))
     monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE", str(bundle))
     client = TestClient(create_app())
 
@@ -466,7 +467,17 @@ def test_readiness_endpoint_passes_for_verified_acceptance_bundle(monkeypatch, t
     assert checks["acceptance.evidence_bundle"]["status"] == "pass"
     assert checks["acceptance.evidence_bundle"]["evidence"]["valid"] is True
     assert checks["acceptance.evidence_bundle"]["evidence"]["ready"] is True
+    assert (
+        checks["acceptance.evidence_bundle"]["evidence"][
+            "manifest_matches_configured_evidence"
+        ]
+        is True
+    )
     assert payload["sources"]["acceptance_bundle"]["artifact_count"] == 8
+    assert (
+        payload["sources"]["acceptance_bundle"]["manifest_sha256"]
+        == payload["sources"]["acceptance_evidence"]["manifest_sha256"]
+    )
 
 
 def test_readiness_endpoint_fails_for_invalid_acceptance_bundle(monkeypatch, tmp_path):
@@ -501,6 +512,41 @@ def test_readiness_endpoint_warns_for_draft_acceptance_bundle(monkeypatch, tmp_p
     assert checks["acceptance.evidence_bundle"]["evidence"]["valid"] is True
     assert checks["acceptance.evidence_bundle"]["evidence"]["ready"] is False
     assert payload["sources"]["acceptance_bundle"]["artifact_count"] == 1
+
+
+def test_readiness_endpoint_fails_for_mismatched_acceptance_bundle_manifest(
+    monkeypatch,
+    tmp_path,
+):
+    manifest, bundle = create_acceptance_bundle_fixture(tmp_path)
+    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_payload["sections"]["34.1"]["notes"] = "Changed after bundle build."
+    manifest.write_text(
+        json.dumps(manifest_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", str(manifest))
+    monkeypatch.setenv("AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE", str(bundle))
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    assert payload["status"] == "not_ready"
+    assert checks["acceptance.evidence_manifest"]["status"] == "pass"
+    assert checks["acceptance.evidence_bundle"]["status"] == "fail"
+    assert (
+        checks["acceptance.evidence_bundle"]["evidence"][
+            "manifest_matches_configured_evidence"
+        ]
+        is False
+    )
+    assert (
+        checks["acceptance.evidence_bundle"]["evidence"]["manifest_sha256"]
+        != checks["acceptance.evidence_bundle"]["evidence"]["configured_manifest_sha256"]
+    )
 
 
 def test_api_token_gate_protects_rest_api_when_configured(monkeypatch):

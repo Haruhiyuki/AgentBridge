@@ -25,10 +25,11 @@ from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from agentbridge.acceptance_cli import verify_acceptance_bundle
+from agentbridge.acceptance_cli import acceptance_json_bytes, verify_acceptance_bundle
 from agentbridge.acceptance_evidence import (
     ACCEPTANCE_EVIDENCE_SCHEMA_VERSION,
     ACCEPTANCE_SECTIONS,
+    load_acceptance_manifest,
     read_acceptance_evidence,
 )
 from agentbridge.admin_ui import (
@@ -772,7 +773,7 @@ def build_readiness_report(
     acceptance_evidence = readiness_acceptance_evidence()
     checks.extend(readiness_acceptance_checks(acceptance_evidence))
     acceptance_bundle = readiness_acceptance_bundle()
-    checks.append(readiness_acceptance_bundle_check(acceptance_bundle))
+    checks.append(readiness_acceptance_bundle_check(acceptance_bundle, acceptance_evidence))
 
     status = readiness_overall_status(checks)
     return {
@@ -1302,14 +1303,24 @@ def readiness_acceptance_checks(
 
 def readiness_acceptance_evidence() -> dict[str, object]:
     artifact_root = os.environ.get("AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT", "").strip()
-    return read_acceptance_evidence(
-        os.environ.get("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", "").strip(),
+    raw_path = os.environ.get("AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE", "").strip()
+    evidence = read_acceptance_evidence(
+        raw_path,
         artifact_root=artifact_root or None,
         verify_artifacts=env_bool(
             "AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS",
             default=bool(artifact_root),
         ),
     )
+    if evidence.get("valid") and raw_path:
+        try:
+            manifest_payload = load_acceptance_manifest(Path(raw_path).expanduser())
+            evidence["manifest_sha256"] = hashlib.sha256(
+                acceptance_json_bytes(manifest_payload)
+            ).hexdigest()
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            evidence["manifest_sha256_error"] = exc.__class__.__name__
+    return evidence
 
 
 def readiness_acceptance_bundle() -> dict[str, object]:
@@ -1330,10 +1341,24 @@ def readiness_acceptance_bundle() -> dict[str, object]:
     }
 
 
-def readiness_acceptance_bundle_check(evidence: dict[str, object]) -> dict[str, object]:
+def readiness_acceptance_bundle_check(
+    evidence: dict[str, object],
+    acceptance_evidence: dict[str, object],
+) -> dict[str, object]:
     configured = bool(evidence.get("configured"))
     valid = bool(evidence.get("valid"))
     ready = bool(evidence.get("ready"))
+    bundle_manifest_sha256 = evidence.get("manifest_sha256")
+    configured_manifest_sha256 = acceptance_evidence.get("manifest_sha256")
+    manifest_matches_configured_evidence = None
+    if (
+        valid
+        and isinstance(bundle_manifest_sha256, str)
+        and isinstance(configured_manifest_sha256, str)
+    ):
+        manifest_matches_configured_evidence = (
+            bundle_manifest_sha256 == configured_manifest_sha256
+        )
     if not configured:
         status = "warn"
         next_step = (
@@ -1345,6 +1370,12 @@ def readiness_acceptance_bundle_check(evidence: dict[str, object]) -> dict[str, 
         next_step = (
             "Rebuild or replace AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE so "
             "agentbridge-acceptance verify-bundle reports valid=true."
+        )
+    elif manifest_matches_configured_evidence is False:
+        status = "fail"
+        next_step = (
+            "Rebuild AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE from the configured "
+            "AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE so manifest hashes match."
         )
     elif not ready:
         status = "warn"
@@ -1367,7 +1398,11 @@ def readiness_acceptance_bundle_check(evidence: dict[str, object]) -> dict[str, 
             "path": evidence.get("path"),
             "artifact_count": evidence.get("artifact_count", 0),
             "errors": evidence.get("errors", []),
-            "manifest_sha256": evidence.get("manifest_sha256"),
+            "manifest_sha256": bundle_manifest_sha256,
+            "configured_manifest_sha256": configured_manifest_sha256,
+            "manifest_matches_configured_evidence": (
+                manifest_matches_configured_evidence
+            ),
         },
         next_step=next_step,
     )

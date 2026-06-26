@@ -61,7 +61,9 @@ digest-backed manifest reference in one step. After all sections are signed off,
 artifact files into a portable ZIP for release review; `agentbridge-acceptance
 verify-bundle` validates the ZIP offline without extracting it. Readiness warns when
 `AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE` is unset, fails invalid bundles, warns for verified
-draft bundles, and passes only when the configured bundle validates with `ready=true`.
+draft bundles, fails bundles built from a different configured manifest hash, and passes
+only when the configured bundle validates with `ready=true` and matches
+`AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE`.
 
 ```bash
 uv run agentbridge-acceptance init "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
