@@ -255,6 +255,7 @@ class DeviceCertificateRecord(BaseModel):
 class SemanticEventSource(StrEnum):
     CONTROL_PLANE = "control_plane"
     TERMINAL_AGENT = "terminal_agent"
+    AGENT_ADAPTER = "agent_adapter"
     BOT_GATEWAY = "bot_gateway"
     ADMIN_WEB = "admin_web"
 

@@ -37,6 +37,7 @@ from agentbridge.admin_ui import (
     SYSTEM_HEALTH_ADMIN_HTML,
     TERMINAL_LIFECYCLE_ADMIN_HTML,
 )
+from agentbridge.agent_adapter_events import normalize_agent_adapter_event
 from agentbridge.bot_gateway import (
     BotDeliveryRateLimiter,
     BotDeliveryRetryWorker,
@@ -261,6 +262,19 @@ class IngestSessionEventRequest(BaseModel):
     idempotency_key: str | None = None
     turn_id: str | None = None
     interaction_id: str | None = None
+    payload: dict[str, object] = Field(default_factory=dict)
+
+
+class IngestAgentAdapterEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_type: AgentType
+    adapter_event_type: str
+    trace_id: str = "agent-adapter-event-api"
+    idempotency_key: str | None = None
+    turn_id: str | None = None
+    interaction_id: str | None = None
+    schema_version: str | None = None
     payload: dict[str, object] = Field(default_factory=dict)
 
 
@@ -1519,6 +1533,30 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             turn_id=payload.turn_id,
             interaction_id=payload.interaction_id,
             payload=payload.payload,
+            idempotency_key=payload.idempotency_key,
+        )
+        return event.model_dump(mode="json")
+
+    @app.post("/api/v1/sessions/{session_id}/agent-adapter/events")
+    def ingest_agent_adapter_event(
+        session_id: str,
+        payload: IngestAgentAdapterEventRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        normalized = normalize_agent_adapter_event(
+            agent_type=payload.agent_type,
+            adapter_event_type=payload.adapter_event_type,
+            payload=payload.payload,
+            schema_version=payload.schema_version,
+        )
+        event = control.ingest_session_event(
+            session_id=session_id,
+            event_type=normalized.event_type,
+            source=SemanticEventSource.AGENT_ADAPTER,
+            trace_id=payload.trace_id,
+            turn_id=payload.turn_id,
+            interaction_id=payload.interaction_id,
+            payload=normalized.payload,
             idempotency_key=payload.idempotency_key,
         )
         return event.model_dump(mode="json")
@@ -3473,6 +3511,14 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         and len(path_segments) >= 6
         and path_segments[:4] == ["", "api", "v1", "sessions"]
         and path_segments[5] == "events"
+    ):
+        return DeviceIdentityScope.SESSION_EVENT_INGEST
+    if (
+        method == "POST"
+        and len(path_segments) >= 7
+        and path_segments[:4] == ["", "api", "v1", "sessions"]
+        and path_segments[5] == "agent-adapter"
+        and path_segments[6] == "events"
     ):
         return DeviceIdentityScope.SESSION_EVENT_INGEST
     if (

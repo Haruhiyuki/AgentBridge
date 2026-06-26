@@ -2469,6 +2469,164 @@ def test_managed_device_identity_session_event_ingest_scope_allows_event_writes(
     assert replay_response.status_code == 403
 
 
+def test_agent_adapter_event_ingest_normalizes_and_is_idempotent(tmp_path):
+    client = TestClient(create_app())
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-agent-adapter-event",
+        prefix="agent-adapter-event",
+        name="Agent Adapter Event",
+    )
+
+    first_response = client.post(
+        f"/api/v1/sessions/{session_id}/agent-adapter/events",
+        json={
+            "agent_type": "claude",
+            "adapter_event_type": "MessageDisplay",
+            "trace_id": "agent-adapter-message",
+            "idempotency_key": "agent-adapter-message-1",
+            "schema_version": "claude-hooks.v1",
+            "payload": {"text": "hello from structured hook"},
+        },
+    )
+    duplicate_response = client.post(
+        f"/api/v1/sessions/{session_id}/agent-adapter/events",
+        json={
+            "agent_type": "claude",
+            "adapter_event_type": "MessageDisplay",
+            "trace_id": "agent-adapter-message-duplicate",
+            "idempotency_key": "agent-adapter-message-1",
+            "schema_version": "claude-hooks.v1",
+            "payload": {"text": "should not replace original"},
+        },
+    )
+    events_response = client.get(f"/api/v1/sessions/{session_id}/events")
+
+    assert first_response.status_code == 200
+    assert duplicate_response.status_code == 200
+    assert duplicate_response.json()["id"] == first_response.json()["id"]
+    assert first_response.json()["type"] == "assistant.delta"
+    assert first_response.json()["source"] == "agent_adapter"
+    assert first_response.json()["payload"]["agent_type"] == "claude"
+    assert first_response.json()["payload"]["adapter"] == "claude_hooks"
+    assert first_response.json()["payload"]["adapter_event_type"] == "MessageDisplay"
+    assert first_response.json()["payload"]["schema_version"] == "claude-hooks.v1"
+    assert first_response.json()["payload"]["text"] == "hello from structured hook"
+    adapter_events = [
+        event for event in events_response.json() if event["source"] == "agent_adapter"
+    ]
+    assert len(adapter_events) == 1
+
+
+def test_agent_adapter_event_ingest_maps_codex_approval_request(tmp_path):
+    client = TestClient(create_app())
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-codex-adapter-event",
+        prefix="codex-adapter-event",
+        name="Codex Adapter Event",
+    )
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/agent-adapter/events",
+        json={
+            "agent_type": "codex",
+            "adapter_event_type": "item/commandExecution/requestApproval",
+            "trace_id": "codex-approval-request",
+            "idempotency_key": "codex-approval-request-1",
+            "turn_id": "turn_codex",
+            "payload": {
+                "item": {"id": "cmd-42", "command": "pytest"},
+                "reason": "Run project tests",
+                "riskLevel": "high",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    event = response.json()
+    assert event["type"] == "approval.requested"
+    assert event["source"] == "agent_adapter"
+    assert event["turn_id"] == "turn_codex"
+    assert event["payload"]["adapter"] == "codex_app_server"
+    assert event["payload"]["adapter_event_type"] == (
+        "item/commandExecution/requestApproval"
+    )
+    assert event["payload"]["prompt"] == "Run project tests"
+    assert event["payload"]["risk_level"] == "high"
+    assert event["payload"]["tool_name"] == "pytest"
+    assert event["payload"]["adapter_item_id"] == "cmd-42"
+
+
+def test_managed_device_identity_session_event_ingest_scope_gates_adapter_events(
+    tmp_path,
+):
+    client = TestClient(create_app())
+    admin = {"id": "security-admin", "roles": ["admin"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-adapter-event-ingest-scope",
+        prefix="adapter-event-ingest-scope",
+        name="Adapter Event Ingest Scope",
+    )
+
+    readonly_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "readonly-adapter-event-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "device_manage"],
+            "trace_id": "adapter-event-scope-readonly-device-create",
+        },
+    )
+    readonly_headers = {
+        "x-agentbridge-device-id": "readonly-adapter-event-device",
+        "x-agentbridge-device-key": "managed-secret",
+    }
+    denied_response = client.post(
+        f"/api/v1/sessions/{session_id}/agent-adapter/events",
+        json={
+            "agent_type": "claude",
+            "adapter_event_type": "MessageDisplay",
+            "payload": {"text": "denied"},
+        },
+        headers=readonly_headers,
+    )
+    ingest_identity_response = client.post(
+        "/api/v1/device-identities",
+        json={
+            "actor": admin,
+            "device_id": "adapter-event-device",
+            "device_key": "managed-secret",
+            "allowed_scopes": ["http_api", "session_event_ingest"],
+            "trace_id": "adapter-event-scope-device-create",
+        },
+        headers=readonly_headers,
+    )
+    allowed_response = client.post(
+        f"/api/v1/sessions/{session_id}/agent-adapter/events",
+        json={
+            "agent_type": "claude",
+            "adapter_event_type": "MessageDisplay",
+            "payload": {"text": "allowed"},
+        },
+        headers={
+            "x-agentbridge-device-id": "adapter-event-device",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
+
+    assert readonly_identity_response.status_code == 200
+    assert denied_response.status_code == 403
+    assert ingest_identity_response.status_code == 200
+    assert allowed_response.status_code == 200
+    assert allowed_response.json()["type"] == "assistant.delta"
+
+
 def test_managed_device_identity_requires_audit_read_scope_for_audit_event_http_reads(
     tmp_path,
 ):
