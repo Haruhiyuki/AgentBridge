@@ -7132,6 +7132,68 @@ def test_terminal_websocket_accepts_commands_with_token(monkeypatch, tmp_path):
     assert control.repository.get_turn(queued_turn["id"]).status == TurnStatus.RUNNING
 
 
+def test_terminal_websocket_replays_session_events_after_seq(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "secret")
+    control = ControlPlane()
+    client = TestClient(create_app(control))
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="terminal-ws-replay",
+        prefix="terminal-ws-replay",
+        name="Terminal WS Replay",
+    )
+    initial_events = control.repository.list_events(session_id=session_id)
+    assert [event.type for event in initial_events] == ["session.created"]
+    created_seq = initial_events[0].seq
+    queued_turn = client.post(
+        f"/api/v1/sessions/{session_id}/turns",
+        json={
+            "actor": actor,
+            "prompt": "queued for terminal ws replay",
+            "trace_id": "terminal-ws-replay-turn",
+        },
+    ).json()
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/terminal/ws?token=secret"
+    ) as websocket:
+        websocket.send_json(
+            {
+                "id": "replay",
+                "type": "replay_events",
+                "payload": {
+                    "actor": actor,
+                    "after_seq": created_seq,
+                    "limit": 10,
+                },
+            }
+        )
+        replay = websocket.receive_json()
+        assert replay["type"] == "terminal.result"
+        assert replay["id"] == "replay"
+        assert replay["ok"] is True
+        assert [event["type"] for event in replay["data"]["events"]] == ["turn.queued"]
+        assert replay["data"]["events"][0]["turn_id"] == queued_turn["id"]
+        last_seq = replay["data"]["last_seq"]
+        assert last_seq == replay["data"]["events"][0]["seq"]
+
+        websocket.send_json(
+            {
+                "id": "replay-empty",
+                "type": "replay_events",
+                "payload": {"actor": actor, "after_seq": last_seq},
+            }
+        )
+        empty = websocket.receive_json()
+
+    assert empty["type"] == "terminal.result"
+    assert empty["id"] == "replay-empty"
+    assert empty["ok"] is True
+    assert empty["data"] == {"events": [], "last_seq": last_seq}
+
+
 def test_terminal_websocket_claim_next_can_submit_prompt(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "secret")
     control = ControlPlane()

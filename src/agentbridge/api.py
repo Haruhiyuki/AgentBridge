@@ -3579,6 +3579,25 @@ def handle_terminal_ws_action(
 ) -> dict[str, object]:
     if action == "health":
         return control.health()
+    if action == "replay_events":
+        actor = actor_from_terminal_ws_payload(payload)
+        control.require_session_permission(
+            actor,
+            Permission.SESSION_VIEW,
+            session_id=session_id,
+            attributes={"operation": "terminal_ws_replay_events"},
+        )
+        after_seq = non_negative_ws_int_from_payload(payload, "after_seq", default=0)
+        limit = positive_ws_int_from_payload(payload, "limit", default=100)
+        events = control.repository.list_events(
+            session_id=session_id,
+            after_seq=after_seq,
+            limit=clamp_stream_limit(limit),
+        )
+        return {
+            "events": [event.model_dump(mode="json") for event in events],
+            "last_seq": events[-1].seq if events else after_seq,
+        }
     if action == "start_session":
         actor = actor_from_terminal_ws_payload(payload)
         command_payload = payload.get("command")
@@ -3739,8 +3758,8 @@ def handle_terminal_ws_action(
         ErrorCode.COMMAND_UNKNOWN,
         f"未知 Terminal WebSocket action：{action}",
         next_step=(
-            "请使用 health、start_session、restart_session、acquire_lease、release_lease、"
-            "claim_next_turn、submit_input、snapshot 或 status。"
+            "请使用 health、replay_events、start_session、restart_session、acquire_lease、"
+            "release_lease、claim_next_turn、submit_input、snapshot 或 status。"
         ),
     )
 
@@ -3771,6 +3790,30 @@ def required_ws_str(payload: dict[str, object], key: str) -> str:
             f"缺少必需字段：{key}",
             next_step=f"请在 payload 中提供 {key}。",
         )
+    return value
+
+
+def non_negative_ws_int_from_payload(
+    payload: dict[str, object],
+    key: str,
+    *,
+    default: int,
+) -> int:
+    value = payload.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{key} must be a non-negative integer")
+    return max(value, 0)
+
+
+def positive_ws_int_from_payload(
+    payload: dict[str, object],
+    key: str,
+    *,
+    default: int,
+) -> int:
+    value = payload.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise TypeError(f"{key} must be a positive integer")
     return value
 
 
