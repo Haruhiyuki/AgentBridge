@@ -266,6 +266,54 @@ def test_local_terminal_daemon_claim_next_can_submit_prompt(tmp_path):
     asyncio.run(scenario())
 
 
+def test_local_terminal_daemon_replays_session_events_after_seq(tmp_path):
+    async def scenario():
+        control = ControlPlane()
+        terminal = TerminalAgentService(control, backend=FakeTerminalBackend())
+        session = create_session(control, tmp_path)
+        socket_path = Path(f"/tmp/agentbridge-replay-{uuid4().hex}.sock")
+        server = LocalTerminalAgentServer(
+            control=control,
+            terminal=terminal,
+            auth_token="secret-token",
+            lifecycle_monitor_enabled=False,
+        )
+        await server.start(socket_path)
+        try:
+            client = LocalTerminalAgentClient(socket_path, "secret-token")
+            initial_events = control.repository.list_events(session_id=session.id)
+            assert [event.type for event in initial_events] == ["session.created"]
+            created_seq = initial_events[0].seq
+
+            queued_turn = control.enqueue_turn(
+                actor=Actor(id="usr_1", roles={"maintainer"}),
+                session_id=session.id,
+                prompt="daemon replay queued turn",
+                trace_id="daemon-replay-turn",
+            )
+
+            replay = await client.request(
+                "replay_events",
+                {"session_id": session.id, "after_seq": created_seq, "limit": 10},
+            )
+            assert replay["ok"] is True
+            assert [event["type"] for event in replay["data"]["events"]] == ["turn.queued"]
+            assert replay["data"]["events"][0]["turn_id"] == queued_turn.id
+            last_seq = replay["data"]["last_seq"]
+            assert last_seq == replay["data"]["events"][0]["seq"]
+
+            empty = await client.request(
+                "replay_events",
+                {"session_id": session.id, "after_seq": last_seq},
+            )
+            assert empty["ok"] is True
+            assert empty["data"] == {"events": [], "last_seq": last_seq}
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
 def test_local_terminal_daemon_reloads_token_file(tmp_path):
     async def scenario():
         token_file = tmp_path / "local-token"

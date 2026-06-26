@@ -726,6 +726,25 @@ class LocalTerminalAgentServer:
                     for session_id, status in observed.items()
                 },
             }
+        if action == "replay_events":
+            session_id = required_str(payload, "session_id")
+            self.control.repository.get_session(session_id)
+            after_seq = non_negative_int_from_payload(payload, "after_seq", default=0)
+            limit = bounded_positive_int_from_payload(
+                payload,
+                "limit",
+                default=100,
+                maximum=1000,
+            )
+            events = self.control.repository.list_events(
+                session_id=session_id,
+                after_seq=after_seq,
+                limit=limit,
+            )
+            return {
+                "events": [event.model_dump(mode="json") for event in events],
+                "last_seq": events[-1].seq if events else after_seq,
+            }
         if action == "probe_agent_launch_profiles":
             return {
                 "profiles": self.terminal.probe_agent_launch_versions(
@@ -891,9 +910,9 @@ class LocalTerminalAgentServer:
             f"未知本地 Terminal Agent action：{action}",
             next_step=(
                 "请使用 health、lifecycle_status、run_lifecycle_monitor_once、"
-                "probe_agent_launch_profiles、detect_agent_adapters、start_session、"
-                "restart_session、acquire_human_lease、release_lease、claim_next_turn、"
-                "submit_input、snapshot、status、read_output 或 stream_output。"
+                "replay_events、probe_agent_launch_profiles、detect_agent_adapters、"
+                "start_session、restart_session、acquire_human_lease、release_lease、"
+                "claim_next_turn、submit_input、snapshot、status、read_output 或 stream_output。"
             ),
         )
 
@@ -963,6 +982,34 @@ def required_str(payload: dict[str, Any], key: str) -> str:
             next_step=f"请在 payload 中提供 {key}。",
         )
     return value
+
+
+def non_negative_int_from_payload(payload: dict[str, Any], key: str, *, default: int) -> int:
+    value = payload.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            f"{key} 必须是非负整数。",
+            next_step=f"请在 payload 中提供非负整数 {key}，或省略该字段。",
+        )
+    return max(value, 0)
+
+
+def bounded_positive_int_from_payload(
+    payload: dict[str, Any],
+    key: str,
+    *,
+    default: int,
+    maximum: int,
+) -> int:
+    value = payload.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            f"{key} 必须是正整数。",
+            next_step=f"请在 payload 中提供 1 到 {maximum} 之间的整数 {key}，或省略该字段。",
+        )
+    return min(value, maximum)
 
 
 def actor_from_payload(payload: dict[str, Any]) -> Actor:
