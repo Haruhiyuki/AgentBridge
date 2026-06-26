@@ -547,7 +547,7 @@ Request frames are JSON objects with `id`, `type`, and `payload`. The server rep
 {"id":"start","type":"start_session","payload":{"actor":{"id":"usr_1","roles":["maintainer"]}}}
 ```
 
-Supported actions are `health`, `start_session`, `restart_session`, `acquire_lease`, `release_lease`, `submit_input`, `snapshot`, and `status`. `start_session` accepts an optional `command` override; when omitted, it uses the Session agent launch profile. `submit_input` uses the same writer lease `epoch`, owner type, owner ID, and request-idempotency checks as the REST terminal input endpoint. `status` reports whether the terminal backend has started, whether it is still running, process exit metadata when available, and the current output cursor.
+Supported actions are `health`, `replay_events`, `ack_events`, `flush_event_outbox`, `start_session`, `restart_session`, `acquire_lease`, `release_lease`, `claim_next_turn`, `submit_input`, `snapshot`, and `status`. `start_session` accepts an optional `command` override; when omitted, it uses the Session agent launch profile. `flush_event_outbox` triggers the same Terminal Agent lifecycle event outbox flush exposed through REST/Admin/daemon controls. `submit_input` uses the same writer lease `epoch`, owner type, owner ID, and request-idempotency checks as the REST terminal input endpoint. `status` reports whether the terminal backend has started, whether it is still running, process exit metadata when available, and the current output cursor.
 
 ## Bot Gateway Delivery
 

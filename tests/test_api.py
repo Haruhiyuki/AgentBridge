@@ -7241,6 +7241,67 @@ def test_terminal_websocket_replays_session_events_after_seq(monkeypatch, tmp_pa
     assert empty["data"] == {"events": [], "last_seq": resumed["data"]["last_seq"]}
 
 
+def test_terminal_websocket_flushes_terminal_event_outbox(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "secret")
+    outbox_path = tmp_path / "terminal-ws-event-outbox.jsonl"
+    monkeypatch.setenv("AGENTBRIDGE_TERMINAL_EVENT_OUTBOX", str(outbox_path))
+    control = ControlPlane()
+    app = create_app(control)
+    client = TestClient(app)
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="terminal-ws-event-outbox",
+        prefix="terminal-ws-event-outbox",
+        name="Terminal WS Event Outbox",
+    )
+    session = control.repository.get_session(session_id)
+    app.state.terminal.event_outbox.append(
+        {
+            "event_type": "terminal.started",
+            "source": "terminal_agent",
+            "trace_id": "terminal-ws-queued-started",
+            "project_id": session.project_id,
+            "session_id": session.id,
+            "payload": {
+                "workspace_id": session.workspace_id,
+                "command": "fake-cli",
+                "generation": 1,
+                "agent_type": "claude",
+                "command_source": "explicit",
+            },
+            "idempotency_key": f"terminal-started:{session.id}:1",
+        }
+    )
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/terminal/ws?token=secret"
+    ) as websocket:
+        websocket.send_json(
+            {
+                "id": "flush-outbox",
+                "type": "flush_event_outbox",
+                "payload": {
+                    "actor": actor,
+                    "trace_id": "terminal-ws-event-outbox-flush",
+                },
+            }
+        )
+        flushed = websocket.receive_json()
+
+    assert flushed["type"] == "terminal.result"
+    assert flushed["id"] == "flush-outbox"
+    assert flushed["ok"] is True
+    assert flushed["data"]["flushed"] == 1
+    assert flushed["data"]["event_outbox"]["pending_count"] == 0
+    assert not outbox_path.exists()
+    assert [event.type for event in control.repository.list_events(session_id=session.id)] == [
+        "session.created",
+        "terminal.started",
+    ]
+
+
 def test_terminal_websocket_claim_next_can_submit_prompt(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "secret")
     control = ControlPlane()

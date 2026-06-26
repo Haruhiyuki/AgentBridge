@@ -3678,6 +3678,22 @@ def handle_terminal_ws_action(
             seq=seq,
         )
         return {"offset": offset.model_dump(mode="json")}
+    if action == "flush_event_outbox":
+        actor = actor_from_terminal_ws_payload(payload)
+        control.require_collection_permission(
+            actor,
+            Permission.TERMINAL_CONTROL,
+            resource_type="terminal_lifecycle",
+            attributes={
+                "operation": "terminal_ws_event_outbox_flush",
+                "session_id": session_id,
+            },
+        )
+        flushed = terminal_service.flush_terminal_event_outbox()
+        return {
+            "flushed": flushed,
+            "event_outbox": terminal_service.terminal_event_outbox_status(),
+        }
     if action == "start_session":
         actor = actor_from_terminal_ws_payload(payload)
         command_payload = payload.get("command")
@@ -3854,9 +3870,9 @@ def handle_terminal_ws_action(
         ErrorCode.COMMAND_UNKNOWN,
         f"未知 Terminal WebSocket action：{action}",
         next_step=(
-            "请使用 health、replay_events、ack_events、start_session、restart_session、"
-            "acquire_lease、release_lease、set_offline_protection、claim_next_turn、"
-            "submit_input、snapshot 或 status。"
+            "请使用 health、replay_events、ack_events、flush_event_outbox、"
+            "start_session、restart_session、acquire_lease、release_lease、set_offline_protection、"
+            "claim_next_turn、submit_input、snapshot 或 status。"
         ),
     )
 
