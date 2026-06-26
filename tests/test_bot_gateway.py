@@ -828,6 +828,46 @@ def test_bot_gateway_websocket_includes_plan_action_descriptors(tmp_path):
     assert f"/agent plan revise {interaction.id} <feedback>" in frame["messages"][0]["text"]
 
 
+def test_bot_gateway_websocket_preserves_interaction_ack_frame_type(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    event = control.emit_event(
+        event_type="bot.interaction.ack",
+        source=SemanticEventSource.BOT_GATEWAY,
+        trace_id="bot-ws-ack",
+        session_id=session_id,
+        payload={
+            "platform": "onebot.v11",
+            "bot_instance_id": context.bot_instance_id,
+            "chat_context_id": context.id,
+            "chat_space_id": context.chat_space_id,
+            "actor_id": "onebot:20002",
+            "platform_event_id": "callback-ack-1",
+            "interaction_kind": "action",
+            "canonical_command": "approval.vote",
+        },
+        idempotency_key="onebot:callback-ack-1:bot-interaction-ack",
+    )
+    client = TestClient(create_app(control))
+
+    with client.websocket_connect(
+        "/api/v1/bot-gateway/session-events/ws"
+        f"?session_id={session_id}&chat_context_id={context.id}"
+        "&after_seq=2&idle_timeout_seconds=0"
+    ) as websocket:
+        frame = websocket.receive_json()
+
+    assert frame["type"] == "bot.interaction.ack"
+    assert frame["event_id"] == event.id
+    assert frame["event"]["type"] == "bot.interaction.ack"
+    assert frame["event"]["payload"]["canonical_command"] == "approval.vote"
+    assert frame["document"]["visibility"] == "operators"
+    assert "Bot 交互已确认" in frame["messages"][0]["text"]
+    assert frame["messages"][0]["idempotency_key"] == (
+        f"onebot.v11:{context.id}:{event.id}:0"
+    )
+
+
 def test_bot_gateway_websocket_requires_token_when_configured(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "secret")
     control = ControlPlane()

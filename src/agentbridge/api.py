@@ -2968,7 +2968,7 @@ def bot_gateway_render_frame(
     text_messages: list[str],
 ) -> dict[str, object]:
     return {
-        "type": "bot.render.create",
+        "type": bot_gateway_frame_type(event.type),
         "event_id": event.id,
         "seq": event.seq,
         "session_id": session_id,
@@ -2992,6 +2992,18 @@ def bot_gateway_render_frame(
             for index, text in enumerate(text_messages)
         ],
     }
+
+
+def bot_gateway_frame_type(event_type: str) -> str:
+    if event_type in {
+        "bot.render.create",
+        "bot.render.update",
+        "bot.render.delete",
+        "bot.interaction.ack",
+        "bot.notification",
+    }:
+        return event_type
+    return "bot.render.create"
 
 
 def bot_render_idempotency_key(
