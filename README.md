@@ -1061,3 +1061,22 @@ Set
 optional sha256 digests instead of only checking artifact references. Use
 `docs/operations/MVP_ACCEPTANCE_RUNBOOK.md` to map the automated readiness gate to the
 manual MVP acceptance items from the design document.
+
+## Release Candidate Preflight
+
+Use `agentbridge-release` before handing a build to a user. It checks the local
+source/package handoff boundary rather than a live server: package version consistency,
+required console scripts, required runbooks/templates, product-like configuration
+variables, terminal backend selection, and configured acceptance evidence paths.
+
+```bash
+uv run agentbridge-release --profile local --format actions
+uv run agentbridge-release --profile rc --format actions
+```
+
+`--profile local` reports missing product database/auth/terminal/acceptance settings as
+warnings for developer smoke checks. `--profile rc` treats those gaps as release
+blockers. A first usable handoff should pass both
+`agentbridge-release --profile rc --format actions` and
+`agentbridge-readiness --format actions --fail-on-warn`, then include the verified
+acceptance bundle described in `docs/operations/RELEASE_CANDIDATE.md`.

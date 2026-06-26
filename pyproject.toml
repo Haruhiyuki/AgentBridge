@@ -33,6 +33,7 @@ agentbridge-console = "agentbridge.console_client:run"
 agentbridge-readiness = "agentbridge.readiness_cli:run"
 agentbridge-terminal-agent = "agentbridge.terminal_daemon:run"
 agentbridge-pty-host = "agentbridge.pty_host:run"
+agentbridge-release = "agentbridge.release_cli:run"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -31,17 +31,21 @@ export AGENTBRIDGE_AGENT_CODEX_COMMAND=codex
 Run schema and readiness gates:
 
 ```bash
+uv run agentbridge-release --profile rc --format actions
 uv run alembic upgrade head
 uv run agentbridge-readiness --format actions --fail-on-warn
 curl -H "Authorization: Bearer $AGENTBRIDGE_API_TOKEN" \
   http://127.0.0.1:8000/api/v1/readiness
 ```
 
-`--format actions` prints only failing or degraded checks with the next operator action.
-For acceptance manifest, section, and configured bundle checks, it also prints
-artifact/checklist summary counts when those checks are not passing. Use
-`--fail-on-warn` for release gates and `--fail-on-fail` when warnings are acceptable in a
-staged environment.
+`agentbridge-release` is the local release-candidate preflight; it checks package
+metadata, console scripts, required runbooks/templates, product-like configuration,
+terminal backend settings, and configured acceptance evidence paths before handoff.
+`agentbridge-readiness --format actions` prints only failing or degraded runtime checks
+with the next operator action. For acceptance manifest, section, and configured bundle
+checks, it also prints artifact/checklist summary counts when those checks are not
+passing. Use `--fail-on-warn` for release gates and `--fail-on-fail` when warnings are
+acceptable in a staged environment.
 
 Readiness security checks intentionally distinguish local development from product-like
 deployment. Missing HTTP API, Admin Web, WebSocket, device credential, or client
