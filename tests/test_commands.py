@@ -1286,6 +1286,49 @@ def test_workspace_path_must_stay_under_allowed_root(tmp_path):
     assert exc_info.value.code == ErrorCode.WORKSPACE_PATH_DENIED
 
 
+def test_workspace_symlink_must_resolve_under_allowed_root(tmp_path):
+    control = ControlPlane()
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+    project = control.create_project(actor=maintainer, name="Backend", trace_id="project")
+    allowed_root = tmp_path / "allowed"
+    allowed_target = allowed_root / "real-repo"
+    outside_target = tmp_path / "outside-repo"
+    allowed_target.mkdir(parents=True)
+    outside_target.mkdir()
+    allowed_link = allowed_root / "allowed-link"
+    outside_link = allowed_root / "outside-link"
+    try:
+        allowed_link.symlink_to(allowed_target, target_is_directory=True)
+        outside_link.symlink_to(outside_target, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"filesystem does not support symlinks: {exc}")
+
+    workspace = control.add_workspace(
+        actor=maintainer,
+        project_id=project.id,
+        machine_id="local",
+        path=str(allowed_link),
+        allowed_root=str(allowed_root),
+        trace_id="workspace-symlink-allowed",
+    )
+
+    assert workspace.path == str(allowed_target.resolve())
+
+    with pytest.raises(AgentBridgeError) as exc_info:
+        control.add_workspace(
+            actor=maintainer,
+            project_id=project.id,
+            machine_id="local",
+            path=str(outside_link),
+            allowed_root=str(allowed_root),
+            trace_id="workspace-symlink-denied",
+        )
+
+    assert exc_info.value.code == ErrorCode.WORKSPACE_PATH_DENIED
+    assert exc_info.value.details["path"] == str(outside_target.resolve())
+    assert exc_info.value.details["allowed_root"] == str(allowed_root.resolve())
+
+
 def test_human_lease_preempts_bot_and_old_epoch_is_rejected(tmp_path):
     control = ControlPlane()
     maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
