@@ -50,7 +50,7 @@ from agentbridge.bot_gateway import (
     BotRateLimitPolicy,
     InMemoryBotTransport,
 )
-from agentbridge.commands import CommandService
+from agentbridge.commands import CommandService, command_registry_payload
 from agentbridge.control_plane import ControlPlane
 from agentbridge.device_auth import normalize_certificate_fingerprint, verify_device_key
 from agentbridge.device_certificate_health import (
@@ -1999,19 +1999,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
 
     @app.get("/api/v1/commands")
     def list_commands():
-        return {
-            "commands": [
-                "help",
-                "health",
-                "project list/info/use/create",
-                "session list/new/use/info/close",
-                "ask/send",
-                "control status/takeover/release",
-                "role list/grant/revoke",
-                "policy show/set",
-                "approvals/approval show/approval cancel/approve/deny/answer",
-            ]
-        }
+        return command_registry_payload()
 
     @app.post("/api/v1/bot-gateway/deliver-session-events")
     def deliver_session_events(
@@ -2200,6 +2188,10 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
                 for capability in bot_gateway_service.describe_capabilities(platform)
             ]
         }
+
+    @app.get("/api/v1/bot-gateway/command-registration-manifest")
+    def get_bot_command_registration_manifest(platform: str | None = None):
+        return bot_command_registration_manifest(platform=platform)
 
     @app.get("/api/v1/bot-gateway/rate-limits")
     def list_bot_rate_limits(
@@ -3012,6 +3004,39 @@ def handle_bot_command_registration_result(
         idempotency_key=f"{idempotency_key}:bot.command_registration.result",
     )
     return {"event": event.model_dump(mode="json")}
+
+
+def bot_command_registration_manifest(platform: str | None = None) -> dict[str, object]:
+    registry = command_registry_payload()
+    specs = registry["specs"]
+    native_entries = [
+        {
+            "name": bot_native_command_name(str(spec["name"])),
+            "canonical_command": spec["name"],
+            "summary": spec["summary"],
+            "usage": spec["usage"],
+            "required_permission": spec["required_permission"],
+            "target_mode": spec["target_mode"],
+            "risk": spec["risk"],
+            "argument_schema": spec["argument_schema"],
+        }
+        for spec in specs
+    ]
+    normalized_platform = platform.strip() if platform and platform.strip() else None
+    return {
+        "schema_version": "bot.command_registration_manifest.v1",
+        "platform": normalized_platform,
+        "root_command": registry["root_command"],
+        "aliases": registry["aliases"],
+        "text_prefixes": registry["text_prefixes"],
+        "command_registry_schema_version": registry["schema_version"],
+        "command_specs": specs,
+        "native_entries": native_entries,
+    }
+
+
+def bot_native_command_name(canonical_command: str) -> str:
+    return canonical_command.replace(".", "-").replace("_", "-")
 
 
 def normalized_bot_command_registration_status(status: str) -> str:

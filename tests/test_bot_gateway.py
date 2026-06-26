@@ -624,6 +624,30 @@ def test_bot_gateway_command_registration_results_record_idempotent_events():
     assert len(events) == 1
 
 
+def test_bot_gateway_command_registration_manifest_exposes_registry_specs():
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/v1/bot-gateway/command-registration-manifest",
+        params={"platform": "discord"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema_version"] == "bot.command_registration_manifest.v1"
+    assert payload["platform"] == "discord"
+    assert payload["root_command"] == "agent"
+    assert payload["text_prefixes"] == ["/agent", "/ab"]
+    specs = {item["name"]: item for item in payload["command_specs"]}
+    entries = {item["canonical_command"]: item for item in payload["native_entries"]}
+    assert specs["project.create"]["required_permission"] == "project.manage"
+    assert specs["project.create"]["risk"] == "medium"
+    assert specs["project.create"]["requires_confirmation"] is True
+    assert specs["turn.enqueue"]["argument_schema"]["required"] == ["prompt"]
+    assert entries["project.create"]["name"] == "project-create"
+    assert entries["approval.vote"]["required_permission"] == "approval.vote"
+
+
 def test_bot_gateway_delivery_results_api_tracks_ack_edit_delete(tmp_path):
     control = ControlPlane()
     context, session_id = create_session_with_turn(control, tmp_path)

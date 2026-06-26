@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from copy import deepcopy
 from uuid import uuid4
 
 from agentbridge.control_plane import ControlPlane
@@ -95,6 +96,555 @@ KNOWN_ROOTS = {
 }
 
 ASCII_COMMAND_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_.-]*$")
+
+COMMAND_REGISTRY_SCHEMA_VERSION = "agentbridge.command_registry.v1"
+
+STRING_SCHEMA = {"type": "string", "minLength": 1}
+OPTIONAL_STRING_SCHEMA = {"type": ["string", "null"], "minLength": 1}
+INTEGER_SCHEMA = {"type": "integer"}
+OPTIONAL_INTEGER_SCHEMA = {"type": ["integer", "null"]}
+BOOLEAN_SCHEMA = {"type": "boolean"}
+STRING_ARRAY_SCHEMA = {"type": "array", "items": STRING_SCHEMA}
+
+
+def command_arguments_schema(
+    properties: dict[str, object] | None = None,
+    *,
+    required: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": properties or {},
+        "required": required or [],
+        "additionalProperties": False,
+    }
+
+
+def command_spec(
+    name: str,
+    *,
+    aliases: list[str] | None = None,
+    summary: str,
+    usage: str,
+    argument_schema: dict[str, object] | None = None,
+    required_permission: str | None,
+    target_mode: str,
+    risk: str = RiskLevel.LOW.value,
+    supports_dry_run: bool = False,
+    requires_confirmation: bool = False,
+    private_result_allowed: bool = False,
+    renderer: str = "text",
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "aliases": aliases or [],
+        "summary": summary,
+        "usage": usage,
+        "argument_schema": argument_schema or command_arguments_schema(),
+        "required_permission": required_permission,
+        "target_mode": target_mode,
+        "risk": risk,
+        "supports_dry_run": supports_dry_run,
+        "requires_confirmation": requires_confirmation,
+        "private_result_allowed": private_result_allowed,
+        "renderer": renderer,
+    }
+
+
+COMMAND_SPECS: tuple[dict[str, object], ...] = (
+    command_spec(
+        "help",
+        aliases=["/agent", "/agent help"],
+        summary="Show AgentBridge command help.",
+        usage="/agent help",
+        required_permission=None,
+        target_mode="none",
+    ),
+    command_spec(
+        "health",
+        aliases=["健康"],
+        summary="Report Control Plane health.",
+        usage="/agent health",
+        required_permission=None,
+        target_mode="none",
+    ),
+    command_spec(
+        "context.show",
+        aliases=["context", "上下文"],
+        summary="Show the active Bot chat context pointers.",
+        usage="/agent context",
+        required_permission="project.view",
+        target_mode="none",
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "project.list",
+        aliases=["project", "project list", "项目 列表"],
+        summary="List projects visible to the current chat context.",
+        usage="/agent project list [--all]",
+        argument_schema=command_arguments_schema({"all": BOOLEAN_SCHEMA}),
+        required_permission="project.view",
+        target_mode="project",
+    ),
+    command_spec(
+        "project.info",
+        aliases=["project info"],
+        summary="Show project metadata and quotas.",
+        usage="/agent project info [project]",
+        argument_schema=command_arguments_schema({"project": OPTIONAL_STRING_SCHEMA}),
+        required_permission="project.view",
+        target_mode="project",
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "project.use",
+        aliases=["project use", "项目 使用"],
+        summary="Select the active project for this chat context.",
+        usage="/agent project use <project> [--version <pointer-version>]",
+        argument_schema=command_arguments_schema(
+            {"project": STRING_SCHEMA, "expected_version": OPTIONAL_INTEGER_SCHEMA},
+            required=["project"],
+        ),
+        required_permission="project.view",
+        target_mode="project",
+    ),
+    command_spec(
+        "project.create",
+        aliases=["project create", "项目 创建"],
+        summary="Register a managed project and default workspace.",
+        usage="/agent project create --name <name> --path <path> [--root <root>]",
+        argument_schema=command_arguments_schema(
+            {
+                "name": STRING_SCHEMA,
+                "slug": OPTIONAL_STRING_SCHEMA,
+                "path": OPTIONAL_STRING_SCHEMA,
+                "allowed_root": OPTIONAL_STRING_SCHEMA,
+                "aliases": STRING_ARRAY_SCHEMA,
+                "machine_id": OPTIONAL_STRING_SCHEMA,
+                "max_active_sessions": OPTIONAL_INTEGER_SCHEMA,
+                "max_running_turns": OPTIONAL_INTEGER_SCHEMA,
+                "max_queued_turns": OPTIONAL_INTEGER_SCHEMA,
+                "daily_turns_per_user": OPTIONAL_INTEGER_SCHEMA,
+            },
+            required=["name"],
+        ),
+        required_permission="project.manage",
+        target_mode="project",
+        risk=RiskLevel.MEDIUM.value,
+        supports_dry_run=True,
+        requires_confirmation=True,
+    ),
+    command_spec(
+        "session.list",
+        aliases=["session", "session list", "会话 列表"],
+        summary="List sessions for the active or specified project.",
+        usage="/agent session list [--project <project>]",
+        argument_schema=command_arguments_schema({"project": OPTIONAL_STRING_SCHEMA}),
+        required_permission="session.view",
+        target_mode="project",
+    ),
+    command_spec(
+        "session.create",
+        aliases=["session new", "session create", "会话 新建"],
+        summary="Create a new Agent session in the active project.",
+        usage="/agent session new <name> [--agent claude|codex|generic_tui]",
+        argument_schema=command_arguments_schema(
+            {
+                "name": STRING_SCHEMA,
+                "project": OPTIONAL_STRING_SCHEMA,
+                "workspace_id": OPTIONAL_STRING_SCHEMA,
+                "agent": OPTIONAL_STRING_SCHEMA,
+                "visibility": OPTIONAL_STRING_SCHEMA,
+            }
+        ),
+        required_permission="session.create",
+        target_mode="project",
+        risk=RiskLevel.MEDIUM.value,
+    ),
+    command_spec(
+        "session.use",
+        aliases=["session use", "会话 使用"],
+        summary="Select the active session for this chat context.",
+        usage="/agent session use <session> [--version <pointer-version>]",
+        argument_schema=command_arguments_schema(
+            {"session": STRING_SCHEMA, "expected_version": OPTIONAL_INTEGER_SCHEMA},
+            required=["session"],
+        ),
+        required_permission="session.view",
+        target_mode="session",
+    ),
+    command_spec(
+        "session.info",
+        aliases=["session info"],
+        summary="Show session status and routing metadata.",
+        usage="/agent session info [session]",
+        argument_schema=command_arguments_schema({"session": OPTIONAL_STRING_SCHEMA}),
+        required_permission="session.view",
+        target_mode="session",
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "session.close",
+        aliases=["session close"],
+        summary="Close a managed session.",
+        usage="/agent session close [session]",
+        argument_schema=command_arguments_schema({"session": OPTIONAL_STRING_SCHEMA}),
+        required_permission="session.manage",
+        target_mode="session",
+        risk=RiskLevel.MEDIUM.value,
+        requires_confirmation=True,
+    ),
+    command_spec(
+        "turn.enqueue",
+        aliases=["ask", "send", "continue", "发送", "继续"],
+        summary="Queue work for the target Agent session.",
+        usage="/agent ask <prompt> [--session <session>]",
+        argument_schema=command_arguments_schema(
+            {
+                "prompt": STRING_SCHEMA,
+                "session": OPTIONAL_STRING_SCHEMA,
+                "mode": {"type": "string", "enum": ["ask", "send", "continue"]},
+            },
+            required=["prompt"],
+        ),
+        required_permission="session.send",
+        target_mode="session",
+        risk=RiskLevel.MEDIUM.value,
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "queue.list",
+        aliases=["queue", "queue list"],
+        summary="List queued turns for a session.",
+        usage="/agent queue list [--session <session>]",
+        argument_schema=command_arguments_schema({"session": OPTIONAL_STRING_SCHEMA}),
+        required_permission="session.view",
+        target_mode="session",
+    ),
+    command_spec(
+        "queue.remove",
+        aliases=["queue remove"],
+        summary="Remove one queued turn.",
+        usage="/agent queue remove <turn> [--session <session>] [--version <queue-version>]",
+        argument_schema=command_arguments_schema(
+            {
+                "turn": STRING_SCHEMA,
+                "session": OPTIONAL_STRING_SCHEMA,
+                "expected_queue_version": OPTIONAL_STRING_SCHEMA,
+            },
+            required=["turn"],
+        ),
+        required_permission="session.send",
+        target_mode="session",
+        risk=RiskLevel.MEDIUM.value,
+    ),
+    command_spec(
+        "queue.clear",
+        aliases=["queue clear"],
+        summary="Clear queued turns after confirming the affected count.",
+        usage="/agent queue clear --confirm <count> [--session <session>]",
+        argument_schema=command_arguments_schema(
+            {
+                "session": OPTIONAL_STRING_SCHEMA,
+                "expected_queue_version": OPTIONAL_STRING_SCHEMA,
+                "confirmed_count": OPTIONAL_INTEGER_SCHEMA,
+            }
+        ),
+        required_permission="session.manage",
+        target_mode="session",
+        risk=RiskLevel.HIGH.value,
+        requires_confirmation=True,
+    ),
+    command_spec(
+        "queue.move",
+        aliases=["queue move"],
+        summary="Move one queued turn before another queued turn.",
+        usage="/agent queue move <turn> --before <turn> --version <queue-version>",
+        argument_schema=command_arguments_schema(
+            {
+                "turn": STRING_SCHEMA,
+                "before": STRING_SCHEMA,
+                "session": OPTIONAL_STRING_SCHEMA,
+                "expected_queue_version": STRING_SCHEMA,
+            },
+            required=["turn", "before", "expected_queue_version"],
+        ),
+        required_permission="session.manage",
+        target_mode="session",
+        risk=RiskLevel.MEDIUM.value,
+    ),
+    command_spec(
+        "queue.pause",
+        aliases=["queue pause"],
+        summary="Pause turn dispatch for a session queue.",
+        usage="/agent queue pause --version <queue-version> [--session <session>]",
+        argument_schema=command_arguments_schema(
+            {"session": OPTIONAL_STRING_SCHEMA, "expected_queue_version": STRING_SCHEMA},
+            required=["expected_queue_version"],
+        ),
+        required_permission="session.manage",
+        target_mode="session",
+        risk=RiskLevel.MEDIUM.value,
+    ),
+    command_spec(
+        "queue.resume",
+        aliases=["queue resume"],
+        summary="Resume turn dispatch for a session queue.",
+        usage="/agent queue resume --version <queue-version> [--session <session>]",
+        argument_schema=command_arguments_schema(
+            {"session": OPTIONAL_STRING_SCHEMA, "expected_queue_version": STRING_SCHEMA},
+            required=["expected_queue_version"],
+        ),
+        required_permission="session.manage",
+        target_mode="session",
+        risk=RiskLevel.MEDIUM.value,
+    ),
+    command_spec(
+        "control.status",
+        aliases=["control", "control status", "控制 状态"],
+        summary="Show the current writer lease for a session.",
+        usage="/agent control status [session]",
+        argument_schema=command_arguments_schema({"session": OPTIONAL_STRING_SCHEMA}),
+        required_permission="session.view",
+        target_mode="session",
+    ),
+    command_spec(
+        "control.takeover",
+        aliases=["control takeover", "控制 接管"],
+        summary="Acquire the remote writer lease.",
+        usage="/agent control takeover [session] [--ttl <seconds>]",
+        argument_schema=command_arguments_schema(
+            {"session": OPTIONAL_STRING_SCHEMA, "ttl_seconds": OPTIONAL_INTEGER_SCHEMA}
+        ),
+        required_permission="terminal.control",
+        target_mode="session",
+        risk=RiskLevel.HIGH.value,
+        requires_confirmation=True,
+    ),
+    command_spec(
+        "control.release",
+        aliases=["control release", "控制 释放"],
+        summary="Release the current writer lease by epoch.",
+        usage="/agent control release [session] --epoch <epoch>",
+        argument_schema=command_arguments_schema(
+            {"session": OPTIONAL_STRING_SCHEMA, "epoch": INTEGER_SCHEMA},
+            required=["epoch"],
+        ),
+        required_permission="terminal.control",
+        target_mode="session",
+        risk=RiskLevel.MEDIUM.value,
+    ),
+    command_spec(
+        "role.list",
+        aliases=["role", "role list"],
+        summary="List group role bindings for this chat context.",
+        usage="/agent role list",
+        required_permission="group.role.manage",
+        target_mode="none",
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "role.grant",
+        aliases=["role grant", "角色 授予"],
+        summary="Grant chat-context roles to an actor.",
+        usage="/agent role grant <actor-id> <role>[,<role>...]",
+        argument_schema=command_arguments_schema(
+            {"target_actor_id": STRING_SCHEMA, "roles": STRING_ARRAY_SCHEMA},
+            required=["target_actor_id", "roles"],
+        ),
+        required_permission="group.role.manage",
+        target_mode="none",
+        risk=RiskLevel.HIGH.value,
+        requires_confirmation=True,
+    ),
+    command_spec(
+        "role.revoke",
+        aliases=["role revoke"],
+        summary="Revoke chat-context roles from an actor.",
+        usage="/agent role revoke <actor-id> <role>[,<role>...]",
+        argument_schema=command_arguments_schema(
+            {"target_actor_id": STRING_SCHEMA, "roles": STRING_ARRAY_SCHEMA},
+            required=["target_actor_id", "roles"],
+        ),
+        required_permission="group.role.manage",
+        target_mode="none",
+        risk=RiskLevel.HIGH.value,
+        requires_confirmation=True,
+    ),
+    command_spec(
+        "policy.show",
+        aliases=["policy", "policy show"],
+        summary="Show approval quorum policy for project or chat scope.",
+        usage="/agent policy show [--project <project>]",
+        argument_schema=command_arguments_schema({"project": OPTIONAL_STRING_SCHEMA}),
+        required_permission="policy.manage",
+        target_mode="project",
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "policy.set",
+        aliases=["policy set"],
+        summary="Set approval quorum for a risk level.",
+        usage="/agent policy set <low|medium|high|critical> <quorum> [--project <project>]",
+        argument_schema=command_arguments_schema(
+            {
+                "project": OPTIONAL_STRING_SCHEMA,
+                "risk_level": {
+                    "type": "string",
+                    "enum": [level.value for level in RiskLevel],
+                },
+                "quorum": INTEGER_SCHEMA,
+            },
+            required=["risk_level", "quorum"],
+        ),
+        required_permission="policy.manage",
+        target_mode="project",
+        risk=RiskLevel.HIGH.value,
+        supports_dry_run=True,
+        requires_confirmation=True,
+    ),
+    command_spec(
+        "interaction.list",
+        aliases=["approvals", "approval list", "question list"],
+        summary="List interactions, approvals, questions, or plans.",
+        usage="/agent approvals [--pending]",
+        argument_schema=command_arguments_schema(
+            {
+                "pending": BOOLEAN_SCHEMA,
+                "interaction_type": OPTIONAL_STRING_SCHEMA,
+                "session": OPTIONAL_STRING_SCHEMA,
+            }
+        ),
+        required_permission="session.view",
+        target_mode="interaction",
+    ),
+    command_spec(
+        "interaction.show",
+        aliases=["approval show", "question show", "plan show"],
+        summary="Show one interaction by ID.",
+        usage="/agent approval show <interaction-id>",
+        argument_schema=command_arguments_schema(
+            {"interaction": STRING_SCHEMA, "interaction_type": OPTIONAL_STRING_SCHEMA},
+            required=["interaction"],
+        ),
+        required_permission="session.view",
+        target_mode="interaction",
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "interaction.answer",
+        aliases=["answer", "回答"],
+        summary="Answer a free-text question interaction.",
+        usage="/agent answer <interaction-id> <answer>",
+        argument_schema=command_arguments_schema(
+            {"interaction": STRING_SCHEMA, "answer": STRING_SCHEMA},
+            required=["interaction", "answer"],
+        ),
+        required_permission="session.send",
+        target_mode="interaction",
+        risk=RiskLevel.MEDIUM.value,
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "interaction.cancel",
+        aliases=["approval cancel"],
+        summary="Cancel a pending interaction.",
+        usage="/agent approval cancel <interaction-id> [reason]",
+        argument_schema=command_arguments_schema(
+            {"interaction": STRING_SCHEMA, "reason": OPTIONAL_STRING_SCHEMA},
+            required=["interaction"],
+        ),
+        required_permission="session.manage",
+        target_mode="interaction",
+        risk=RiskLevel.MEDIUM.value,
+        requires_confirmation=True,
+    ),
+    command_spec(
+        "approval.vote",
+        aliases=["approve", "deny", "批准", "拒绝"],
+        summary="Approve or deny an approval interaction.",
+        usage="/agent approve <interaction-id> [once]",
+        argument_schema=command_arguments_schema(
+            {
+                "interaction": STRING_SCHEMA,
+                "approve": BOOLEAN_SCHEMA,
+                "scope": OPTIONAL_STRING_SCHEMA,
+                "reason": OPTIONAL_STRING_SCHEMA,
+            },
+            required=["interaction", "approve"],
+        ),
+        required_permission="approval.vote",
+        target_mode="interaction",
+        risk=RiskLevel.HIGH.value,
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "plan.list",
+        aliases=["plan", "plan list"],
+        summary="List pending plan interactions.",
+        usage="/agent plan list [--session <session>]",
+        argument_schema=command_arguments_schema(
+            {"pending": BOOLEAN_SCHEMA, "session": OPTIONAL_STRING_SCHEMA}
+        ),
+        required_permission="session.view",
+        target_mode="interaction",
+    ),
+    command_spec(
+        "plan.approve",
+        aliases=["plan approve"],
+        summary="Approve a proposed plan.",
+        usage="/agent plan approve <interaction-id>",
+        argument_schema=command_arguments_schema(
+            {"interaction": STRING_SCHEMA},
+            required=["interaction"],
+        ),
+        required_permission="session.send",
+        target_mode="interaction",
+        risk=RiskLevel.MEDIUM.value,
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "plan.revise",
+        aliases=["plan revise"],
+        summary="Request changes to a proposed plan.",
+        usage="/agent plan revise <interaction-id> <feedback>",
+        argument_schema=command_arguments_schema(
+            {"interaction": STRING_SCHEMA, "feedback": STRING_SCHEMA},
+            required=["interaction", "feedback"],
+        ),
+        required_permission="session.send",
+        target_mode="interaction",
+        risk=RiskLevel.MEDIUM.value,
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "plan.cancel",
+        aliases=["plan cancel", "plan deny"],
+        summary="Cancel a proposed plan interaction.",
+        usage="/agent plan cancel <interaction-id> [reason]",
+        argument_schema=command_arguments_schema(
+            {"interaction": STRING_SCHEMA, "reason": OPTIONAL_STRING_SCHEMA},
+            required=["interaction"],
+        ),
+        required_permission="session.manage",
+        target_mode="interaction",
+        risk=RiskLevel.MEDIUM.value,
+        requires_confirmation=True,
+        private_result_allowed=True,
+    ),
+)
+
+
+def command_registry_payload() -> dict[str, object]:
+    specs = [deepcopy(spec) for spec in COMMAND_SPECS]
+    return {
+        "schema_version": COMMAND_REGISTRY_SCHEMA_VERSION,
+        "root_command": "agent",
+        "aliases": ["ab"],
+        "text_prefixes": ["/agent", "/ab"],
+        "commands": [str(spec["name"]) for spec in specs],
+        "specs": specs,
+    }
 
 
 class CommandService:

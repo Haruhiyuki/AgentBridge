@@ -661,10 +661,17 @@ Adapters that register native slash commands or command menus can report platfor
 registration results as immutable Bot Gateway semantic events:
 
 ```bash
+curl 'http://127.0.0.1:8000/api/v1/bot-gateway/command-registration-manifest?platform=discord'
+
 curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/command-registration-results \
   -H 'content-type: application/json' \
   -d '{"platform":"discord","scope":"guild","channel_id":"guild-1","registration_id":"commands-v3","status":"succeeded","commands":[{"name":"agent"}]}'
 ```
+
+The manifest is generated from the same structured command registry returned by
+`GET /api/v1/commands`, including canonical command names, aliases, summaries,
+argument JSON Schemas, required permissions, target modes, risk levels, and
+text fallback usage strings.
 
 The OneBot endpoint also accepts action callback payloads that contain a rendered action
 descriptor command, including nested `data.payload.command` or `payload.command` shapes:

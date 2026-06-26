@@ -27,6 +27,23 @@ from agentbridge.domain import (
 from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService
 
 
+def test_commands_api_exposes_structured_command_registry():
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/commands")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema_version"] == "agentbridge.command_registry.v1"
+    assert payload["root_command"] == "agent"
+    assert "help" in payload["commands"]
+    assert "project.create" in payload["commands"]
+    specs = {item["name"]: item for item in payload["specs"]}
+    assert specs["project.create"]["argument_schema"]["required"] == ["name"]
+    assert specs["project.create"]["required_permission"] == "project.manage"
+    assert specs["approval.vote"]["target_mode"] == "interaction"
+
+
 def _create_session_with_project(
     client,
     tmp_path,
@@ -4451,6 +4468,10 @@ def test_managed_device_identity_requires_bot_gateway_read_scope_for_bot_gateway
         "/api/v1/bot-gateway/capabilities",
         headers=key_headers,
     )
+    manifest_response = client.get(
+        "/api/v1/bot-gateway/command-registration-manifest",
+        headers=key_headers,
+    )
     retry_worker_response = client.get(
         "/api/v1/bot-gateway/retry-worker",
         headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
@@ -4461,6 +4482,7 @@ def test_managed_device_identity_requires_bot_gateway_read_scope_for_bot_gateway
     assert deliveries_response.status_code == 403
     assert rate_limits_response.status_code == 403
     assert capabilities_response.status_code == 403
+    assert manifest_response.status_code == 403
     assert retry_worker_response.status_code == 403
 
 
@@ -4494,6 +4516,10 @@ def test_managed_device_identity_bot_gateway_read_scope_allows_bot_gateway_gets(
         "/api/v1/bot-gateway/capabilities",
         headers=headers,
     )
+    manifest_response = client.get(
+        "/api/v1/bot-gateway/command-registration-manifest",
+        headers=headers,
+    )
     retry_worker_response = client.get(
         "/api/v1/bot-gateway/retry-worker",
         headers=headers,
@@ -4511,6 +4537,10 @@ def test_managed_device_identity_bot_gateway_read_scope_allows_bot_gateway_gets(
     assert "policies" in rate_limits_response.json()
     assert capabilities_response.status_code == 200
     assert "capabilities" in capabilities_response.json()
+    assert manifest_response.status_code == 200
+    assert manifest_response.json()["schema_version"] == (
+        "bot.command_registration_manifest.v1"
+    )
     assert retry_worker_response.status_code == 200
     assert retry_worker_response.json()["enabled"] is False
     assert run_once_response.status_code == 403
