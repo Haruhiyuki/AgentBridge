@@ -516,6 +516,10 @@ def test_admin_home_and_terminal_lifecycle_ui_routes():
     system_html = system_response.text
     assert "AgentBridge System Health" in system_html
     assert "/api/v1/health" in system_html
+    assert "/api/v1/readiness" in system_html
+    assert 'id="readiness-status"' in system_html
+    assert 'id="readiness-warnings"' in system_html
+    assert 'id="readiness-failures"' in system_html
     assert "/api/v1/terminal/lifecycle-monitor" in system_html
     assert "/api/v1/bot-gateway/retry-worker" in system_html
     assert "/api/v1/device-identities/certificates/scan-worker" in system_html

@@ -926,7 +926,9 @@ audit/event explorer, access policy editor, system health dashboard, terminal li
 dashboard, device identity dashboard, and Bot delivery operations dashboard. The system
 health page summarizes `/api/v1/health`, terminal lifecycle monitor status, Bot retry
 worker status, Bot platform capabilities, Bot rate-limit policies, and managed-device
-endpoint reachability. The
+endpoint reachability, plus the `/api/v1/readiness` MVP acceptance summary with
+pass/warn/fail counts across Control Plane, Terminal, Adapter, Bot, and security
+workers. The
 project/session page lists projects, adds workspaces, creates sessions, closes selected
 sessions, and surfaces active Turn, queue, pending approval, and lease status through
 the same REST APIs used by external clients. The interaction
@@ -995,6 +997,10 @@ Before forwarding input, the console requests a `human` writer lease and sends i
 
 ```bash
 curl http://127.0.0.1:8000/api/v1/health
+curl http://127.0.0.1:8000/api/v1/readiness
 ```
 
 The app uses in-memory storage by default, so data is reset when the process exits.
+`/api/v1/health` is intentionally minimal and unauthenticated; `/api/v1/readiness` is a
+protected operational report when API/device gates are configured and requires
+`terminal_read` for managed device credentials.

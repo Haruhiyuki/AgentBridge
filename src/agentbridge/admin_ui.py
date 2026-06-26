@@ -300,6 +300,13 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       </div>
       <div class="metrics">
         <div class="metric"><span>Health</span><strong id="health-status">-</strong></div>
+        <div class="metric"><span>Readiness</span><strong id="readiness-status">-</strong></div>
+        <div class="metric">
+          <span>Readiness Warnings</span><strong id="readiness-warnings">-</strong>
+        </div>
+        <div class="metric">
+          <span>Readiness Failures</span><strong id="readiness-failures">-</strong>
+        </div>
         <div class="metric"><span>Storage</span><strong id="storage">-</strong></div>
         <div class="metric"><span>Projects</span><strong id="projects">-</strong></div>
         <div class="metric"><span>Sessions</span><strong id="sessions">-</strong></div>
@@ -332,6 +339,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
     const $ = (id) => document.getElementById(id);
     const checks = [
       ["Control Health", "/api/v1/health"],
+      ["Readiness", "/api/v1/readiness"],
       ["Terminal Lifecycle", "/api/v1/terminal/lifecycle-monitor"],
       ["Bot Retry Worker", "/api/v1/bot-gateway/retry-worker"],
       ["Certificate Scan Worker", "/api/v1/device-identities/certificates/scan-worker"],
@@ -382,6 +390,7 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
     function renderMetrics(results) {
       const byName = Object.fromEntries(results.map((result) => [result.name, result]));
       const health = byName["Control Health"]?.data || {};
+      const readiness = byName["Readiness"]?.data || {};
       const lifecycle = byName["Terminal Lifecycle"]?.data || {};
       const worker = byName["Bot Retry Worker"]?.data || {};
       const certificateWorker = byName["Certificate Scan Worker"]?.data || {};
@@ -389,7 +398,11 @@ SYSTEM_HEALTH_ADMIN_HTML = """<!doctype html>
       const rateLimits = byName["Bot Rate Limits"]?.data || {};
       const platforms = botCapabilities.capabilities || [];
       const policies = rateLimits.policies || [];
+      const readinessCounts = readiness.summary?.counts || {};
       setText("health-status", health.status);
+      setText("readiness-status", readiness.status);
+      setText("readiness-warnings", readinessCounts.warn);
+      setText("readiness-failures", readinessCounts.fail);
       setText("storage", health.storage);
       setText("projects", health.projects);
       setText("sessions", health.sessions);

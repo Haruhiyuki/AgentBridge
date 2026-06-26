@@ -136,6 +136,38 @@ def test_health_endpoint_reports_memory_storage():
     assert response.json()["storage"] == "memory"
 
 
+def test_readiness_endpoint_reports_mvp_operational_checks(monkeypatch):
+    monkeypatch.delenv("AGENTBRIDGE_API_TOKEN", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_DEVICE_KEYS", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_DATABASE_URL", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_TERMINAL_EVENT_OUTBOX", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_BOT_RETRY_WORKER_ENABLED", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_DEVICE_CERT_SCAN_WORKER_ENABLED", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_AGENT_CLAUDE_HANDSHAKE_COMMAND", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_AGENT_CODEX_HANDSHAKE_COMMAND", raising=False)
+    client = TestClient(create_app())
+
+    response = client.get("/api/v1/readiness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    assert payload["schema_version"] == "agentbridge.readiness.v1"
+    assert payload["status"] == "degraded"
+    assert payload["summary"]["total"] == len(payload["checks"])
+    assert payload["summary"]["counts"]["fail"] == 0
+    assert payload["summary"]["counts"]["warn"] > 0
+    assert checks["control_plane.health"]["status"] == "pass"
+    assert checks["control_plane.persistence"]["status"] == "warn"
+    assert checks["terminal.event_outbox"]["status"] == "warn"
+    assert checks["adapter.handshake_command.claude"]["status"] == "warn"
+    assert checks["adapter.handshake_command.codex"]["status"] == "warn"
+    assert checks["bot.onebot_v11_capability"]["status"] == "pass"
+    assert "terminal_lifecycle" in payload["sources"]
+
+
 def test_api_token_gate_protects_rest_api_when_configured(monkeypatch):
     monkeypatch.setenv("AGENTBRIDGE_API_TOKEN", "api-secret")
     client = TestClient(create_app())
@@ -7811,6 +7843,10 @@ def test_managed_device_identity_requires_terminal_read_scope_for_terminal_http_
         "x-agentbridge-device-key": "managed-secret",
     }
     regular_http_response = client.get("/api/v1/commands", headers=key_headers)
+    readiness_response = client.get(
+        "/api/v1/readiness",
+        headers=key_headers,
+    )
     lifecycle_status_response = client.get(
         "/api/v1/terminal/lifecycle-monitor",
         headers=key_headers,
@@ -7827,6 +7863,7 @@ def test_managed_device_identity_requires_terminal_read_scope_for_terminal_http_
     assert create_response.status_code == 200
     assert start_response.status_code == 200
     assert regular_http_response.status_code == 200
+    assert readiness_response.status_code == 403
     assert lifecycle_status_response.status_code == 403
     assert snapshot_response.status_code == 403
     assert status_response.status_code == 403
@@ -7868,6 +7905,10 @@ def test_managed_device_identity_terminal_read_scope_allows_terminal_http_reads(
         "x-agentbridge-device-id": "terminal-read-device",
         "x-agentbridge-device-key": "managed-secret",
     }
+    readiness_response = client.get(
+        "/api/v1/readiness",
+        headers=headers,
+    )
     lifecycle_status_response = client.get(
         "/api/v1/terminal/lifecycle-monitor",
         headers=headers,
@@ -7883,6 +7924,8 @@ def test_managed_device_identity_terminal_read_scope_allows_terminal_http_reads(
 
     assert create_response.status_code == 200
     assert start_response.status_code == 200
+    assert readiness_response.status_code == 200
+    assert readiness_response.json()["schema_version"] == "agentbridge.readiness.v1"
     assert lifecycle_status_response.status_code == 200
     assert snapshot_response.status_code == 200
     assert snapshot_response.json() == {"snapshot": ""}

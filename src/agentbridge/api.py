@@ -666,6 +666,319 @@ class AccessPolicySimulationRequest(BaseModel):
     chat_context_id: str | None = None
 
 
+READINESS_SCHEMA_VERSION = "agentbridge.readiness.v1"
+READINESS_STATUS_ORDER = {"pass": 0, "warn": 1, "fail": 2}
+
+
+def build_readiness_report(
+    *,
+    control: ControlPlane,
+    terminal_service: TerminalAgentService,
+    bot_gateway_service: BotGatewayService,
+    retry_worker: BotDeliveryRetryWorker,
+    certificate_scan_worker: DeviceCertificateScanWorker,
+) -> dict[str, object]:
+    checks: list[dict[str, object]] = []
+    health = control.health()
+    checks.append(
+        readiness_check(
+            "control_plane.health",
+            "control_plane",
+            "pass" if health.get("status") == "ok" else "fail",
+            "Control Plane API is responding.",
+            evidence=health,
+            next_step="Investigate Control Plane startup, repository, or process health.",
+        )
+    )
+    checks.append(
+        readiness_check(
+            "control_plane.persistence",
+            "control_plane",
+            "warn" if health.get("storage") == "memory" else "pass",
+            "Control Plane persistence backend is configured.",
+            evidence={"storage": health.get("storage")},
+            next_step=(
+                "Configure AGENTBRIDGE_DATABASE_URL and run Alembic migrations before "
+                "a product-like deployment."
+            ),
+        )
+    )
+    checks.extend(readiness_inventory_checks(health))
+
+    lifecycle = terminal_service.lifecycle_monitor_status()
+    checks.append(
+        readiness_check(
+            "terminal.lifecycle_monitor",
+            "terminal",
+            "pass" if lifecycle.get("running") else "warn",
+            "Terminal lifecycle monitor is available.",
+            evidence={
+                "running": lifecycle.get("running"),
+                "tracked_sessions": lifecycle.get("tracked_sessions"),
+                "last_error": lifecycle.get("last_error"),
+            },
+            next_step=(
+                "Enable AGENTBRIDGE_TERMINAL_LIFECYCLE_MONITOR_ENABLED or run the "
+                "local Terminal Agent daemon for automatic lifecycle observation."
+            ),
+        )
+    )
+    checks.append(readiness_event_outbox_check(lifecycle.get("event_outbox")))
+    checks.extend(readiness_launch_profile_checks(lifecycle.get("agent_launch_profiles")))
+    checks.extend(readiness_adapter_handshake_checks(terminal_service))
+
+    capabilities = [
+        capability.to_api_dict()
+        for capability in bot_gateway_service.describe_capabilities()
+    ]
+    checks.append(readiness_bot_capability_check(capabilities))
+
+    retry_status = retry_worker.status()
+    checks.append(
+        readiness_worker_check(
+            "bot.retry_worker",
+            "bot_gateway",
+            retry_status,
+            disabled_next_step=(
+                "Enable AGENTBRIDGE_BOT_RETRY_WORKER_ENABLED for automatic Bot "
+                "delivery recovery."
+            ),
+        )
+    )
+    certificate_worker_status = certificate_scan_worker.status()
+    checks.append(
+        readiness_worker_check(
+            "device_identity.certificate_scan_worker",
+            "security",
+            certificate_worker_status,
+            disabled_next_step=(
+                "Enable AGENTBRIDGE_DEVICE_CERT_SCAN_WORKER_ENABLED for periodic "
+                "managed-device certificate health notifications."
+            ),
+        )
+    )
+
+    status = readiness_overall_status(checks)
+    return {
+        "schema_version": READINESS_SCHEMA_VERSION,
+        "status": status,
+        "checked_at": utc_now().isoformat(),
+        "summary": readiness_summary(checks),
+        "checks": checks,
+        "sources": {
+            "health": health,
+            "terminal_lifecycle": lifecycle,
+            "bot_capabilities": capabilities,
+            "bot_retry_worker": retry_status,
+            "certificate_scan_worker": certificate_worker_status,
+        },
+    }
+
+
+def readiness_inventory_checks(health: dict[str, object]) -> list[dict[str, object]]:
+    projects = int(health.get("projects") or 0)
+    sessions = int(health.get("sessions") or 0)
+    return [
+        readiness_check(
+            "control_plane.project_inventory",
+            "control_plane",
+            "pass" if projects > 0 else "warn",
+            "At least one managed Project exists.",
+            evidence={"projects": projects},
+            next_step="Create and bind a Project before running product acceptance flows.",
+        ),
+        readiness_check(
+            "control_plane.session_inventory",
+            "control_plane",
+            "pass" if sessions > 0 else "warn",
+            "At least one managed Session exists.",
+            evidence={"sessions": sessions},
+            next_step="Create a Session and start its terminal before end-to-end acceptance.",
+        ),
+    ]
+
+
+def readiness_event_outbox_check(value: object) -> dict[str, object]:
+    event_outbox = value if isinstance(value, dict) else {}
+    status = "pass"
+    pending_count = int(event_outbox.get("pending_count") or 0)
+    if event_outbox.get("read_error") or event_outbox.get("last_flush_error"):
+        status = "fail"
+    elif not event_outbox.get("enabled") or pending_count > 0:
+        status = "warn"
+    return readiness_check(
+        "terminal.event_outbox",
+        "terminal",
+        status,
+        "Terminal lifecycle event outbox is healthy.",
+        evidence=event_outbox,
+        next_step=(
+            "Configure AGENTBRIDGE_TERMINAL_EVENT_OUTBOX and flush pending lifecycle "
+            "events after reconnect."
+        ),
+    )
+
+
+def readiness_launch_profile_checks(value: object) -> list[dict[str, object]]:
+    profiles = value if isinstance(value, dict) else {}
+    checks: list[dict[str, object]] = []
+    for agent_type in (AgentType.CLAUDE, AgentType.CODEX, AgentType.GENERIC_TUI):
+        profile = profiles.get(agent_type.value)
+        profile_payload = profile if isinstance(profile, dict) else {}
+        available = bool(profile_payload.get("available"))
+        checks.append(
+            readiness_check(
+                f"terminal.launch_profile.{agent_type.value}",
+                "terminal",
+                "pass" if available else "warn",
+                f"{agent_type.value} launch profile executable is resolvable.",
+                evidence=profile_payload,
+                next_step=(
+                    "Install the agent CLI or configure AGENTBRIDGE_AGENT_*_COMMAND "
+                    "for this launch profile."
+                ),
+            )
+        )
+    return checks
+
+
+def readiness_adapter_handshake_checks(
+    terminal_service: TerminalAgentService,
+) -> list[dict[str, object]]:
+    checks: list[dict[str, object]] = []
+    for agent_type in (AgentType.CLAUDE, AgentType.CODEX):
+        command, source = terminal_service.agent_launch_config.handshake_command_for(
+            agent_type
+        )
+        checks.append(
+            readiness_check(
+                f"adapter.handshake_command.{agent_type.value}",
+                "adapter",
+                "pass" if command else "warn",
+                f"{agent_type.value} structured adapter handshake command is configured.",
+                evidence={
+                    "configured": bool(command),
+                    "source": source,
+                },
+                next_step=(
+                    "Configure AGENTBRIDGE_AGENT_*_HANDSHAKE_COMMAND so adapter "
+                    "capability detection can open the schema gate."
+                ),
+            )
+        )
+    return checks
+
+
+def readiness_bot_capability_check(
+    capabilities: list[dict[str, object]],
+) -> dict[str, object]:
+    onebot = next(
+        (
+            capability
+            for capability in capabilities
+            if capability.get("platform") == BotPlatform.ONEBOT_V11.value
+        ),
+        None,
+    )
+    expected = {
+        "codeBlock": True,
+        "deleteMessage": True,
+        "reply": True,
+    }
+    status = "fail"
+    if onebot is not None:
+        status = (
+            "pass"
+            if all(onebot.get(key) == value for key, value in expected.items())
+            else "warn"
+        )
+    return readiness_check(
+        "bot.onebot_v11_capability",
+        "bot_gateway",
+        status,
+        "OneBot V11 fallback capability contract is available.",
+        evidence=onebot or {"platform": BotPlatform.ONEBOT_V11.value, "available": False},
+        next_step=(
+            "Keep OneBot V11 text fallback, reply handling, and deletion support "
+            "available for MVP Bot acceptance."
+        ),
+    )
+
+
+def readiness_worker_check(
+    check_id: str,
+    category: str,
+    status_payload: dict[str, object],
+    *,
+    disabled_next_step: str,
+) -> dict[str, object]:
+    status = "pass"
+    if status_payload.get("last_error"):
+        status = "fail"
+    elif not status_payload.get("enabled") or (
+        status_payload.get("enabled") and not status_payload.get("running")
+    ):
+        status = "warn"
+    return readiness_check(
+        check_id,
+        category,
+        status,
+        "Background worker is configured and healthy.",
+        evidence=status_payload,
+        next_step=disabled_next_step,
+    )
+
+
+def readiness_check(
+    check_id: str,
+    category: str,
+    status: str,
+    summary: str,
+    *,
+    evidence: dict[str, object] | None = None,
+    next_step: str | None = None,
+) -> dict[str, object]:
+    return {
+        "id": check_id,
+        "category": category,
+        "status": status,
+        "summary": summary,
+        "evidence": evidence or {},
+        "next_step": next_step,
+    }
+
+
+def readiness_overall_status(checks: list[dict[str, object]]) -> str:
+    worst = max(
+        (READINESS_STATUS_ORDER.get(str(check.get("status")), 2) for check in checks),
+        default=2,
+    )
+    if worst >= READINESS_STATUS_ORDER["fail"]:
+        return "not_ready"
+    if worst >= READINESS_STATUS_ORDER["warn"]:
+        return "degraded"
+    return "ready"
+
+
+def readiness_summary(checks: list[dict[str, object]]) -> dict[str, object]:
+    counts = {"pass": 0, "warn": 0, "fail": 0}
+    by_category: dict[str, dict[str, int]] = {}
+    for check in checks:
+        status = str(check.get("status"))
+        category = str(check.get("category"))
+        counts[status] = counts.get(status, 0) + 1
+        category_counts = by_category.setdefault(
+            category,
+            {"pass": 0, "warn": 0, "fail": 0},
+        )
+        category_counts[status] = category_counts.get(status, 0) + 1
+    return {
+        "total": len(checks),
+        "counts": counts,
+        "by_category": by_category,
+    }
+
+
 def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     control = control_plane or ControlPlane(
         repository=create_repository_from_env(),
@@ -796,6 +1109,24 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     @app.get("/api/v1/health")
     def health(control: ControlPlane = Depends(get_control)):
         return control.health()
+
+    @app.get("/api/v1/readiness")
+    def readiness(
+        control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
+        bot_gateway_service: BotGatewayService = Depends(get_bot_gateway),
+        retry_worker: BotDeliveryRetryWorker = Depends(get_bot_retry_worker),
+        certificate_scan_worker: DeviceCertificateScanWorker = Depends(
+            get_certificate_scan_worker
+        ),
+    ):
+        return build_readiness_report(
+            control=control,
+            terminal_service=terminal_service,
+            bot_gateway_service=bot_gateway_service,
+            retry_worker=retry_worker,
+            certificate_scan_worker=certificate_scan_worker,
+        )
 
     @app.post("/api/v1/chat-contexts")
     def create_chat_context(
@@ -4390,7 +4721,7 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         and path_segments[5] in {"events", "rendered-events"}
     ):
         return DeviceIdentityScope.AUDIT_READ
-    if path == "/api/v1/terminal/lifecycle-monitor":
+    if path in {"/api/v1/readiness", "/api/v1/terminal/lifecycle-monitor"}:
         return DeviceIdentityScope.TERMINAL_READ
     if (
         len(path_segments) >= 7
