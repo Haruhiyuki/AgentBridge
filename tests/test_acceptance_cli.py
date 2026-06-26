@@ -44,6 +44,45 @@ def append_unknown_checklist_item(manifest, section: str = "34.1") -> None:
     )
 
 
+def create_complete_acceptance_bundle(tmp_path):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "artifacts"
+    bundle_path = tmp_path / "acceptance-bundle.zip"
+    assert main(["init", str(manifest), "--checked-at", "2026-06-27T00:00:00Z"]) == 0
+    for section in ACCEPTANCE_TEST_SECTIONS:
+        source = tmp_path / f"{section}.json"
+        source.write_text(f'{{"section":"{section}"}}', encoding="utf-8")
+        assert (
+            main(
+                [
+                    "attach-artifact",
+                    str(manifest),
+                    section,
+                    str(source),
+                    "--artifact-root",
+                    str(artifact_root),
+                    "--status",
+                    "passed",
+                ]
+            )
+            == 0
+        )
+        mark_section_checklist_passed(manifest, section)
+    assert (
+        main(
+            [
+                "bundle",
+                str(manifest),
+                str(bundle_path),
+                "--artifact-root",
+                str(artifact_root),
+            ]
+        )
+        == 0
+    )
+    return manifest, artifact_root, bundle_path
+
+
 def test_acceptance_cli_init_creates_manifest(tmp_path, capsys):
     manifest = tmp_path / "acceptance-evidence.json"
 
@@ -902,6 +941,97 @@ def test_acceptance_cli_verify_bundle_rejects_unknown_manifest_section(tmp_path,
     assert result == ACCEPTANCE_EXIT_INVALID
     assert "valid=false ready=false artifacts=8 errors=1" in output
     assert "error=manifest_sections_unknown:34.9" in output
+
+
+def test_acceptance_cli_verify_bundle_rejects_duplicate_artifact_path(tmp_path, capsys):
+    _manifest, _artifact_root, bundle_path = create_complete_acceptance_bundle(tmp_path)
+    tampered_bundle_path = tmp_path / "acceptance-bundle-duplicate-path.zip"
+    capsys.readouterr()
+    with (
+        zipfile.ZipFile(bundle_path) as source_bundle,
+        zipfile.ZipFile(
+            tampered_bundle_path,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as target_bundle,
+    ):
+        bundle_index = json.loads(source_bundle.read("acceptance-bundle.json"))
+        native_artifact = next(
+            artifact
+            for artifact in bundle_index["artifacts"]
+            if artifact["section"] == "34.1"
+        )
+        duplicate_artifact = {
+            **native_artifact,
+            "archive_path": "artifacts/native_session/34.1-copy.json",
+        }
+        bundle_index["artifacts"].append(duplicate_artifact)
+        tampered_index_bytes = (
+            json.dumps(bundle_index, ensure_ascii=False, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        for entry in source_bundle.infolist():
+            entry_bytes = (
+                tampered_index_bytes
+                if entry.filename == "acceptance-bundle.json"
+                else source_bundle.read(entry.filename)
+            )
+            target_bundle.writestr(entry.filename, entry_bytes)
+        target_bundle.writestr(
+            duplicate_artifact["archive_path"],
+            source_bundle.read(native_artifact["archive_path"]),
+        )
+
+    result = main(["verify-bundle", str(tampered_bundle_path)])
+    output = capsys.readouterr().out
+
+    assert result == ACCEPTANCE_EXIT_INVALID
+    assert "valid=false ready=false artifacts=8 errors=1" in output
+    assert "error=artifact[8]_path_duplicate" in output
+
+
+def test_acceptance_cli_verify_bundle_rejects_duplicate_artifact_archive_path(
+    tmp_path,
+    capsys,
+):
+    _manifest, _artifact_root, bundle_path = create_complete_acceptance_bundle(tmp_path)
+    tampered_bundle_path = tmp_path / "acceptance-bundle-duplicate-archive-path.zip"
+    capsys.readouterr()
+    with (
+        zipfile.ZipFile(bundle_path) as source_bundle,
+        zipfile.ZipFile(
+            tampered_bundle_path,
+            "w",
+            compression=zipfile.ZIP_DEFLATED,
+        ) as target_bundle,
+    ):
+        bundle_index = json.loads(source_bundle.read("acceptance-bundle.json"))
+        native_artifact = next(
+            artifact
+            for artifact in bundle_index["artifacts"]
+            if artifact["section"] == "34.1"
+        )
+        duplicate_artifact = {
+            **native_artifact,
+            "path": "native_session/34.1-copy.json",
+        }
+        bundle_index["artifacts"].append(duplicate_artifact)
+        tampered_index_bytes = (
+            json.dumps(bundle_index, ensure_ascii=False, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        for entry in source_bundle.infolist():
+            entry_bytes = (
+                tampered_index_bytes
+                if entry.filename == "acceptance-bundle.json"
+                else source_bundle.read(entry.filename)
+            )
+            target_bundle.writestr(entry.filename, entry_bytes)
+
+    result = main(["verify-bundle", str(tampered_bundle_path)])
+    output = capsys.readouterr().out
+
+    assert result == ACCEPTANCE_EXIT_INVALID
+    assert "valid=false ready=false artifacts=8 errors=1" in output
+    assert "error=artifact[8]_archive_path_duplicate" in output
 
 
 def test_acceptance_cli_bundle_refuses_incomplete_evidence_by_default(tmp_path, capsys):

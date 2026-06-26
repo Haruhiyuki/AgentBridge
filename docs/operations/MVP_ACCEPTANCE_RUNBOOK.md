@@ -85,8 +85,9 @@ After all sections are signed off,
 artifact files into a portable ZIP for release review without embedding the local
 artifact root path; `agentbridge-acceptance verify-bundle` validates the ZIP offline
 without extracting it, rejects ZIP entries not declared in the bundle index, checks
-indexed artifact section ownership against the bundled manifest, and fails bundle index
-summary counts that do not match the bundled manifest. Readiness warns when
+indexed artifact section ownership against the bundled manifest, requires unique indexed
+artifact paths and archive paths, and fails bundle index summary counts that do not
+match the bundled manifest. Readiness warns when
 `AGENTBRIDGE_ACCEPTANCE_BUNDLE_FILE` is unset, fails invalid bundles, warns for verified
 draft bundles, fails bundles built from a different configured manifest hash, and passes
 only when the configured bundle validates with `ready=true` and matches

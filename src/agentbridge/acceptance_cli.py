@@ -1256,6 +1256,8 @@ def verify_acceptance_bundle_artifacts(
     errors: list[str],
 ) -> dict[str, dict[str, str]]:
     artifact_index: dict[str, dict[str, str]] = {}
+    seen_paths: set[str] = set()
+    seen_archive_paths: set[str] = set()
     for index, raw_artifact in enumerate(artifact_entries):
         if not isinstance(raw_artifact, dict):
             errors.append(f"artifact[{index}]_must_be_object")
@@ -1281,6 +1283,19 @@ def verify_acceptance_bundle_artifacts(
             continue
         if not isinstance(raw_sha256, str) or not raw_sha256.strip():
             errors.append(f"artifact[{index}]_sha256_missing")
+            continue
+        duplicate = False
+        if raw_path in seen_paths:
+            errors.append(f"artifact[{index}]_path_duplicate")
+            duplicate = True
+        else:
+            seen_paths.add(raw_path)
+        if raw_archive_path in seen_archive_paths:
+            errors.append(f"artifact[{index}]_archive_path_duplicate")
+            duplicate = True
+        else:
+            seen_archive_paths.add(raw_archive_path)
+        if duplicate:
             continue
         try:
             artifact_bytes = archive.read(raw_archive_path)
