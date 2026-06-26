@@ -28,7 +28,13 @@ from agentbridge.terminal_agent import FakeTerminalBackend, TerminalAgentService
 
 
 def _create_session_with_project(
-    client, tmp_path, *, chat_space_id: str, prefix: str, name: str
+    client,
+    tmp_path,
+    *,
+    chat_space_id: str,
+    prefix: str,
+    name: str,
+    agent_type: str | None = None,
 ) -> str:
     chat = {
         "bot_instance_id": "bot-test",
@@ -49,7 +55,10 @@ def _create_session_with_project(
     session_response = client.post(
         "/api/v1/commands/execute",
         json={
-            "raw_text": f"/agent session new {name}",
+            "raw_text": (
+                f"/agent session new {name}"
+                f"{f' --agent {agent_type}' if agent_type else ''}"
+            ),
             "actor": actor,
             "chat": chat,
             "idempotency_key": f"{prefix}-session",
@@ -2519,6 +2528,61 @@ def test_agent_adapter_event_ingest_normalizes_and_is_idempotent(tmp_path):
     assert len(adapter_events) == 1
 
 
+def test_agent_adapter_event_ingest_rejects_schema_and_agent_mismatch(tmp_path):
+    client = TestClient(create_app())
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-agent-adapter-schema",
+        prefix="agent-adapter-schema",
+        name="Agent Adapter Schema",
+    )
+
+    missing_schema_response = client.post(
+        f"/api/v1/sessions/{session_id}/agent-adapter/events",
+        json={
+            "agent_type": "claude",
+            "adapter_event_type": "MessageDisplay",
+            "payload": {"text": "missing schema"},
+        },
+    )
+    unknown_schema_response = client.post(
+        f"/api/v1/sessions/{session_id}/agent-adapter/events",
+        json={
+            "agent_type": "claude",
+            "adapter_event_type": "MessageDisplay",
+            "schema_version": "claude-hooks.v999",
+            "payload": {"text": "unknown schema"},
+        },
+    )
+    mismatch_response = client.post(
+        f"/api/v1/sessions/{session_id}/agent-adapter/events",
+        json={
+            "agent_type": "codex",
+            "adapter_event_type": "item/agentMessage/delta",
+            "schema_version": "codex-app-server.v1",
+            "payload": {"delta": "wrong session"},
+        },
+    )
+
+    assert missing_schema_response.status_code == 400
+    assert missing_schema_response.json()["error_code"] == "COMMAND_ARGUMENT_INVALID"
+    assert missing_schema_response.json()["details"]["supported_schema_versions"] == [
+        "claude-hooks.v1"
+    ]
+    assert unknown_schema_response.status_code == 400
+    assert unknown_schema_response.json()["details"] == {
+        "agent_type": "claude",
+        "schema_version": "claude-hooks.v999",
+        "supported_schema_versions": ["claude-hooks.v1"],
+    }
+    assert mismatch_response.status_code == 400
+    assert mismatch_response.json()["details"] == {
+        "session_agent_type": "claude",
+        "agent_type": "codex",
+    }
+
+
 def test_agent_adapter_event_ingest_maps_codex_approval_request(tmp_path):
     client = TestClient(create_app())
     session_id = _create_session_with_project(
@@ -2527,6 +2591,7 @@ def test_agent_adapter_event_ingest_maps_codex_approval_request(tmp_path):
         chat_space_id="group-codex-adapter-event",
         prefix="codex-adapter-event",
         name="Codex Adapter Event",
+        agent_type="codex",
     )
 
     response = client.post(
@@ -2534,6 +2599,7 @@ def test_agent_adapter_event_ingest_maps_codex_approval_request(tmp_path):
         json={
             "agent_type": "codex",
             "adapter_event_type": "item/commandExecution/requestApproval",
+            "schema_version": "codex-app-server.v1",
             "trace_id": "codex-approval-request",
             "idempotency_key": "codex-approval-request-1",
             "turn_id": "turn_codex",
@@ -2549,6 +2615,7 @@ def test_agent_adapter_event_ingest_maps_codex_approval_request(tmp_path):
         json={
             "agent_type": "codex",
             "adapter_event_type": "item/commandExecution/requestApproval",
+            "schema_version": "codex-app-server.v1",
             "trace_id": "codex-approval-request-duplicate",
             "idempotency_key": "codex-approval-request-1",
             "turn_id": "turn_codex",
@@ -2633,6 +2700,7 @@ def test_agent_adapter_event_ingest_creates_question_interaction(tmp_path):
         chat_space_id="group-question-adapter-event",
         prefix="question-adapter-event",
         name="Question Adapter Event",
+        agent_type="codex",
     )
 
     response = client.post(
@@ -2640,6 +2708,7 @@ def test_agent_adapter_event_ingest_creates_question_interaction(tmp_path):
         json={
             "agent_type": "codex",
             "adapter_event_type": "tool/requestUserInput",
+            "schema_version": "codex-app-server.v1",
             "trace_id": "codex-question-request",
             "idempotency_key": "codex-question-request-1",
             "payload": {
@@ -2749,6 +2818,7 @@ def test_managed_device_identity_session_event_ingest_scope_gates_adapter_events
         json={
             "agent_type": "claude",
             "adapter_event_type": "MessageDisplay",
+            "schema_version": "claude-hooks.v1",
             "payload": {"text": "allowed"},
         },
         headers={

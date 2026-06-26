@@ -148,12 +148,15 @@ of enabling unknown protocol versions by default.
 External Claude Hook or Codex app-server adapter processes can report structured events
 through `POST /api/v1/sessions/{session_id}/agent-adapter/events`. The endpoint requires
 the same managed-device `session_event_ingest` scope as direct session event ingestion and
-normalizes known Claude/Codex event names into AgentBridge semantic events such as
-`assistant.delta`, `tool.started`, `tool.completed`, `approval.requested`,
-`question.requested`, `diff.updated`, `plan.updated`, and `turn.completed`, preserving the
-raw adapter payload under `raw_event` for audit and replay. Adapter approval, question,
-and plan request events also create pending AgentBridge Interaction records, keyed by the
-event idempotency key when one is supplied. Adapter processes can poll
+requires the reported `agent_type` to match the Session `agent_type`. Adapter events must
+declare a verified `schema_version`: currently `claude-hooks.v1` for Claude and
+`codex-app-server.v1` for Codex. Known Claude/Codex event names are normalized into
+AgentBridge semantic events such as `assistant.delta`, `tool.started`, `tool.completed`,
+`approval.requested`, `question.requested`, `diff.updated`, `plan.updated`, and
+`turn.completed`, preserving the raw adapter payload under `raw_event` for audit and
+replay. Adapter approval, question, and plan request events also create pending
+AgentBridge Interaction records, keyed by the event idempotency key when one is supplied.
+Adapter processes can poll
 `GET /api/v1/sessions/{session_id}/agent-adapter/responses` with `after_seq` to receive
 answers, approval decisions, cancellations, and expirations for interactions they created.
 

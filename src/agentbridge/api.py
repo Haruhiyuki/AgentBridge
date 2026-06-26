@@ -40,6 +40,7 @@ from agentbridge.admin_ui import (
 from agentbridge.agent_adapter_events import (
     adapter_response_frames_from_events,
     normalize_agent_adapter_event,
+    validate_agent_adapter_event_context,
 )
 from agentbridge.bot_gateway import (
     BotDeliveryRateLimiter,
@@ -1546,11 +1547,17 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         payload: IngestAgentAdapterEventRequest,
         control: ControlPlane = Depends(get_control),
     ):
+        session = control.repository.get_session(session_id)
+        schema_version = validate_agent_adapter_event_context(
+            session_agent_type=session.agent_type,
+            agent_type=payload.agent_type,
+            schema_version=payload.schema_version,
+        )
         normalized = normalize_agent_adapter_event(
             agent_type=payload.agent_type,
             adapter_event_type=payload.adapter_event_type,
             payload=payload.payload,
-            schema_version=payload.schema_version,
+            schema_version=schema_version,
         )
         if normalized.event_type in {
             "approval.requested",

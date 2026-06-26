@@ -3,6 +3,8 @@ import pytest
 from agentbridge.agent_adapter_events import (
     adapter_response_frames_from_events,
     normalize_agent_adapter_event,
+    validate_adapter_schema_version,
+    validate_agent_adapter_event_context,
 )
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import AgentBridgeError, AgentType, SemanticEventSource
@@ -63,6 +65,39 @@ def test_rejects_unknown_adapter_event_type():
     assert exc_info.value.details == {
         "agent_type": "claude",
         "adapter_event_type": "UnknownHook",
+    }
+
+
+def test_validates_adapter_schema_and_session_agent_match():
+    assert (
+        validate_agent_adapter_event_context(
+            session_agent_type=AgentType.CLAUDE,
+            agent_type=AgentType.CLAUDE,
+            schema_version="claude-hooks.v1",
+        )
+        == "claude-hooks.v1"
+    )
+
+    with pytest.raises(AgentBridgeError) as mismatch:
+        validate_agent_adapter_event_context(
+            session_agent_type=AgentType.CLAUDE,
+            agent_type=AgentType.CODEX,
+            schema_version="codex-app-server.v1",
+        )
+    with pytest.raises(AgentBridgeError) as unsupported:
+        validate_adapter_schema_version(
+            agent_type=AgentType.CODEX,
+            schema_version="codex-app-server.v999",
+        )
+
+    assert mismatch.value.details == {
+        "session_agent_type": "claude",
+        "agent_type": "codex",
+    }
+    assert unsupported.value.details == {
+        "agent_type": "codex",
+        "schema_version": "codex-app-server.v999",
+        "supported_schema_versions": ["codex-app-server.v1"],
     }
 
 

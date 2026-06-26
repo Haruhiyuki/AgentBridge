@@ -22,6 +22,10 @@ from threading import Event, RLock, Thread, current_thread
 from typing import Any, Protocol
 from uuid import uuid4
 
+from agentbridge.agent_adapter_events import (
+    adapter_schema_version_supported,
+    supported_adapter_schema_versions_for,
+)
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
     AgentBridgeError,
@@ -805,16 +809,19 @@ class AgentLaunchConfig:
                 "status": "pty_only",
                 "reason": "generic_tui_has_no_structured_adapter",
                 "required_protocol": None,
+                "supported_schema_versions": [],
                 "next_step": (
                     "Use PTY input/output only; structured approvals require "
                     "a native adapter."
                 ),
             }
+        supported_schema_versions = sorted(supported_adapter_schema_versions_for(agent_type))
         if not launch_profile.available:
             return {
                 "status": "launch_unavailable",
                 "reason": launch_profile.unavailable_reason,
                 "required_protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+                "supported_schema_versions": supported_schema_versions,
                 "next_step": "Install the agent CLI or configure its launch command.",
             }
         if version_probe.status != "ok":
@@ -822,13 +829,28 @@ class AgentLaunchConfig:
                 "status": "version_probe_failed",
                 "reason": version_probe.error or version_probe.status,
                 "required_protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+                "supported_schema_versions": supported_schema_versions,
                 "next_step": "Fix the version probe before enabling structured adapter APIs.",
             }
         if handshake_probe.status == "ok":
+            if not adapter_schema_version_supported(
+                agent_type=agent_type,
+                schema_version=handshake_probe.schema_version,
+            ):
+                return {
+                    "status": "schema_mismatch",
+                    "reason": "adapter_schema_version_unsupported",
+                    "required_protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+                    "schema_version": handshake_probe.schema_version,
+                    "supported_schema_versions": supported_schema_versions,
+                    "next_step": "Use a schema version listed in the compatibility matrix.",
+                }
             return {
                 "status": "ready",
                 "reason": "handshake_accepted",
                 "required_protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+                "schema_version": handshake_probe.schema_version,
+                "supported_schema_versions": supported_schema_versions,
                 "next_step": "Structured adapter capability gate is open for this profile.",
             }
         if handshake_probe.status == "skipped":
@@ -836,6 +858,7 @@ class AgentLaunchConfig:
                 "status": "handshake_not_configured",
                 "reason": handshake_probe.error,
                 "required_protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+                "supported_schema_versions": supported_schema_versions,
                 "next_step": (
                     "Configure an adapter handshake command before enabling "
                     "structured events."
@@ -845,6 +868,8 @@ class AgentLaunchConfig:
             "status": handshake_probe.status,
             "reason": handshake_probe.error or handshake_probe.status,
             "required_protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
+            "schema_version": handshake_probe.schema_version,
+            "supported_schema_versions": supported_schema_versions,
             "next_step": "Review adapter handshake output and schema compatibility.",
         }
 

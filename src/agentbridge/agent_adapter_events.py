@@ -53,6 +53,11 @@ ADAPTER_NAME_BY_AGENT: dict[AgentType, str] = {
     AgentType.GENERIC_TUI: "generic_tui",
 }
 
+SUPPORTED_ADAPTER_SCHEMA_VERSIONS_BY_AGENT: dict[AgentType, set[str]] = {
+    AgentType.CLAUDE: {"claude-hooks.v1"},
+    AgentType.CODEX: {"codex-app-server.v1"},
+}
+
 ADAPTER_INTERACTION_REQUEST_TYPES = {
     "approval.requested",
     "question.requested",
@@ -108,6 +113,75 @@ def normalize_agent_adapter_event(
         event_type=event_type,
         payload=normalized_payload,
     )
+
+
+def validate_agent_adapter_event_context(
+    *,
+    session_agent_type: AgentType,
+    agent_type: AgentType,
+    schema_version: str | None,
+) -> str:
+    if agent_type != session_agent_type:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "Adapter agent_type 必须匹配 Session agent_type。",
+            next_step="请确认 Adapter 正在向对应 Agent 类型的 Session 上报事件。",
+            details={
+                "session_agent_type": session_agent_type.value,
+                "agent_type": agent_type.value,
+            },
+        )
+    return validate_adapter_schema_version(
+        agent_type=agent_type,
+        schema_version=schema_version,
+    )
+
+
+def validate_adapter_schema_version(
+    *,
+    agent_type: AgentType,
+    schema_version: str | None,
+) -> str:
+    supported_versions = supported_adapter_schema_versions_for(agent_type)
+    normalized = schema_version.strip() if schema_version is not None else ""
+    if not normalized:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "Adapter 事件必须声明 schema_version。",
+            next_step="请使用已验证的 Adapter schema_version 后重试。",
+            details={
+                "agent_type": agent_type.value,
+                "supported_schema_versions": sorted(supported_versions),
+            },
+        )
+    if normalized not in supported_versions:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "Adapter schema_version 未通过兼容性门禁。",
+            next_step="请升级 Adapter 或在版本矩阵中加入该 schema 后再启用。",
+            details={
+                "agent_type": agent_type.value,
+                "schema_version": normalized,
+                "supported_schema_versions": sorted(supported_versions),
+            },
+        )
+    return normalized
+
+
+def adapter_schema_version_supported(
+    *,
+    agent_type: AgentType,
+    schema_version: str | None,
+) -> bool:
+    normalized = schema_version.strip() if schema_version is not None else ""
+    return bool(normalized) and normalized in supported_adapter_schema_versions_for(agent_type)
+
+
+def supported_adapter_schema_versions_for(agent_type: AgentType) -> set[str]:
+    versions = SUPPORTED_ADAPTER_SCHEMA_VERSIONS_BY_AGENT.get(agent_type)
+    if versions is None:
+        raise unsupported_agent_error(agent_type)
+    return versions
 
 
 def adapter_semantic_event_type(*, agent_type: AgentType, adapter_event_type: str) -> str:
