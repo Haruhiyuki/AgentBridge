@@ -427,6 +427,14 @@ def test_cli_parser_accepts_codex_app_server_proxy_command():
             "json-rpc",
             "--inject-responses",
             "--forward-injected-requests",
+            "--restart-policy",
+            "on-failure",
+            "--max-restarts",
+            "2",
+            "--restart-delay-seconds",
+            "0.05",
+            "--restart-min-uptime-seconds",
+            "1.5",
             "--",
             "codex",
             "app-server",
@@ -441,6 +449,10 @@ def test_cli_parser_accepts_codex_app_server_proxy_command():
     assert args.bridge_output_format == "json-rpc"
     assert args.inject_responses is True
     assert args.forward_injected_requests is True
+    assert args.restart_policy == "on-failure"
+    assert args.max_restarts == 2
+    assert args.restart_delay_seconds == 0.05
+    assert args.restart_min_uptime_seconds == 1.5
     assert args.app_server_command == [
         "--",
         "codex",
@@ -949,6 +961,11 @@ def test_codex_app_server_stdio_proxy_forwards_stdout_and_collects_events(tmp_pa
     assert summary == {
         "command": [sys.executable, str(script)],
         "return_code": 0,
+        "attempts": 1,
+        "restarts": 0,
+        "restart_policy": "never",
+        "unhealthy_exits": 0,
+        "stdin_write_errors": 0,
         "processed": 2,
         "skipped": 1,
         "emitted": 1,
@@ -1071,6 +1088,11 @@ def test_codex_app_server_stdio_proxy_injects_agentbridge_response(tmp_path):
     assert summary == {
         "command": [sys.executable, str(script)],
         "return_code": 0,
+        "attempts": 1,
+        "restarts": 0,
+        "restart_policy": "never",
+        "unhealthy_exits": 0,
+        "stdin_write_errors": 0,
         "processed": 1,
         "skipped": 0,
         "emitted": 1,
@@ -1082,6 +1104,83 @@ def test_codex_app_server_stdio_proxy_injects_agentbridge_response(tmp_path):
     assert json.loads(bridge_output.getvalue()) == expected_response
     assert json.loads(error_file.getvalue()) == expected_response
     assert [call[0] for call in calls] == ["POST", "GET"]
+
+
+def test_codex_app_server_stdio_proxy_restarts_failed_child(tmp_path):
+    script = tmp_path / "fake_codex_app_server.py"
+    state_file = tmp_path / "runs.txt"
+    script.write_text(
+        "\n".join(
+            [
+                "import json",
+                "import sys",
+                "from pathlib import Path",
+                f"state_file = Path({str(state_file)!r})",
+                "try:",
+                "    count = int(state_file.read_text(encoding='utf-8'))",
+                "except FileNotFoundError:",
+                "    count = 0",
+                "count += 1",
+                "state_file.write_text(str(count), encoding='utf-8')",
+                "print(",
+                "    json.dumps({",
+                "        'method': 'item/agentMessage/delta',",
+                "        'params': {'delta': f'run-{count}'},",
+                "    }),",
+                "    flush=True,",
+                ")",
+                "if count == 1:",
+                "    sys.exit(7)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def transport(method, url, headers, payload, timeout_seconds):
+        calls.append((method, url, payload))
+        return {"id": f"evt_{len(calls)}", "seq": len(calls)}
+
+    control_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(base_url="http://bridge.local", session_id="ses_1"),
+        transport=transport,
+    )
+    downstream_output = StringIO()
+    error_file = StringIO()
+
+    summary = bridge_codex_app_server_stdio_proxy(
+        control_client=control_client,
+        command_args=[sys.executable, str(script)],
+        upstream_input=StringIO(),
+        downstream_output=downstream_output,
+        error_file=error_file,
+        restart_policy="on-failure",
+        max_restarts=1,
+        restart_delay_seconds=0,
+        restart_min_uptime_seconds=60,
+    )
+
+    assert summary == {
+        "command": [sys.executable, str(script)],
+        "return_code": 0,
+        "attempts": 2,
+        "restarts": 1,
+        "restart_policy": "on-failure",
+        "unhealthy_exits": 2,
+        "stdin_write_errors": 0,
+        "processed": 2,
+        "skipped": 0,
+        "emitted": 0,
+        "injected": 0,
+        "suppressed": 0,
+        "errors": 0,
+    }
+    assert state_file.read_text(encoding="utf-8") == "2"
+    forwarded_lines = [json.loads(line) for line in downstream_output.getvalue().splitlines()]
+    assert [line["params"]["delta"] for line in forwarded_lines] == ["run-1", "run-2"]
+    assert error_file.getvalue() == ""
+    assert [call[2]["payload"]["delta"] for call in calls] == ["run-1", "run-2"]
 
 
 def test_cli_format_response_prints_native_stdout_json(capsys):

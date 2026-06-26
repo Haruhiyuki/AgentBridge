@@ -200,6 +200,8 @@ agentbridge-adapter-client codex-app-server-proxy \
   --device-id "<adapter-device-id>" \
   --device-key-file "$HOME/.agentbridge/codex-adapter.key" \
   --inject-responses \
+  --restart-policy on-failure \
+  --max-restarts 3 \
   --bridge-output-file agentbridge-codex-responses.jsonl \
   -- codex app-server
 agentbridge-adapter-client format-response \
@@ -255,7 +257,13 @@ set. With response injection enabled, the proxy writes AgentBridge JSON-RPC
 interaction responses back to the child stdin and suppresses the handled request
 line from downstream stdout by default to avoid duplicate client responses. Pass
 `--forward-injected-requests` to keep those request lines visible to the primary
-client while still injecting AgentBridge responses.
+client while still injecting AgentBridge responses. The proxy can also supervise
+short child failures with a bounded restart budget: set
+`--restart-policy on-failure` or `--restart-policy always`, `--max-restarts`,
+and optionally `--restart-delay-seconds` plus `--restart-min-uptime-seconds` to
+track unhealthy quick exits in the returned summary. Restarts reuse a single
+upstream stdin router, so the proxy does not create competing readers for the
+primary client.
 
 Terminal input is accepted only when the request carries the current writer lease `epoch`, owner type, and owner ID. Stale Bot/Web inputs are rejected after human or higher-priority control preempts the lease. Workspace creation through the API and Project/Session Admin UI can configure `is_writable` and `max_write_sessions`; `read_only` workspaces are normalized to non-writable with zero write slots, and writer lease acquisition enforces the resulting Workspace capacity across shared sessions. The PTY backend keeps a bounded cursor-addressable output window from the PTY master fd; stale readers receive a reset frame with the retained tail. When `AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH` is set, PTY start/status/termination updates an atomic JSON host-state registry containing session ID, cwd, command, host pid, child pid, status, exit code, and output cursor metadata for future host supervision. The `pty_host` backend talks to `agentbridge-pty-host` over a chmod `0600` Unix socket, so a restarted API/daemon process can recreate its backend client and continue reading/writing PTYs owned by the host process. Set `AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE` on both host and clients to reread the shared PTY Host token for each request, allowing rotation without restarting either side; an unreadable or empty token file keeps a configured token gate closed when there is no static fallback token. With `AGENTBRIDGE_TERMINAL_PTY_HOST_AUTO_START=true`, the client backend removes a Unix socket only when health probing proves there is no listener, starts `agentbridge-pty-host`, waits for health, and retries the request once; if health reaches a live host but token auth fails, times out, or returns a protocol error, it preserves the socket and reports the error instead of starting a competing host. With `AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_ENABLED=true`, API and daemon lifespans start a background watchdog that keeps the host healthy and restarts it after a crash; `AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_INTERVAL_SECONDS` controls the poll interval. Combine the watchdog with `AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=true` and a command allowlist to have the lifecycle monitor mark host-crash-lost PTY sessions as `terminal.lost` and restart them only when the latest persisted command is approved for replay. For service-manager deployments, use the systemd/launchd guide and templates in `docs/operations/PTY_HOST_SERVICE_MANAGER.md`. Fake and tmux remain test/MVP backends.
 
