@@ -49,6 +49,9 @@ COMMAND_ALIASES = {
     "取消": "cancel",
     "控制": "control",
     "状态": "status",
+    "概览": "status",
+    "切换": "agent",
+    "智能体": "agent",
     "接管": "takeover",
     "释放": "release",
     "角色": "role",
@@ -65,6 +68,11 @@ COMMAND_ALIASES = {
 KNOWN_ROOTS = {
     "help",
     "context",
+    "status",
+    "agent",
+    "agents",
+    "claude",
+    "codex",
     "project",
     "session",
     "use",
@@ -111,6 +119,51 @@ INTEGER_SCHEMA = {"type": "integer"}
 OPTIONAL_INTEGER_SCHEMA = {"type": ["integer", "null"]}
 BOOLEAN_SCHEMA = {"type": "boolean"}
 STRING_ARRAY_SCHEMA = {"type": "array", "items": STRING_SCHEMA}
+
+# 面向群聊用户的本地化标签，用于把内部状态枚举渲染成一眼能懂的中文。
+SESSION_STATUS_LABELS = {
+    "creating": "创建中",
+    "starting": "启动中",
+    "idle": "空闲",
+    "running": "运行中",
+    "waiting_interaction": "等待交互",
+    "human_controlled": "本地接管",
+    "suspended": "已挂起",
+    "recovering": "恢复中",
+    "error": "异常",
+    "closing": "关闭中",
+    "closed": "已关闭",
+    "archived": "已归档",
+}
+TURN_STATUS_LABELS = {
+    "queued": "排队中",
+    "running": "运行中",
+    "waiting_interaction": "等待交互",
+    "completed": "已完成",
+    "failed": "失败",
+    "cancelled": "已取消",
+}
+LEASE_OWNER_LABELS = {
+    "bot": "机器人",
+    "human": "本地用户",
+    "web_admin": "远程管理端",
+    "system": "系统",
+}
+AGENT_TYPE_LABELS = {
+    "claude": "Claude",
+    "codex": "Codex",
+    "generic_tui": "通用终端",
+}
+INACTIVE_SESSION_STATUSES = {"closed", "archived"}
+# 切换 agent 时不复用这些"坏掉/不可用"状态的会话，宁可新建一个干净的，
+# 避免复用到终端已丢失（recovering）或异常（error）而无法推进的旧会话。
+NON_REUSABLE_SESSION_STATUSES = {
+    "closed",
+    "archived",
+    "closing",
+    "recovering",
+    "error",
+}
 
 
 def command_arguments_schema(
@@ -181,6 +234,44 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
         usage="/agent context",
         required_permission="project.view",
         target_mode="none",
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "status.show",
+        aliases=["status", "状态", "概览"],
+        summary=(
+            "Show a unified status card: active project, session, agent, "
+            "control lease, and queue."
+        ),
+        usage="/agent status [session]",
+        argument_schema=command_arguments_schema({"session": OPTIONAL_STRING_SCHEMA}),
+        required_permission="session.view",
+        target_mode="session",
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "agent.list",
+        aliases=["agents", "agent list", "智能体 列表"],
+        summary="List Agent sessions grouped by agent type and mark the active one.",
+        usage="/agent agents",
+        required_permission="session.view",
+        target_mode="project",
+    ),
+    command_spec(
+        "agent.switch",
+        aliases=["agent", "claude", "codex", "切换", "智能体"],
+        summary=(
+            "Switch the active session to a Claude/Codex agent (creating one if "
+            "needed); trailing text is queued as a task."
+        ),
+        usage="/agent claude|codex [task]  ·  /agent agent <claude|codex|generic_tui> [task]",
+        argument_schema=command_arguments_schema(
+            {"agent": STRING_SCHEMA, "prompt": OPTIONAL_STRING_SCHEMA},
+            required=["agent"],
+        ),
+        required_permission="session.create",
+        target_mode="session",
+        risk=RiskLevel.MEDIUM.value,
         private_result_allowed=True,
     ),
     command_spec(
@@ -843,6 +934,17 @@ class CommandService:
             return "health", {}
         if root == "context":
             return "context.show", {}
+        if root == "status":
+            positional, _ = parse_options(tokens)
+            return "status.show", {"session": positional[0] if positional else None}
+        if root in {"agent", "agents"}:
+            return self._parse_agent(root, tokens)
+        if root in {"claude", "codex", "generic_tui"}:
+            positional, _ = parse_options(tokens)
+            return "agent.switch", {
+                "agent": root,
+                "prompt": " ".join(positional).strip() or None,
+            }
         if root in {"ask", "send", "continue"}:
             positional, options = parse_options(tokens)
             prompt = " ".join(positional).strip()
@@ -989,6 +1091,24 @@ class CommandService:
             ErrorCode.COMMAND_UNKNOWN,
             f"未知 session 子命令：{action}",
             next_step="可用子命令：list、new、use、info、close。",
+        )
+
+    def _parse_agent(self, root: str, tokens: list[str]) -> tuple[str, dict[str, object]]:
+        if not tokens:
+            return "agent.list", {}
+        action = self._canonical_token(tokens[0])
+        if action in {"list", "ls"}:
+            return "agent.list", {}
+        if action in {"claude", "codex", "generic_tui"}:
+            positional, _ = parse_options(tokens[1:])
+            return "agent.switch", {
+                "agent": action,
+                "prompt": " ".join(positional).strip() or None,
+            }
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_UNKNOWN,
+            f"未知 agent 子命令：{tokens[0]}",
+            next_step="可用：/agent agents、/agent claude、/agent codex、generic_tui。",
         )
 
     def _parse_session_use_alias(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
@@ -1308,8 +1428,14 @@ class CommandService:
             return self._result(
                 invocation,
                 "AgentBridge commands",
-                "可用命令：project、session、ask/send、control、role、policy、approvals、health。",
+                build_help_message(),
             )
+        if command == "status.show":
+            return self._execute_status(invocation)
+        if command == "agent.list":
+            return self._execute_agent_list(invocation)
+        if command == "agent.switch":
+            return self._execute_agent_switch(invocation)
         if command == "health":
             return self._result(invocation, "Health", "Control Plane 正常。", self.control.health())
         if command == "context.show":
@@ -2082,6 +2208,220 @@ class CommandService:
             },
         )
 
+    def _ensure_agent_session(
+        self, invocation: CommandInvocation, agent_type: AgentType
+    ) -> tuple[AgentSession, bool]:
+        """找到该项目下指定 agent 的活动会话，没有就新建。返回 (会话, 是否新建)。"""
+        project_id = self._required_project_id(invocation)
+        context = self.control.repository.get_chat_context(invocation.chat_context_id)
+        live = [
+            session
+            for session in self.control.repository.list_sessions(project_id)
+            if session.agent_type == agent_type
+            and session.status.value not in NON_REUSABLE_SESSION_STATUSES
+        ]
+        if live:
+            for session in live:
+                if session.id == context.active_session_id:
+                    return session, False
+            return live[0], False
+        label = AGENT_TYPE_LABELS.get(agent_type.value, agent_type.value)
+        session = self.control.create_session(
+            actor=invocation.actor,
+            project_id=project_id,
+            workspace_id=None,
+            name=label,
+            agent_type=agent_type,
+            visibility=Visibility.GROUP,
+            trace_id=invocation.trace_id,
+            chat_context_id=invocation.chat_context_id,
+        )
+        return session, True
+
+    def _execute_agent_switch(self, invocation: CommandInvocation) -> CommandResult:
+        args = invocation.args
+        try:
+            agent_type = AgentType(str(args.get("agent")))
+        except ValueError as exc:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                f"未知 agent 类型：{args.get('agent')}",
+                next_step="可用：claude、codex、generic_tui。",
+            ) from exc
+        session, created = self._ensure_agent_session(invocation, agent_type)
+        context = self.control.repository.get_chat_context(invocation.chat_context_id)
+        if context.active_session_id != session.id:
+            self.control.use_session(
+                actor=invocation.actor,
+                chat_context_id=invocation.chat_context_id,
+                session_token=session.id,
+                expected_version=context.pointer_version,
+                trace_id=invocation.trace_id,
+            )
+        label = AGENT_TYPE_LABELS.get(agent_type.value, agent_type.value)
+        status_label = SESSION_STATUS_LABELS.get(session.status.value, session.status.value)
+        lines: list[str] = []
+        if created:
+            lines.append(f"已新建并切换到 {label} 会话 [{session.short_code}]。")
+        else:
+            lines.append(
+                f"已切换到 {label} 会话 [{session.short_code}] · {status_label}。"
+            )
+        data: dict[str, object] = {
+            "project_id": session.project_id,
+            "session_id": session.id,
+            "agent_type": agent_type.value,
+            "created": created,
+            "session": session.model_dump(mode="json"),
+        }
+        prompt = str(args.get("prompt") or "").strip()
+        if prompt:
+            turn = self.control.enqueue_turn(
+                actor=invocation.actor,
+                session_id=session.id,
+                prompt=prompt,
+                trace_id=invocation.trace_id,
+                chat_context_id=invocation.chat_context_id,
+            )
+            queued = f"任务已进入 [{session.short_code}] 队列。"
+            if turn.queue_reason == "human_control":
+                queued += " 本地控制中，等待人工释放后继续。"
+            elif turn.queue_reason == "terminal_agent_offline":
+                queued += " 终端离线保护中，等待重连后继续。"
+            lines.append(queued)
+            data["turn_id"] = turn.id
+            data["turn"] = turn.model_dump(mode="json")
+        else:
+            lines.append("发送 /ab ask <任务> 开始，或 /ab status 查看状态。")
+        return self._result(invocation, f"{label} Session", "\n".join(lines), data)
+
+    def _execute_agent_list(self, invocation: CommandInvocation) -> CommandResult:
+        project_id = self._required_project_id(invocation)
+        sessions = self.control.list_sessions_for_context(
+            invocation.actor,
+            project_id=project_id,
+            chat_context_id=invocation.chat_context_id,
+        )
+        context = self.control.repository.get_chat_context(invocation.chat_context_id)
+        return self._result(
+            invocation,
+            "Agents",
+            format_agent_list_message(sessions, context.active_session_id),
+            {
+                "project_id": project_id,
+                "active_session_id": context.active_session_id,
+                "sessions": [session.model_dump(mode="json") for session in sessions],
+            },
+        )
+
+    def _execute_status(self, invocation: CommandInvocation) -> CommandResult:
+        context = self.control.repository.get_chat_context(invocation.chat_context_id)
+        lines = ["📊 AgentBridge 状态"]
+        if context.active_project_id:
+            project = self.control.repository.get_project(context.active_project_id)
+            lines.append(f"项目：{project.name} ({project.slug})")
+        else:
+            lines.append("项目：未选择（用 /ab project use <项目> 选择）")
+
+        session: AgentSession | None = None
+        token = invocation.args.get("session")
+        if token:
+            session = self.control.repository.resolve_session(
+                str(token), context.active_project_id
+            )
+        elif context.active_session_id:
+            session = self.control.repository.get_session(context.active_session_id)
+
+        if session is None:
+            lines.append("会话：无活动会话")
+            if context.active_project_id:
+                siblings = self.control.list_sessions_for_context(
+                    invocation.actor,
+                    project_id=context.active_project_id,
+                    chat_context_id=invocation.chat_context_id,
+                )
+                live = [
+                    s for s in siblings
+                    if s.status.value not in INACTIVE_SESSION_STATUSES
+                ]
+                if live:
+                    lines.append(format_agent_list_message(live, None))
+                else:
+                    lines.append("用 /ab claude 或 /ab codex 开一个会话。")
+            return self._result(
+                invocation,
+                "Status",
+                "\n".join(lines),
+                {"project_id": context.active_project_id, "session_id": None},
+            )
+
+        agent_label = AGENT_TYPE_LABELS.get(session.agent_type.value, session.agent_type.value)
+        status_label = SESSION_STATUS_LABELS.get(session.status.value, session.status.value)
+        lines.append(
+            f"会话：[{session.short_code}] {session.name} · {agent_label} · {status_label}"
+        )
+
+        lease = self.control.repository.current_lease(session.id)
+        if lease is None:
+            lines.append("控制权：空闲（无人持有写入租约）")
+        elif lease.owner_type == LeaseOwnerType.HUMAN:
+            lines.append(f"控制权：本地用户接管中，机器人观察（epoch {lease.epoch}）")
+        else:
+            owner = LEASE_OWNER_LABELS.get(lease.owner_type.value, lease.owner_type.value)
+            lines.append(f"控制权：{owner}（epoch {lease.epoch}）")
+
+        turns, _queue_version, queue_paused = self.control.list_turn_queue(
+            actor=invocation.actor,
+            session_id=session.id,
+            chat_context_id=invocation.chat_context_id,
+        )
+        queue_line = f"队列：{len(turns)} 个排队任务"
+        if queue_paused:
+            queue_line += "（已暂停）"
+        lines.append(queue_line)
+
+        if session.active_turn_id:
+            try:
+                turn = self.control.repository.get_turn(session.active_turn_id)
+            except AgentBridgeError:
+                turn = None
+            if turn is not None:
+                turn_label = TURN_STATUS_LABELS.get(turn.status.value, turn.status.value)
+                preview = compact_list_text(turn.prompt, limit=40)
+                lines.append(f"当前任务：{turn_label} · {preview}")
+
+        siblings = self.control.list_sessions_for_context(
+            invocation.actor,
+            project_id=session.project_id,
+            chat_context_id=invocation.chat_context_id,
+        )
+        others = [
+            s for s in siblings
+            if s.id != session.id and s.status.value not in INACTIVE_SESSION_STATUSES
+        ]
+        if others:
+            parts = [
+                f"{AGENT_TYPE_LABELS.get(s.agent_type.value, s.agent_type.value)}[{s.short_code}]"
+                for s in others
+            ]
+            lines.append(
+                "其他会话：" + "、".join(parts) + "（/ab agents 查看、/ab 切换）"
+            )
+
+        return self._result(
+            invocation,
+            "Status",
+            "\n".join(lines),
+            {
+                "project_id": session.project_id,
+                "session_id": session.id,
+                "session": session.model_dump(mode="json"),
+                "lease": lease.model_dump(mode="json") if lease else None,
+                "queue_paused": queue_paused,
+                "queued_count": len(turns),
+            },
+        )
+
     def _execute_session_create(self, invocation: CommandInvocation) -> CommandResult:
         args = invocation.args
         project_id = self._required_project_id(invocation)
@@ -2537,6 +2877,73 @@ def format_session_list_message(sessions: list[AgentSession]) -> str:
         "跨项目时可加 --project <project>。"
     )
     return "\n".join(lines)
+
+
+def format_agent_list_message(
+    sessions: list[AgentSession], active_session_id: str | None
+) -> str:
+    """按 agent 类型分组列出活动会话，并标记当前会话。"""
+    live = [s for s in sessions if s.status.value not in INACTIVE_SESSION_STATUSES]
+    if not live:
+        return "当前项目还没有会话。用 /ab claude 或 /ab codex 开一个。"
+    grouped: dict[str, list[AgentSession]] = {}
+    for session in live:
+        grouped.setdefault(session.agent_type.value, []).append(session)
+    ordered_types = ["claude", "codex", "generic_tui"]
+    ordered_types += [t for t in grouped if t not in ordered_types]
+    lines = ["当前项目的 Agent 会话："]
+    for agent_value in ordered_types:
+        group = grouped.get(agent_value)
+        if not group:
+            continue
+        label = AGENT_TYPE_LABELS.get(agent_value, agent_value)
+        for session in group:
+            marker = "▶ " if session.id == active_session_id else "  "
+            status_label = SESSION_STATUS_LABELS.get(
+                session.status.value, session.status.value
+            )
+            lines.append(
+                f"{marker}{label} · [{session.short_code}] {session.name} · {status_label}"
+            )
+    lines.append("切换：/ab claude · /ab codex；查看状态：/ab status")
+    return "\n".join(lines)
+
+
+def build_help_message() -> str:
+    """分组式中文帮助，覆盖看状态、切换、发任务、人工接管、交互审批。"""
+    return "\n".join(
+        [
+            "AgentBridge 指令帮助（命令以 /agent 或 /ab 开头）",
+            "",
+            "▸ 看状态",
+            "  /ab status            一屏查看项目 / 会话 / 控制权 / 队列",
+            "  /ab agents            列出本项目的 Claude / Codex 会话",
+            "  /ab context           当前聊天绑定的项目与会话指针",
+            "",
+            "▸ 切换 Agent / 会话 / 项目",
+            "  /ab claude [任务]      切到 Claude（无会话则新建）；带任务则顺手排队",
+            "  /ab codex  [任务]      切到 Codex（无会话则新建）",
+            "  /ab session use <会话>  切换活动会话（也可 /ab 使用 <会话>）",
+            "  /ab project use <项目>  切换活动项目",
+            "",
+            "▸ 发任务",
+            "  /ab ask <任务>         给当前会话排队一个任务",
+            "  /ab continue <补充>    在当前会话继续",
+            "  /ab queue             查看排队任务",
+            "",
+            "▸ 人工接管（本地终端）",
+            "  /ab control status     查看谁在控制",
+            "  /ab control takeover   远程取得写入权",
+            "  /ab control release --epoch <n>  释放写入权",
+            "",
+            "▸ 交互 / 审批",
+            "  /ab answer <编号> <内容>          回答 Agent 的提问",
+            "  /ab approve <编号> · /ab deny <编号>   通过 / 拒绝审批",
+            "  /ab approvals · /ab plan list      查看待办交互",
+            "",
+            "更多：/ab health 健康检查 · /ab role / policy 管理权限与策略",
+        ]
+    )
 
 
 def format_interaction_list_message(
