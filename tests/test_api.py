@@ -138,9 +138,14 @@ def test_health_endpoint_reports_memory_storage():
 
 def test_readiness_endpoint_reports_mvp_operational_checks(monkeypatch):
     monkeypatch.delenv("AGENTBRIDGE_API_TOKEN", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_API_TOKEN_FILE", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_ADMIN_TOKEN_FILE", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_WS_TOKEN", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_WS_TOKEN_FILE", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_DEVICE_KEYS", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS_FILE", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_DATABASE_URL", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_TERMINAL_EVENT_OUTBOX", raising=False)
     monkeypatch.delenv("AGENTBRIDGE_BOT_RETRY_WORKER_ENABLED", raising=False)
@@ -165,7 +170,66 @@ def test_readiness_endpoint_reports_mvp_operational_checks(monkeypatch):
     assert checks["adapter.handshake_command.claude"]["status"] == "warn"
     assert checks["adapter.handshake_command.codex"]["status"] == "warn"
     assert checks["bot.onebot_v11_capability"]["status"] == "pass"
+    assert checks["security.http_api_gate"]["status"] == "warn"
+    assert checks["security.admin_gate"]["status"] == "warn"
+    assert checks["security.websocket_gate"]["status"] == "warn"
+    assert checks["security.device_credentials"]["status"] == "warn"
+    assert checks["security.client_certificate_gate"]["status"] == "warn"
     assert "terminal_lifecycle" in payload["sources"]
+    assert "security_gates" in payload["sources"]
+
+
+def test_readiness_endpoint_reports_configured_security_gates(monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_API_TOKEN", "api-secret")
+    monkeypatch.setenv("AGENTBRIDGE_ADMIN_TOKEN", "admin-secret")
+    monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "ws-secret")
+    monkeypatch.setenv("AGENTBRIDGE_DEVICE_KEYS", '{"readiness-device":"device-secret"}')
+    monkeypatch.setenv("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS", "SHA256:AA:BB:CC")
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/v1/readiness",
+        headers={"authorization": "Bearer api-secret"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    security_gates = payload["sources"]["security_gates"]
+    assert checks["security.http_api_gate"]["status"] == "pass"
+    assert checks["security.admin_gate"]["status"] == "pass"
+    assert checks["security.websocket_gate"]["status"] == "pass"
+    assert checks["security.device_credentials"]["status"] == "pass"
+    assert checks["security.client_certificate_gate"]["status"] == "pass"
+    assert security_gates["http_api_gate"]["api_token_count"] == 2
+    assert security_gates["websocket_gate"]["websocket_token_count"] == 1
+    assert security_gates["device_credentials"]["static_device_key_count"] == 1
+    assert security_gates["client_certificates"]["global_fingerprint_count"] == 1
+
+
+def test_readiness_endpoint_fails_when_configured_security_gate_has_no_credential(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("AGENTBRIDGE_API_TOKEN", "api-secret")
+    monkeypatch.delenv("AGENTBRIDGE_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_DEVICE_KEYS", raising=False)
+    monkeypatch.delenv("AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS", raising=False)
+    monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN_FILE", str(tmp_path / "missing-ws-token"))
+    client = TestClient(create_app())
+
+    response = client.get(
+        "/api/v1/readiness",
+        headers={"authorization": "Bearer api-secret"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    checks = {check["id"]: check for check in payload["checks"]}
+    assert payload["status"] == "not_ready"
+    assert checks["security.websocket_gate"]["status"] == "fail"
+    assert checks["security.websocket_gate"]["evidence"]["websocket_token_configured"] is True
+    assert checks["security.websocket_gate"]["evidence"]["websocket_token_count"] == 0
 
 
 def test_api_token_gate_protects_rest_api_when_configured(monkeypatch):

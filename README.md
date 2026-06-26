@@ -927,8 +927,8 @@ dashboard, device identity dashboard, and Bot delivery operations dashboard. The
 health page summarizes `/api/v1/health`, terminal lifecycle monitor status, Bot retry
 worker status, Bot platform capabilities, Bot rate-limit policies, and managed-device
 endpoint reachability, plus the `/api/v1/readiness` MVP acceptance summary with
-pass/warn/fail counts across Control Plane, Terminal, Adapter, Bot, and security
-workers. The
+pass/warn/fail counts across Control Plane, Terminal, Adapter, Bot, security workers,
+and HTTP/Admin/WebSocket/device/certificate authentication gates. The
 project/session page lists projects, adds workspaces, creates sessions, closes selected
 sessions, and surfaces active Turn, queue, pending approval, and lease status through
 the same REST APIs used by external clients. The interaction
@@ -1009,6 +1009,8 @@ protected operational report when API/device gates are configured and requires
 `terminal_read` for managed device credentials. `agentbridge-readiness` reads the same
 report using `AGENTBRIDGE_API_URL`, API token, or managed-device credentials, prints
 degraded/failing checks with operator next steps through `--format actions`, and can
-return non-zero for degraded or not-ready deployments. Use
+return non-zero for degraded or not-ready deployments. The readiness report treats
+missing product auth gates as warnings and configured-but-unusable token files, static
+device keys, managed devices, or client certificate fingerprints as failures. Use
 `docs/operations/MVP_ACCEPTANCE_RUNBOOK.md` to map the automated readiness gate to the
 manual MVP acceptance items from the design document.

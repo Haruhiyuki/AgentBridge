@@ -757,6 +757,8 @@ def build_readiness_report(
             ),
         )
     )
+    security_evidence = readiness_security_evidence(control)
+    checks.extend(readiness_security_checks(security_evidence))
 
     status = readiness_overall_status(checks)
     return {
@@ -771,6 +773,7 @@ def build_readiness_report(
             "bot_capabilities": capabilities,
             "bot_retry_worker": retry_status,
             "certificate_scan_worker": certificate_worker_status,
+            "security_gates": security_evidence,
         },
     }
 
@@ -927,6 +930,269 @@ def readiness_worker_check(
         evidence=status_payload,
         next_step=disabled_next_step,
     )
+
+
+def readiness_security_checks(
+    evidence: dict[str, dict[str, object]],
+) -> list[dict[str, object]]:
+    http_gate = evidence["http_api_gate"]
+    admin_gate = evidence["admin_gate"]
+    websocket_gate = evidence["websocket_gate"]
+    device_credentials = evidence["device_credentials"]
+    client_certificates = evidence["client_certificates"]
+    return [
+        readiness_security_gate_check(
+            "security.http_api_gate",
+            "HTTP API authentication gate has a usable credential source.",
+            configured=bool(http_gate["configured"]),
+            viable=bool(http_gate["usable"]),
+            evidence=http_gate,
+            missing_next_step=(
+                "Configure AGENTBRIDGE_API_TOKEN(_FILE), AGENTBRIDGE_DEVICE_KEYS, "
+                "managed device identities, or trusted client certificate fingerprints "
+                "before product-like deployment."
+            ),
+            broken_next_step=(
+                "Fix the configured HTTP API credential source; token files must be "
+                "readable, static device-key JSON must parse, and managed devices must "
+                "have active credentials."
+            ),
+        ),
+        readiness_security_gate_check(
+            "security.admin_gate",
+            "Admin Web authentication gate has a usable credential source.",
+            configured=bool(admin_gate["configured"]),
+            viable=bool(admin_gate["usable"]),
+            evidence=admin_gate,
+            missing_next_step=(
+                "Configure AGENTBRIDGE_ADMIN_TOKEN(_FILE), AGENTBRIDGE_API_TOKEN(_FILE), "
+                "or trusted client certificate fingerprints before exposing Admin Web."
+            ),
+            broken_next_step=(
+                "Fix the configured Admin/API token or client certificate fingerprint "
+                "source so Admin Web does not fail closed without a usable credential."
+            ),
+        ),
+        readiness_security_gate_check(
+            "security.websocket_gate",
+            "WebSocket authentication gate has a usable credential source.",
+            configured=bool(websocket_gate["configured"]),
+            viable=bool(websocket_gate["usable"]),
+            evidence=websocket_gate,
+            missing_next_step=(
+                "Configure AGENTBRIDGE_WS_TOKEN(_FILE), device credentials, or trusted "
+                "client certificate fingerprints before product-like deployment."
+            ),
+            broken_next_step=(
+                "Fix the configured WebSocket token, device credential, or client "
+                "certificate source so WebSocket authentication can succeed."
+            ),
+        ),
+        readiness_security_gate_check(
+            "security.device_credentials",
+            "Device credential authentication has at least one usable key or managed device.",
+            configured=bool(device_credentials["configured"]),
+            viable=bool(device_credentials["usable"]),
+            evidence=device_credentials,
+            missing_next_step=(
+                "Create at least one scoped managed device identity or configure "
+                "AGENTBRIDGE_DEVICE_KEYS for automation clients."
+            ),
+            broken_next_step=(
+                "Fix AGENTBRIDGE_DEVICE_KEYS or restore an active managed device with "
+                "a key or active certificate fingerprint."
+            ),
+        ),
+        readiness_security_gate_check(
+            "security.client_certificate_gate",
+            "Client certificate fingerprint authentication has usable fingerprints.",
+            configured=bool(client_certificates["configured"]),
+            viable=bool(client_certificates["usable"]),
+            evidence=client_certificates,
+            missing_next_step=(
+                "Configure trusted client certificate fingerprints or issue managed "
+                "device certificates before relying on mTLS-style client identity."
+            ),
+            broken_next_step=(
+                "Fix the configured client certificate fingerprint source so it yields "
+                "at least one normalized fingerprint."
+            ),
+        ),
+    ]
+
+
+def readiness_security_gate_check(
+    check_id: str,
+    summary: str,
+    *,
+    configured: bool,
+    viable: bool,
+    evidence: dict[str, object],
+    missing_next_step: str,
+    broken_next_step: str,
+) -> dict[str, object]:
+    if viable:
+        status = "pass"
+        next_step = None
+    elif configured:
+        status = "fail"
+        next_step = broken_next_step
+    else:
+        status = "warn"
+        next_step = missing_next_step
+    return readiness_check(
+        check_id,
+        "security",
+        status,
+        summary,
+        evidence=evidence,
+        next_step=next_step,
+    )
+
+
+def readiness_security_evidence(control: ControlPlane) -> dict[str, dict[str, object]]:
+    api_tokens, api_token_configured = http_api_expected_token_config()
+    admin_tokens, admin_token_configured = admin_expected_token_config()
+    websocket_tokens, websocket_token_configured = websocket_expected_token_config()
+    device_keys_declared = device_keys_configured()
+    static_device_keys = configured_device_keys()
+    managed_devices = readiness_managed_device_evidence(control)
+    client_cert_declared = client_certificate_fingerprints_configured()
+    client_cert_fingerprints = configured_client_certificate_fingerprints()
+
+    http_usable = bool(
+        api_tokens
+        or static_device_keys
+        or managed_devices["active_credential_count"]
+        or client_cert_fingerprints
+    )
+    admin_usable = bool(admin_tokens or client_cert_fingerprints)
+    websocket_usable = bool(
+        websocket_tokens
+        or static_device_keys
+        or managed_devices["active_credential_count"]
+        or client_cert_fingerprints
+    )
+    device_credentials_usable = bool(
+        static_device_keys or managed_devices["active_credential_count"]
+    )
+    client_certificates_usable = bool(
+        client_cert_fingerprints or managed_devices["active_certificate_count"]
+    )
+    return {
+        "http_api_gate": {
+            "configured": bool(
+                api_token_configured
+                or device_keys_declared
+                or managed_devices["configured"]
+                or client_cert_declared
+            ),
+            "usable": http_usable,
+            "api_token_configured": api_token_configured,
+            "api_token_count": len(api_tokens),
+            "static_device_keys_configured": device_keys_declared,
+            "static_device_key_count": len(static_device_keys),
+            "managed_device_identity_count": managed_devices["total_count"],
+            "active_managed_device_credential_count": managed_devices[
+                "active_credential_count"
+            ],
+            "client_certificate_configured": client_cert_declared,
+            "client_certificate_fingerprint_count": len(client_cert_fingerprints),
+        },
+        "admin_gate": {
+            "configured": bool(admin_token_configured or client_cert_declared),
+            "usable": admin_usable,
+            "admin_or_api_token_configured": admin_token_configured,
+            "admin_or_api_token_count": len(admin_tokens),
+            "client_certificate_configured": client_cert_declared,
+            "client_certificate_fingerprint_count": len(client_cert_fingerprints),
+        },
+        "websocket_gate": {
+            "configured": bool(
+                websocket_token_configured
+                or device_keys_declared
+                or managed_devices["configured"]
+                or client_cert_declared
+            ),
+            "usable": websocket_usable,
+            "websocket_token_configured": websocket_token_configured,
+            "websocket_token_count": len(websocket_tokens),
+            "static_device_keys_configured": device_keys_declared,
+            "static_device_key_count": len(static_device_keys),
+            "managed_device_identity_count": managed_devices["total_count"],
+            "active_managed_device_credential_count": managed_devices[
+                "active_credential_count"
+            ],
+            "client_certificate_configured": client_cert_declared,
+            "client_certificate_fingerprint_count": len(client_cert_fingerprints),
+        },
+        "device_credentials": {
+            "configured": bool(device_keys_declared or managed_devices["configured"]),
+            "usable": device_credentials_usable,
+            "static_device_keys_configured": device_keys_declared,
+            "static_device_key_count": len(static_device_keys),
+            **managed_devices,
+        },
+        "client_certificates": {
+            "configured": bool(
+                client_cert_declared or managed_devices["active_certificate_count"]
+            ),
+            "usable": client_certificates_usable,
+            "global_fingerprints_configured": client_cert_declared,
+            "global_fingerprint_count": len(client_cert_fingerprints),
+            "managed_device_active_certificate_count": managed_devices[
+                "active_certificate_count"
+            ],
+        },
+    }
+
+
+def readiness_managed_device_evidence(control: ControlPlane) -> dict[str, object]:
+    identities = control.repository.list_device_identities(include_revoked=True)
+    active_identities = [
+        identity
+        for identity in identities
+        if identity.status == DeviceIdentityStatus.ACTIVE
+    ]
+    active_key_count = sum(
+        1 for identity in active_identities if identity.key_hash and identity.key_salt
+    )
+    active_certificate_count = sum(
+        1 for identity in active_identities if identity.certificate_fingerprints
+    )
+    active_credential_count = sum(
+        1
+        for identity in active_identities
+        if (identity.key_hash and identity.key_salt) or identity.certificate_fingerprints
+    )
+    terminal_read_scope_count = sum(
+        1
+        for identity in active_identities
+        if DeviceIdentityScope.TERMINAL_READ in identity.allowed_scopes
+    )
+    websocket_scope_count = sum(
+        1
+        for identity in active_identities
+        if identity.allowed_scopes.intersection(
+            {
+                DeviceIdentityScope.SESSION_EVENTS_WS,
+                DeviceIdentityScope.RENDERED_EVENTS_WS,
+                DeviceIdentityScope.TERMINAL_WS,
+                DeviceIdentityScope.BOT_GATEWAY_WS,
+            }
+        )
+    )
+    return {
+        "configured": bool(identities),
+        "total_count": len(identities),
+        "active_count": len(active_identities),
+        "revoked_count": len(identities) - len(active_identities),
+        "active_key_count": active_key_count,
+        "active_certificate_count": active_certificate_count,
+        "active_credential_count": active_credential_count,
+        "terminal_read_scope_count": terminal_read_scope_count,
+        "websocket_scope_count": websocket_scope_count,
+    }
 
 
 def readiness_check(

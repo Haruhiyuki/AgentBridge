@@ -13,6 +13,9 @@ Use persistent storage and explicit gates before collecting acceptance evidence:
 export AGENTBRIDGE_DATABASE_URL=sqlite:////var/lib/agentbridge/agentbridge.db
 export AGENTBRIDGE_API_TOKEN=...
 export AGENTBRIDGE_ADMIN_TOKEN=...
+export AGENTBRIDGE_WS_TOKEN=...
+export AGENTBRIDGE_DEVICE_KEYS='{"readiness-runner":"..."}'
+export AGENTBRIDGE_CLIENT_CERT_FINGERPRINTS_FILE=/etc/agentbridge/client-fingerprints.txt
 export AGENTBRIDGE_TERMINAL_EVENT_OUTBOX=/var/lib/agentbridge/terminal-events.jsonl
 export AGENTBRIDGE_BOT_RETRY_WORKER_ENABLED=true
 export AGENTBRIDGE_DEVICE_CERT_SCAN_WORKER_ENABLED=true
@@ -33,6 +36,11 @@ curl -H "Authorization: Bearer $AGENTBRIDGE_API_TOKEN" \
 `--format actions` prints only failing or degraded checks with the next operator action.
 Use `--fail-on-warn` for release gates and `--fail-on-fail` when warnings are acceptable
 in a staged environment.
+
+Readiness security checks intentionally distinguish local development from product-like
+deployment. Missing HTTP API, Admin Web, WebSocket, device credential, or client
+certificate gates are warnings; configured token files, static device keys, managed
+devices, or fingerprint sources that do not yield a usable credential are failures.
 
 ## Acceptance Evidence Matrix
 
