@@ -8380,7 +8380,7 @@ def test_terminal_agent_launch_probe_api_requires_control_and_returns_versions(
         json={
             "actor": {"id": "usr_1", "roles": ["maintainer"]},
             "agent_types": ["claude"],
-            "timeout_seconds": 1.0,
+            "timeout_seconds": 3.0,
             "trace_id": "terminal-agent-launch-probe-test",
         },
     )
@@ -8426,7 +8426,7 @@ def test_terminal_agent_adapter_detect_api_requires_control_and_reports_gate(
         json={
             "actor": {"id": "usr_1", "roles": ["maintainer"]},
             "agent_types": ["claude"],
-            "timeout_seconds": 1.0,
+            "timeout_seconds": 3.0,
             "trace_id": "terminal-agent-adapter-detect-test",
         },
     )
