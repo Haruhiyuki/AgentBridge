@@ -57,6 +57,7 @@ SUPPORTED_ADAPTER_SCHEMA_VERSIONS_BY_AGENT: dict[AgentType, set[str]] = {
     AgentType.CLAUDE: {"claude-hooks.v1"},
     AgentType.CODEX: {"codex-app-server.v1"},
 }
+AGENT_ADAPTER_HANDSHAKE_PROTOCOL = "agentbridge.adapter.v1"
 
 ADAPTER_INTERACTION_REQUEST_TYPES = {
     "approval.requested",
@@ -182,6 +183,13 @@ def supported_adapter_schema_versions_for(agent_type: AgentType) -> set[str]:
     if versions is None:
         raise unsupported_agent_error(agent_type)
     return versions
+
+
+def default_adapter_schema_version_for(agent_type: AgentType) -> str:
+    versions = sorted(supported_adapter_schema_versions_for(agent_type))
+    if not versions:
+        raise unsupported_agent_error(agent_type)
+    return versions[-1]
 
 
 def adapter_semantic_event_type(*, agent_type: AgentType, adapter_event_type: str) -> str:

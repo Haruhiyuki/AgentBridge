@@ -23,6 +23,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from agentbridge.agent_adapter_events import (
+    AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
     adapter_schema_version_supported,
     supported_adapter_schema_versions_for,
 )
@@ -256,7 +257,6 @@ AGENT_ADAPTER_HANDSHAKE_COMMAND_ENV_BY_TYPE: dict[AgentType, str] = {
 
 DEFAULT_VERSION_PROBE_AGENT_TYPES = {AgentType.CLAUDE, AgentType.CODEX}
 STRUCTURED_ADAPTER_AGENT_TYPES = {AgentType.CLAUDE, AgentType.CODEX}
-AGENT_ADAPTER_HANDSHAKE_PROTOCOL = "agentbridge.adapter.v1"
 
 AGENT_ADAPTER_KIND_BY_TYPE: dict[AgentType, str] = {
     AgentType.CLAUDE: "claude_hooks",

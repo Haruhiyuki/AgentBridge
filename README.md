@@ -35,7 +35,7 @@ This repository currently contains the first executable backend slice:
 - Built-in Admin Web pages for system health, project/session operations with active Turn, queue, pending approval, and lease status, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
-Production PTY supervision, richer Bot renderers, provider-native key custody, and structured Claude Hook/Codex app-server adapters are planned next milestones.
+Production PTY supervision, richer Bot renderers, provider-native key custody, and automatic Claude Hook/Codex app-server adapters are planned next milestones.
 
 ## Development
 
@@ -127,8 +127,8 @@ export AGENTBRIDGE_AGENT_GENERIC_TUI_COMMAND="sh"
 # export AGENTBRIDGE_AGENT_CODEX_VERSION_COMMAND="codex-agentbridge --version"
 # Optional structured adapter handshake probes. The command must print JSON using
 # protocol "agentbridge.adapter.v1" and a string-array "capabilities" field.
-# export AGENTBRIDGE_AGENT_CLAUDE_HANDSHAKE_COMMAND="agentbridge-claude-handshake"
-# export AGENTBRIDGE_AGENT_CODEX_HANDSHAKE_COMMAND="agentbridge-codex-handshake"
+# export AGENTBRIDGE_AGENT_CLAUDE_HANDSHAKE_COMMAND="agentbridge-adapter-client handshake --agent claude"
+# export AGENTBRIDGE_AGENT_CODEX_HANDSHAKE_COMMAND="agentbridge-adapter-client handshake --agent codex"
 ```
 
 `GET /api/v1/terminal/lifecycle-monitor`, the local daemon `lifecycle_status` action,
@@ -159,6 +159,24 @@ AgentBridge Interaction records, keyed by the event idempotency key when one is 
 Adapter processes can poll
 `GET /api/v1/sessions/{session_id}/agent-adapter/responses` with `after_seq` to receive
 answers, approval decisions, cancellations, and expirations for interactions they created.
+The packaged `agentbridge-adapter-client` CLI and `agentbridge.agent_adapter_client`
+module provide the same bridge for native adapter processes, including standard
+handshake JSON, API-token or device-key headers, event submission, and response polling:
+
+```bash
+export AGENTBRIDGE_API_URL="http://127.0.0.1:8000"
+export AGENTBRIDGE_SESSION_ID="<session-id>"
+export AGENTBRIDGE_DEVICE_ID="<adapter-device-id>"
+export AGENTBRIDGE_DEVICE_KEY="<adapter-device-key>"
+
+agentbridge-adapter-client handshake --agent claude
+agentbridge-adapter-client emit \
+  --agent claude \
+  --event-type MessageDisplay \
+  --payload-json '{"text":"hello from Claude"}' \
+  --idempotency-key "claude-hook-1"
+agentbridge-adapter-client poll-responses --after-seq 0 --limit 50
+```
 
 Terminal input is accepted only when the request carries the current writer lease `epoch`, owner type, and owner ID. Stale Bot/Web inputs are rejected after human or higher-priority control preempts the lease. Workspace creation through the API and Project/Session Admin UI can configure `is_writable` and `max_write_sessions`; `read_only` workspaces are normalized to non-writable with zero write slots, and writer lease acquisition enforces the resulting Workspace capacity across shared sessions. The PTY backend keeps a bounded cursor-addressable output window from the PTY master fd; stale readers receive a reset frame with the retained tail. When `AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH` is set, PTY start/status/termination updates an atomic JSON host-state registry containing session ID, cwd, command, host pid, child pid, status, exit code, and output cursor metadata for future host supervision. The `pty_host` backend talks to `agentbridge-pty-host` over a chmod `0600` Unix socket, so a restarted API/daemon process can recreate its backend client and continue reading/writing PTYs owned by the host process. Set `AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE` on both host and clients to reread the shared PTY Host token for each request, allowing rotation without restarting either side; an unreadable or empty token file keeps a configured token gate closed when there is no static fallback token. With `AGENTBRIDGE_TERMINAL_PTY_HOST_AUTO_START=true`, the client backend removes a Unix socket only when health probing proves there is no listener, starts `agentbridge-pty-host`, waits for health, and retries the request once; if health reaches a live host but token auth fails, times out, or returns a protocol error, it preserves the socket and reports the error instead of starting a competing host. With `AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_ENABLED=true`, API and daemon lifespans start a background watchdog that keeps the host healthy and restarts it after a crash; `AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_INTERVAL_SECONDS` controls the poll interval. Combine the watchdog with `AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=true` and a command allowlist to have the lifecycle monitor mark host-crash-lost PTY sessions as `terminal.lost` and restart them only when the latest persisted command is approved for replay. For service-manager deployments, use the systemd/launchd guide and templates in `docs/operations/PTY_HOST_SERVICE_MANAGER.md`. Fake and tmux remain test/MVP backends.
 

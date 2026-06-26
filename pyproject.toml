@@ -26,6 +26,7 @@ dev = [
 
 [project.scripts]
 agentbridge-api = "agentbridge.api:run"
+agentbridge-adapter-client = "agentbridge.agent_adapter_client:run"
 agentbridge-audit-verify = "agentbridge.audit_verify:run"
 agentbridge-console = "agentbridge.console_client:run"
 agentbridge-terminal-agent = "agentbridge.terminal_daemon:run"
