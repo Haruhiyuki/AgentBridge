@@ -1119,6 +1119,101 @@ class ControlPlane:
         )
         return interaction
 
+    def ingest_agent_adapter_interaction_event(
+        self,
+        *,
+        session_id: str,
+        event_type: str,
+        trace_id: str,
+        payload: dict[str, object],
+        idempotency_key: str | None = None,
+        turn_id: str | None = None,
+        interaction_id: str | None = None,
+    ) -> SemanticEvent:
+        if idempotency_key:
+            existing = self.repository.get_event_by_idempotency_key(idempotency_key)
+            if existing:
+                return existing
+        session = self.repository.get_session(session_id)
+        interaction_type = interaction_type_from_adapter_event(event_type)
+        prompt_value = payload.get("prompt")
+        prompt = str(prompt_value).strip() if prompt_value is not None else ""
+        if not prompt:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "Adapter interaction prompt 不能为空。",
+                next_step="请在 Adapter 事件 payload 中提供 prompt、reason 或 question。",
+            )
+        risk_level = risk_level_from_payload(payload.get("risk_level"))
+        approval_policy, applied_overrides = self._effective_approval_policy(
+            project_id=session.project_id,
+            chat_context_id=None,
+        )
+        required_votes = approval_policy.quorum_for(risk_level)
+        policy_snapshot = approval_policy.snapshot_for(risk_level)
+        policy_snapshot["applied_overrides"] = [
+            override.model_dump(mode="json") for override in applied_overrides
+        ]
+        policy_snapshot["requested_votes"] = None
+        options_value = payload.get("options")
+        options = (
+            [str(option) for option in options_value]
+            if isinstance(options_value, list)
+            else []
+        )
+        interaction = self.repository.create_interaction(
+            session_id=session_id,
+            interaction_type=interaction_type,
+            prompt=prompt,
+            turn_id=turn_id,
+            options=options,
+            required_votes=required_votes,
+            risk_level=risk_level,
+            requested_by="agent-adapter",
+            policy_snapshot=policy_snapshot,
+        )
+        event_payload = {
+            **payload,
+            "type": interaction.type.value,
+            "prompt": interaction.prompt,
+            "options": interaction.options,
+            "risk_level": interaction.risk_level.value,
+            "required_votes": interaction.required_votes,
+            "requested_by": interaction.requested_by,
+            "policy_snapshot": interaction.policy_snapshot,
+            "version": interaction.version,
+            "expires_at": (
+                interaction.expires_at.isoformat() if interaction.expires_at else None
+            ),
+        }
+        self.audit(
+            action=event_type,
+            actor=Actor(id="agent-adapter", roles={"admin"}),
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            interaction_id=interaction.id,
+            details={
+                "type": interaction.type.value,
+                "adapter": payload.get("adapter"),
+                "adapter_event_type": payload.get("adapter_event_type"),
+                "required_votes": interaction.required_votes,
+                "risk_level": interaction.risk_level.value,
+            },
+        )
+        return self.emit_event(
+            event_type=event_type,
+            source=SemanticEventSource.AGENT_ADAPTER,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            interaction_id=interaction.id,
+            payload=event_payload,
+            idempotency_key=idempotency_key,
+        )
+
     def list_interactions(
         self,
         *,
@@ -2972,3 +3067,35 @@ class ControlPlane:
             payload=payload,
             idempotency_key=idempotency_key,
         )
+
+
+def interaction_type_from_adapter_event(event_type: str) -> InteractionType:
+    if event_type == "approval.requested":
+        return InteractionType.APPROVAL
+    if event_type == "question.requested":
+        return InteractionType.QUESTION
+    if event_type == "plan.requested":
+        return InteractionType.PLAN
+    raise AgentBridgeError(
+        ErrorCode.COMMAND_ARGUMENT_INVALID,
+        "该 Adapter 事件不能创建 Interaction。",
+        next_step=(
+            "请只为 approval.requested、question.requested 或 plan.requested "
+            "创建交互。"
+        ),
+        details={"event_type": event_type},
+    )
+
+
+def risk_level_from_payload(value: object) -> RiskLevel:
+    if value is None:
+        return RiskLevel.MEDIUM
+    try:
+        return RiskLevel(str(value))
+    except ValueError as exc:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "Adapter interaction risk_level 无效。",
+            next_step="请使用 low、medium、high 或 critical。",
+            details={"risk_level": value},
+        ) from exc

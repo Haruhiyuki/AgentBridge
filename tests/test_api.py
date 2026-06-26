@@ -2544,20 +2544,96 @@ def test_agent_adapter_event_ingest_maps_codex_approval_request(tmp_path):
             },
         },
     )
+    duplicate_response = client.post(
+        f"/api/v1/sessions/{session_id}/agent-adapter/events",
+        json={
+            "agent_type": "codex",
+            "adapter_event_type": "item/commandExecution/requestApproval",
+            "trace_id": "codex-approval-request-duplicate",
+            "idempotency_key": "codex-approval-request-1",
+            "turn_id": "turn_codex",
+            "payload": {
+                "item": {"id": "cmd-42", "command": "pytest"},
+                "reason": "Run project tests again",
+                "riskLevel": "high",
+            },
+        },
+    )
+    interactions_response = client.get(
+        "/api/v1/interactions",
+        params={"session_id": session_id, "status": "pending"},
+    )
 
     assert response.status_code == 200
+    assert duplicate_response.status_code == 200
+    assert duplicate_response.json()["id"] == response.json()["id"]
     event = response.json()
     assert event["type"] == "approval.requested"
     assert event["source"] == "agent_adapter"
     assert event["turn_id"] == "turn_codex"
+    assert event["interaction_id"].startswith("int_")
     assert event["payload"]["adapter"] == "codex_app_server"
     assert event["payload"]["adapter_event_type"] == (
         "item/commandExecution/requestApproval"
     )
+    assert event["payload"]["type"] == "approval"
     assert event["payload"]["prompt"] == "Run project tests"
     assert event["payload"]["risk_level"] == "high"
     assert event["payload"]["tool_name"] == "pytest"
     assert event["payload"]["adapter_item_id"] == "cmd-42"
+    assert event["payload"]["required_votes"] >= 1
+    assert interactions_response.status_code == 200
+    interactions = interactions_response.json()
+    assert len(interactions) == 1
+    assert interactions[0]["id"] == event["interaction_id"]
+    assert interactions[0]["type"] == "approval"
+    assert interactions[0]["prompt"] == "Run project tests"
+    assert interactions[0]["risk_level"] == "high"
+    assert interactions[0]["requested_by"] == "agent-adapter"
+
+
+def test_agent_adapter_event_ingest_creates_question_interaction(tmp_path):
+    client = TestClient(create_app())
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-question-adapter-event",
+        prefix="question-adapter-event",
+        name="Question Adapter Event",
+    )
+
+    response = client.post(
+        f"/api/v1/sessions/{session_id}/agent-adapter/events",
+        json={
+            "agent_type": "codex",
+            "adapter_event_type": "tool/requestUserInput",
+            "trace_id": "codex-question-request",
+            "idempotency_key": "codex-question-request-1",
+            "payload": {
+                "question": "Which environment should I deploy to?",
+                "choices": [{"label": "staging"}, {"label": "production"}],
+            },
+        },
+    )
+    interactions_response = client.get(
+        "/api/v1/interactions",
+        params={"session_id": session_id, "status": "pending"},
+    )
+
+    assert response.status_code == 200
+    event = response.json()
+    assert event["type"] == "question.requested"
+    assert event["source"] == "agent_adapter"
+    assert event["interaction_id"].startswith("int_")
+    assert event["payload"]["type"] == "question"
+    assert event["payload"]["prompt"] == "Which environment should I deploy to?"
+    assert event["payload"]["options"] == ["staging", "production"]
+    assert interactions_response.status_code == 200
+    interactions = interactions_response.json()
+    assert len(interactions) == 1
+    assert interactions[0]["id"] == event["interaction_id"]
+    assert interactions[0]["type"] == "question"
+    assert interactions[0]["options"] == ["staging", "production"]
 
 
 def test_managed_device_identity_session_event_ingest_scope_gates_adapter_events(

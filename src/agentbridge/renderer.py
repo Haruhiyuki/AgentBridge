@@ -159,11 +159,12 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 ),
             ]
         )
-    elif event.type == "interaction.requested":
+    elif event.type in {"interaction.requested", "question.requested", "plan.requested"}:
         interaction_id = str(event.interaction_id or "")
+        title = "需要确认计划" if event.type == "plan.requested" else "需要回答"
         blocks.append(
             text_block(
-                "需要回答",
+                title,
                 f"Interaction：{interaction_id}\n{payload.get('prompt') or ''}",
             )
         )

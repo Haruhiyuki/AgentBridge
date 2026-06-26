@@ -1549,16 +1549,31 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             payload=payload.payload,
             schema_version=payload.schema_version,
         )
-        event = control.ingest_session_event(
-            session_id=session_id,
-            event_type=normalized.event_type,
-            source=SemanticEventSource.AGENT_ADAPTER,
-            trace_id=payload.trace_id,
-            turn_id=payload.turn_id,
-            interaction_id=payload.interaction_id,
-            payload=normalized.payload,
-            idempotency_key=payload.idempotency_key,
-        )
+        if normalized.event_type in {
+            "approval.requested",
+            "question.requested",
+            "plan.requested",
+        }:
+            event = control.ingest_agent_adapter_interaction_event(
+                session_id=session_id,
+                event_type=normalized.event_type,
+                trace_id=payload.trace_id,
+                turn_id=payload.turn_id,
+                interaction_id=payload.interaction_id,
+                payload=normalized.payload,
+                idempotency_key=payload.idempotency_key,
+            )
+        else:
+            event = control.ingest_session_event(
+                session_id=session_id,
+                event_type=normalized.event_type,
+                source=SemanticEventSource.AGENT_ADAPTER,
+                trace_id=payload.trace_id,
+                turn_id=payload.turn_id,
+                interaction_id=payload.interaction_id,
+                payload=normalized.payload,
+                idempotency_key=payload.idempotency_key,
+            )
         return event.model_dump(mode="json")
 
     @app.post("/api/v1/sessions/{session_id}/interactions")
