@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from threading import Event, RLock, Thread, current_thread
@@ -17,10 +17,19 @@ from agentbridge.domain import (
     BotPlatform,
     ChatContext,
     ErrorCode,
+    SemanticEvent,
     SemanticEventSource,
     utc_now,
 )
 from agentbridge.renderer import OneBotV11TextRenderer, RenderDocument, document_from_event
+
+BOT_GATEWAY_PROTOCOL_EVENT_TYPES = {
+    "bot.render.create",
+    "bot.render.update",
+    "bot.render.delete",
+    "bot.interaction.ack",
+    "bot.notification",
+}
 
 
 class BotTransport(Protocol):
@@ -387,16 +396,68 @@ class BotGatewayService:
         records: list[BotDeliveryRecord] = []
         for event in reversed(events):
             document = document_from_event(event)
-            records.extend(
-                self.deliver_document(
-                    document=document,
-                    event_id=event.id,
-                    event_seq=event.seq,
+            event_records = self.deliver_document(
+                document=document,
+                event_id=event.id,
+                event_seq=event.seq,
+                chat_context_id=chat_context_id,
+                platform=platform,
+            )
+            records.extend(event_records)
+            if event_records:
+                self._emit_notification_event(
+                    source_event=event,
                     chat_context_id=chat_context_id,
                     platform=platform,
+                    records=event_records,
                 )
-            )
         return records
+
+    def _emit_notification_event(
+        self,
+        *,
+        source_event: SemanticEvent,
+        chat_context_id: str,
+        platform: BotPlatform,
+        records: list[BotDeliveryRecord],
+    ) -> None:
+        if source_event.type in BOT_GATEWAY_PROTOCOL_EVENT_TYPES:
+            return
+        status_counts = Counter(record.status.value for record in records)
+        payload: dict[str, object] = {
+            "chat_context_id": chat_context_id,
+            "platform": platform.value,
+            "source_event_id": source_event.id,
+            "source_event_type": source_event.type,
+            "source_event_seq": source_event.seq,
+            "source_event_stream_id": source_event.stream_id,
+            "source_event_trace_id": source_event.trace_id,
+            "delivery_status_counts": dict(status_counts),
+            "delivery_records": [
+                {
+                    "id": record.id,
+                    "idempotency_key": record.idempotency_key,
+                    "status": record.status.value,
+                    "platform_state": record.platform_state.value,
+                    "message_index": record.message_index,
+                    "platform_message_id": record.platform_message_id,
+                }
+                for record in records
+            ],
+        }
+        self.control.emit_event(
+            event_type="bot.notification",
+            source=SemanticEventSource.BOT_GATEWAY,
+            trace_id=source_event.trace_id,
+            project_id=source_event.project_id,
+            session_id=source_event.session_id,
+            turn_id=source_event.turn_id,
+            interaction_id=source_event.interaction_id,
+            payload=payload,
+            idempotency_key=(
+                f"{platform.value}:{chat_context_id}:{source_event.id}:bot-notification"
+            ),
+        )
 
     def deliver_document(
         self,

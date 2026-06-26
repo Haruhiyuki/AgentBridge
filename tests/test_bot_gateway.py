@@ -952,6 +952,71 @@ def test_bot_gateway_websocket_reports_missing_chat_context(tmp_path):
     assert message["error"]["error_code"] == "NOT_FOUND"
 
 
+def test_bot_gateway_notification_websocket_streams_cross_stream_delivery():
+    control = ControlPlane()
+    context = control.get_or_create_chat_context(
+        bot_instance_id="bot-test",
+        platform="onebot.v11",
+        chat_space_id="group-notification-ws",
+    )
+    source_event = control.emit_event(
+        event_type="device_identity.certificates_scanned",
+        source=SemanticEventSource.CONTROL_PLANE,
+        trace_id="notification-ws-scan",
+        payload={
+            "total_device_count": 1,
+            "action_required_count": 1,
+            "status_counts": {"expired": 1},
+            "warning_days": 14,
+            "scanned_at": "2026-06-26T00:00:00Z",
+            "action_required_devices": [
+                {
+                    "device_id": "notify-expired-device",
+                    "certificate_health_status": "expired",
+                    "expired_count": 1,
+                }
+            ],
+        },
+    )
+    transport = InMemoryBotTransport()
+    gateway = BotGatewayService(control, transport=transport)
+    records = gateway.deliver_events(
+        chat_context_id=context.id,
+        event_type="device_identity.certificates_scanned",
+        trace_id="notification-ws-scan",
+    )
+    notifications = control.repository.list_semantic_events(
+        event_type="bot.notification",
+        trace_id="notification-ws-scan",
+    )
+    app = create_app(control)
+    app.state.bot_gateway = gateway
+    client = TestClient(app)
+
+    with client.websocket_connect(
+        "/api/v1/bot-gateway/notifications/ws"
+        f"?chat_context_id={context.id}&idle_timeout_seconds=0"
+    ) as websocket:
+        frame = websocket.receive_json()
+        idle = websocket.receive_json()
+
+    assert len(records) == 1
+    assert len(notifications) == 1
+    assert notifications[0].payload["source_event_id"] == source_event.id
+    assert frame["type"] == "bot.notification"
+    assert frame["session_id"] == ""
+    assert frame["chat_context_id"] == context.id
+    assert frame["event_id"] == notifications[0].id
+    assert frame["event"]["payload"]["source_event_type"] == (
+        "device_identity.certificates_scanned"
+    )
+    assert frame["event"]["payload"]["delivery_records"][0]["idempotency_key"] == (
+        records[0].idempotency_key
+    )
+    assert "Bot 通知" in frame["messages"][0]["text"]
+    assert idle == {"type": "idle_timeout", "last_seq": frame["seq"]}
+
+
 def test_bot_gateway_api_delivers_filtered_semantic_events():
     control = ControlPlane()
     context = control.get_or_create_chat_context(

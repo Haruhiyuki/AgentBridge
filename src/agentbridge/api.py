@@ -2031,6 +2031,36 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             token=token,
         )
 
+    @app.websocket("/api/v1/bot-gateway/notifications/ws")
+    async def stream_bot_gateway_notification_events(
+        websocket: WebSocket,
+        chat_context_id: str,
+        control: ControlPlane = Depends(get_control),
+        bot_gateway_service: BotGatewayService = Depends(get_bot_gateway),
+        platform: BotPlatform = BotPlatform.ONEBOT_V11,
+        project_id: str | None = None,
+        session_id: str | None = None,
+        after_seq: int | None = None,
+        limit: int = 100,
+        poll_interval_seconds: float = 0.25,
+        idle_timeout_seconds: float | None = None,
+        token: str | None = None,
+    ):
+        await stream_bot_gateway_notifications(
+            websocket=websocket,
+            control=control,
+            bot_gateway_service=bot_gateway_service,
+            chat_context_id=chat_context_id,
+            platform=platform,
+            project_id=project_id,
+            session_id=session_id,
+            after_seq=after_seq,
+            limit=limit,
+            poll_interval_seconds=poll_interval_seconds,
+            idle_timeout_seconds=idle_timeout_seconds,
+            token=token,
+        )
+
     @app.post("/api/v1/bot-gateway/retry-failed-deliveries")
     def retry_failed_deliveries(
         payload: RetryBotDeliveriesRequest,
@@ -2956,6 +2986,105 @@ async def stream_bot_gateway_events(
             await asyncio.sleep(poll_interval)
     except WebSocketDisconnect:
         return
+
+
+async def stream_bot_gateway_notifications(
+    *,
+    websocket: WebSocket,
+    control: ControlPlane,
+    bot_gateway_service: BotGatewayService,
+    chat_context_id: str,
+    platform: BotPlatform,
+    project_id: str | None,
+    session_id: str | None,
+    after_seq: int | None,
+    limit: int,
+    poll_interval_seconds: float,
+    idle_timeout_seconds: float | None,
+    token: str | None,
+) -> None:
+    resource_ids = {chat_context_id}
+    if project_id:
+        resource_ids.add(project_id)
+    if session_id:
+        resource_ids.add(session_id)
+    if not await accept_authenticated_websocket(
+        websocket,
+        token=token,
+        control=control,
+        required_scope=DeviceIdentityScope.BOT_GATEWAY_WS,
+        resource_ids=resource_ids,
+    ):
+        return
+    try:
+        chat_context = control.repository.get_chat_context(chat_context_id)
+        if session_id is not None:
+            control.repository.get_session(session_id)
+        elif project_id is not None:
+            control.repository.get_project(project_id)
+    except AgentBridgeError as exc:
+        await websocket.send_json({"type": "error", "error": exc.to_payload()})
+        await websocket.close(code=1008)
+        return
+
+    batch_limit = clamp_stream_limit(limit)
+    poll_interval = clamp_poll_interval(poll_interval_seconds)
+    idle_timeout = normalize_idle_timeout(idle_timeout_seconds)
+    last_seq = max(after_seq or 0, 0)
+    idle_started_at = monotonic()
+
+    try:
+        while True:
+            events = control.repository.list_events(
+                project_id=project_id,
+                session_id=session_id,
+                after_seq=last_seq,
+                limit=batch_limit,
+            )
+            if events:
+                for event in events:
+                    last_seq = max(last_seq, event.seq)
+                    if not bot_notification_matches(
+                        event,
+                        chat_context_id=chat_context_id,
+                        platform=platform,
+                    ):
+                        continue
+                    idle_started_at = monotonic()
+                    document = document_from_event(event)
+                    await websocket.send_json(
+                        bot_gateway_render_frame(
+                            session_id=session_id or "",
+                            chat_context=chat_context,
+                            platform=platform,
+                            event=event,
+                            document=document,
+                            text_messages=bot_gateway_service.renderer.render(document),
+                        )
+                    )
+                continue
+
+            if idle_timeout is not None and monotonic() - idle_started_at >= idle_timeout:
+                await websocket.send_json({"type": "idle_timeout", "last_seq": last_seq})
+                await websocket.close(code=1000)
+                return
+
+            await asyncio.sleep(poll_interval)
+    except WebSocketDisconnect:
+        return
+
+
+def bot_notification_matches(
+    event: SemanticEvent,
+    *,
+    chat_context_id: str,
+    platform: BotPlatform,
+) -> bool:
+    return (
+        event.type == "bot.notification"
+        and event.payload.get("chat_context_id") == chat_context_id
+        and event.payload.get("platform") == platform.value
+    )
 
 
 def bot_gateway_render_frame(
@@ -3924,6 +4053,7 @@ def websocket_admin_cookie_authorized(websocket: WebSocket) -> bool:
         path.endswith("/events/ws")
         or path.endswith("/rendered-events/ws")
         or path == "/api/v1/bot-gateway/session-events/ws"
+        or path == "/api/v1/bot-gateway/notifications/ws"
     ):
         return False
     return bool(

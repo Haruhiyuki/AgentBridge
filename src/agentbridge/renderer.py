@@ -432,6 +432,23 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                     format_certificate_scan_devices(action_required_devices),
                 )
             )
+    elif event.type == "bot.notification":
+        visibility = RenderVisibility.OPERATORS
+        delivery_records = payload.get("delivery_records") or []
+        delivery_count = len(delivery_records) if isinstance(delivery_records, list) else 0
+        blocks.append(
+            text_block(
+                "Bot 通知",
+                (
+                    f"源事件：{payload.get('source_event_type')}\n"
+                    f"源事件 ID：{payload.get('source_event_id')}\n"
+                    f"Chat Context：{payload.get('chat_context_id')}\n"
+                    f"平台：{payload.get('platform')}\n"
+                    f"投递记录：{delivery_count}\n"
+                    f"状态汇总：{format_status_counts(payload.get('delivery_status_counts'))}"
+                ),
+            )
+        )
     else:
         blocks.append(text_block("事件", event.type))
         if payload:
