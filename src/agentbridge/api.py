@@ -312,7 +312,7 @@ class StartTerminalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     actor: ActorPayload = Field(default_factory=ActorPayload)
-    command: str = "sh"
+    command: str | None = None
     trace_id: str = "api"
 
 
@@ -1608,10 +1608,19 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         terminal_service: TerminalAgentService = Depends(get_terminal),
     ):
         actor = payload.actor.to_actor()
+        launch_profile = terminal_service.resolve_start_command(
+            session_id=session_id,
+            command=payload.command,
+        )
         control.require_terminal_control(
             actor,
             session_id=session_id,
-            attributes={"operation": "terminal_start", "command": payload.command},
+            attributes={
+                "operation": "terminal_start",
+                "command": launch_profile.command,
+                "command_source": launch_profile.source,
+                "agent_type": launch_profile.agent_type.value,
+            },
         )
         terminal_service.start_session(
             session_id=session_id,
@@ -2918,17 +2927,26 @@ def handle_terminal_ws_action(
         return control.health()
     if action == "start_session":
         actor = actor_from_terminal_ws_payload(payload)
+        command_payload = payload.get("command")
+        if command_payload is not None and not isinstance(command_payload, str):
+            raise TypeError("command must be a string")
+        launch_profile = terminal_service.resolve_start_command(
+            session_id=session_id,
+            command=command_payload,
+        )
         control.require_terminal_control(
             actor,
             session_id=session_id,
             attributes={
                 "operation": "terminal_ws_start",
-                "command": str(payload.get("command") or "sh"),
+                "command": launch_profile.command,
+                "command_source": launch_profile.source,
+                "agent_type": launch_profile.agent_type.value,
             },
         )
         terminal_service.start_session(
             session_id=session_id,
-            command=str(payload.get("command") or "sh"),
+            command=command_payload,
             trace_id=str(payload.get("trace_id") or "terminal-ws"),
         )
         return {"status": "started"}

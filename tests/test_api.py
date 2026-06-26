@@ -6553,6 +6553,37 @@ def test_managed_device_identity_terminal_control_scope_allows_terminal_http_api
     assert run_once_response.json()["monitor"]["run_count"] == 1
 
 
+def test_terminal_start_api_uses_session_agent_default_command(tmp_path):
+    app = create_app()
+    client = TestClient(app)
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="group-terminal-agent-default",
+        prefix="terminal-agent-default",
+        name="Terminal Agent Default",
+    )
+
+    start_response = client.post(
+        f"/api/v1/sessions/{session_id}/terminal/start",
+        json={"actor": actor, "trace_id": "terminal-agent-default-start"},
+    )
+
+    assert start_response.status_code == 200
+    backend = app.state.terminal.backend
+    assert isinstance(backend, FakeTerminalBackend)
+    assert backend.started[session_id] == (str(tmp_path), "claude")
+    started_events = [
+        event
+        for event in app.state.control.repository.list_events(session_id=session_id)
+        if event.type == "terminal.started"
+    ]
+    assert started_events[-1].payload["command"] == "claude"
+    assert started_events[-1].payload["agent_type"] == "claude"
+    assert started_events[-1].payload["command_source"] == "built_in"
+
+
 def test_terminal_restart_api_uses_last_started_command_after_backend_state_loss(tmp_path):
     app = create_app()
     client = TestClient(app)

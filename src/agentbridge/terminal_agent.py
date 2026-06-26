@@ -25,6 +25,7 @@ from uuid import uuid4
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
     AgentBridgeError,
+    AgentType,
     ErrorCode,
     LeaseOwnerType,
     SemanticEventSource,
@@ -74,6 +75,54 @@ class TerminalStartSpec:
     command: str
     workspace_id: str | None
     generation: int
+    agent_type: AgentType | None = None
+    command_source: str | None = None
+
+
+@dataclass(frozen=True)
+class AgentLaunchProfile:
+    agent_type: AgentType
+    command: str
+    source: str
+
+
+DEFAULT_AGENT_COMMANDS: dict[AgentType, str] = {
+    AgentType.CLAUDE: "claude",
+    AgentType.CODEX: "codex",
+    AgentType.GENERIC_TUI: "sh",
+}
+
+AGENT_COMMAND_ENV_BY_TYPE: dict[AgentType, str] = {
+    AgentType.CLAUDE: "AGENTBRIDGE_AGENT_CLAUDE_COMMAND",
+    AgentType.CODEX: "AGENTBRIDGE_AGENT_CODEX_COMMAND",
+    AgentType.GENERIC_TUI: "AGENTBRIDGE_AGENT_GENERIC_TUI_COMMAND",
+}
+
+
+@dataclass(frozen=True)
+class AgentLaunchConfig:
+    command_by_agent: dict[AgentType, str] = field(default_factory=dict)
+    source_by_agent: dict[AgentType, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_env(cls) -> AgentLaunchConfig:
+        command_by_agent: dict[AgentType, str] = {}
+        source_by_agent: dict[AgentType, str] = {}
+        for agent_type, default_command in DEFAULT_AGENT_COMMANDS.items():
+            env_name = AGENT_COMMAND_ENV_BY_TYPE[agent_type]
+            configured_command = os.environ.get(env_name, "").strip()
+            if configured_command:
+                command_by_agent[agent_type] = configured_command
+                source_by_agent[agent_type] = f"env:{env_name}"
+            else:
+                command_by_agent[agent_type] = default_command
+                source_by_agent[agent_type] = "built_in"
+        return cls(command_by_agent=command_by_agent, source_by_agent=source_by_agent)
+
+    def profile_for(self, agent_type: AgentType) -> AgentLaunchProfile:
+        command = self.command_by_agent.get(agent_type) or DEFAULT_AGENT_COMMANDS[agent_type]
+        source = self.source_by_agent.get(agent_type) or "built_in"
+        return AgentLaunchProfile(agent_type=agent_type, command=command, source=source)
 
 
 @dataclass(frozen=True)
@@ -723,10 +772,12 @@ class TerminalAgentService:
         backend: TerminalBackend | None = None,
         *,
         lifecycle_policy: TerminalLifecyclePolicy | None = None,
+        agent_launch_config: AgentLaunchConfig | None = None,
     ) -> None:
         self.control = control
         self.backend = backend or FakeTerminalBackend()
         self.lifecycle_policy = lifecycle_policy or TerminalLifecyclePolicy()
+        self.agent_launch_config = agent_launch_config or AgentLaunchConfig.from_env()
         self._terminal_start_generations: dict[str, int] = {}
         self._reported_terminal_exits: set[tuple[str, int]] = set()
         self._reported_terminal_losses: set[tuple[str, int]] = set()
@@ -746,18 +797,29 @@ class TerminalAgentService:
         self,
         *,
         session_id: str,
-        command: str = "sh",
+        command: str | None = None,
         trace_id: str,
         restart_of_generation: int | None = None,
         restart_reason: str | None = None,
     ) -> int:
         session = self.control.repository.get_session(session_id)
+        launch_profile = self._resolve_start_profile(session, command)
         workspace = self.control.repository.get_workspace(session.workspace_id)
-        self.backend.start(session_id=session_id, cwd=workspace.path, command=command)
+        self.backend.start(
+            session_id=session_id,
+            cwd=workspace.path,
+            command=launch_profile.command,
+        )
         with self._lifecycle_lock:
             generation = self._terminal_start_generations.get(session_id, 0) + 1
             self._terminal_start_generations[session_id] = generation
-        payload = {"workspace_id": workspace.id, "command": command, "generation": generation}
+        payload = {
+            "workspace_id": workspace.id,
+            "command": launch_profile.command,
+            "generation": generation,
+            "agent_type": launch_profile.agent_type.value,
+            "command_source": launch_profile.source,
+        }
         if restart_of_generation is not None:
             payload["restart_of_generation"] = restart_of_generation
         if restart_reason is not None:
@@ -771,6 +833,24 @@ class TerminalAgentService:
             payload=payload,
         )
         return generation
+
+    def resolve_start_command(
+        self,
+        *,
+        session_id: str,
+        command: str | None = None,
+    ) -> AgentLaunchProfile:
+        session = self.control.repository.get_session(session_id)
+        return self._resolve_start_profile(session, command)
+
+    def _resolve_start_profile(self, session, command: str | None) -> AgentLaunchProfile:
+        if command is not None and command.strip():
+            return AgentLaunchProfile(
+                agent_type=session.agent_type,
+                command=command,
+                source="explicit",
+            )
+        return self.agent_launch_config.profile_for(session.agent_type)
 
     def restart_session(
         self,
@@ -846,10 +926,18 @@ class TerminalAgentService:
             if not isinstance(command, str) or not command.strip():
                 continue
             workspace_id = event.payload.get("workspace_id")
+            agent_type = event.payload.get("agent_type")
+            command_source = event.payload.get("command_source")
+            parsed_agent_type = None
+            if isinstance(agent_type, str):
+                with suppress(ValueError):
+                    parsed_agent_type = AgentType(agent_type)
             latest = TerminalStartSpec(
                 command=command,
                 workspace_id=workspace_id if isinstance(workspace_id, str) else None,
                 generation=generation,
+                agent_type=parsed_agent_type,
+                command_source=command_source if isinstance(command_source, str) else None,
             )
         if latest is None:
             raise AgentBridgeError(

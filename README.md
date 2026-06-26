@@ -18,6 +18,8 @@ This repository currently contains the first executable backend slice:
 - Terminal input gateway with fake, tmux, and stdlib PTY backends plus writer-lease epoch enforcement.
 - Local Terminal Agent daemon over a token-protected Unix socket, with token-file hot reload for local rotation.
 - Optional token/device-key gated REST APIs, WebSocket streams, and Terminal command transport.
+- Session agent launch profiles so omitted terminal start commands resolve from
+  `agent_type` (`claude`, `codex`, or `generic_tui`) with operator overrides.
 - Local Console Client with line-mode, scripted input, raw TTY passthrough, and cursor-based output observation through the lease gateway.
 - RenderDocument intermediate representation with OneBot/plain-text fallback rendering.
 - Bot Gateway delivery service with persistent idempotent delivery records, WebSocket render subscriptions, in-memory text transport, and OneBot V11 HTTP transport.
@@ -33,7 +35,7 @@ This repository currently contains the first executable backend slice:
 - Built-in Admin Web pages for system health, project/session operations with active Turn, queue, pending approval, and lease status, interaction/approval operations, audit/event exploration, access policy editing, terminal lifecycle inspection, device identity management, and Bot delivery operations, with optional token-gated browser access.
 - REST API routes aligned with the design document's service interface.
 
-Production PTY supervision, richer Bot renderers, provider-native key custody, and real Claude/Codex adapters are planned next milestones.
+Production PTY supervision, richer Bot renderers, provider-native key custody, and structured Claude Hook/Codex app-server adapters are planned next milestones.
 
 ## Development
 
@@ -109,6 +111,17 @@ Use tmux when you want the MVP restart path to reuse an existing `agentbridge_<s
 
 ```bash
 export AGENTBRIDGE_TERMINAL_BACKEND=tmux
+```
+
+When a terminal start request omits `command`, AgentBridge resolves the launch command
+from the Session `agent_type`: `claude` runs `claude`, `codex` runs `codex`, and
+`generic_tui` runs `sh`. Override those defaults when your local CLI needs flags,
+wrappers, or absolute paths:
+
+```bash
+export AGENTBRIDGE_AGENT_CLAUDE_COMMAND="claude"
+export AGENTBRIDGE_AGENT_CODEX_COMMAND="$HOME/bin/codex-agentbridge"
+export AGENTBRIDGE_AGENT_GENERIC_TUI_COMMAND="sh"
 ```
 
 Terminal input is accepted only when the request carries the current writer lease `epoch`, owner type, and owner ID. Stale Bot/Web inputs are rejected after human or higher-priority control preempts the lease. Workspace creation through the API and Project/Session Admin UI can configure `is_writable` and `max_write_sessions`; `read_only` workspaces are normalized to non-writable with zero write slots, and writer lease acquisition enforces the resulting Workspace capacity across shared sessions. The PTY backend keeps a bounded cursor-addressable output window from the PTY master fd; stale readers receive a reset frame with the retained tail. When `AGENTBRIDGE_TERMINAL_PTY_HOST_STATE_PATH` is set, PTY start/status/termination updates an atomic JSON host-state registry containing session ID, cwd, command, host pid, child pid, status, exit code, and output cursor metadata for future host supervision. The `pty_host` backend talks to `agentbridge-pty-host` over a chmod `0600` Unix socket, so a restarted API/daemon process can recreate its backend client and continue reading/writing PTYs owned by the host process. Set `AGENTBRIDGE_TERMINAL_PTY_HOST_TOKEN_FILE` on both host and clients to reread the shared PTY Host token for each request, allowing rotation without restarting either side; an unreadable or empty token file keeps a configured token gate closed when there is no static fallback token. With `AGENTBRIDGE_TERMINAL_PTY_HOST_AUTO_START=true`, the client backend removes a Unix socket only when health probing proves there is no listener, starts `agentbridge-pty-host`, waits for health, and retries the request once; if health reaches a live host but token auth fails, times out, or returns a protocol error, it preserves the socket and reports the error instead of starting a competing host. With `AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_ENABLED=true`, API and daemon lifespans start a background watchdog that keeps the host healthy and restarts it after a crash; `AGENTBRIDGE_TERMINAL_PTY_HOST_WATCHDOG_INTERVAL_SECONDS` controls the poll interval. Combine the watchdog with `AGENTBRIDGE_TERMINAL_AUTO_RESTART_ON_LOST=true` and a command allowlist to have the lifecycle monitor mark host-crash-lost PTY sessions as `terminal.lost` and restart them only when the latest persisted command is approved for replay. For service-manager deployments, use the systemd/launchd guide and templates in `docs/operations/PTY_HOST_SERVICE_MANAGER.md`. Fake and tmux remain test/MVP backends.
@@ -367,10 +380,10 @@ wscat -c 'ws://127.0.0.1:8000/api/v1/sessions/<session-id>/terminal/ws?token=<to
 Request frames are JSON objects with `id`, `type`, and `payload`. The server replies with `terminal.result` or `terminal.error`:
 
 ```json
-{"id":"start","type":"start_session","payload":{"actor":{"id":"usr_1","roles":["maintainer"]},"command":"sh"}}
+{"id":"start","type":"start_session","payload":{"actor":{"id":"usr_1","roles":["maintainer"]}}}
 ```
 
-Supported actions are `health`, `start_session`, `restart_session`, `acquire_lease`, `release_lease`, `submit_input`, `snapshot`, and `status`. `submit_input` uses the same writer lease `epoch`, owner type, owner ID, and request-idempotency checks as the REST terminal input endpoint. `status` reports whether the terminal backend has started, whether it is still running, process exit metadata when available, and the current output cursor.
+Supported actions are `health`, `start_session`, `restart_session`, `acquire_lease`, `release_lease`, `submit_input`, `snapshot`, and `status`. `start_session` accepts an optional `command` override; when omitted, it uses the Session agent launch profile. `submit_input` uses the same writer lease `epoch`, owner type, owner ID, and request-idempotency checks as the REST terminal input endpoint. `status` reports whether the terminal backend has started, whether it is still running, process exit metadata when available, and the current output cursor.
 
 ## Bot Gateway Delivery
 
@@ -643,16 +656,16 @@ Attach to a session through the local Terminal Agent socket:
 ```bash
 export AGENTBRIDGE_LOCAL_TOKEN=...
 export AGENTBRIDGE_TERMINAL_SOCKET="$HOME/.agentbridge/terminal-agent.sock"
-uv run agentbridge-console <session-id> --start --command sh
+uv run agentbridge-console <session-id> --start
 ```
 
 By default the console runs in line mode. Add `--raw` to put the local TTY into raw passthrough mode:
 
 ```bash
-uv run agentbridge-console <session-id> --start --command sh --raw --release
+uv run agentbridge-console <session-id> --start --raw --release
 ```
 
-Before forwarding input, the console requests a `human` writer lease and sends input with the returned epoch. Raw mode restores terminal state on exit, forwards initial and `SIGWINCH` resize events, maps Ctrl-C/Ctrl-D to terminal signals, follows daemon `stream_output` frames so the user can see current output, and uses Ctrl-] to detach from the console. Use `--no-follow-output` to disable output following, and use `--send`, `--paste`, or `--snapshot` for scripted checks.
+Before forwarding input, the console requests a `human` writer lease and sends input with the returned epoch. Use `--command` with `--start` only when you want to override the Session agent launch profile for that start. Raw mode restores terminal state on exit, forwards initial and `SIGWINCH` resize events, maps Ctrl-C/Ctrl-D to terminal signals, follows daemon `stream_output` frames so the user can see current output, and uses Ctrl-] to detach from the console. Use `--no-follow-output` to disable output following, and use `--send`, `--paste`, or `--snapshot` for scripted checks.
 
 ## API Smoke Test
 

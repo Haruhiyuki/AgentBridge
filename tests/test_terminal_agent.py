@@ -20,7 +20,14 @@ from agentbridge.api import (
     stop_terminal_backend_supervision,
 )
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, LeaseOwnerType, Visibility
+from agentbridge.domain import (
+    Actor,
+    AgentBridgeError,
+    AgentType,
+    ErrorCode,
+    LeaseOwnerType,
+    Visibility,
+)
 from agentbridge.pty_host import (
     PtyHostServer,
     PtyHostSupervisor,
@@ -42,9 +49,19 @@ from agentbridge.terminal_agent import (
 )
 
 
-def create_session(control: ControlPlane, tmp_path):
+def create_session(
+    control: ControlPlane,
+    tmp_path,
+    *,
+    agent_type: AgentType | None = None,
+):
     maintainer = Actor(id="usr_1", roles={"maintainer"})
-    project = control.create_project(actor=maintainer, name="Backend", trace_id="project")
+    project = control.create_project(
+        actor=maintainer,
+        name="Backend",
+        default_agent=agent_type or AgentType.CLAUDE,
+        trace_id="project",
+    )
     workspace = control.add_workspace(
         actor=maintainer,
         project_id=project.id,
@@ -63,6 +80,52 @@ def create_session(control: ControlPlane, tmp_path):
         trace_id="session",
     )
     return maintainer, session
+
+
+def test_terminal_agent_uses_session_agent_launch_command(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENTBRIDGE_AGENT_CLAUDE_COMMAND", raising=False)
+    control = ControlPlane()
+    backend = FakeTerminalBackend()
+    terminal = TerminalAgentService(control, backend=backend)
+    _, session = create_session(control, tmp_path, agent_type=AgentType.CLAUDE)
+
+    profile = terminal.resolve_start_command(session_id=session.id)
+    generation = terminal.start_session(session_id=session.id, trace_id="terminal-start")
+
+    assert profile.command == "claude"
+    assert profile.source == "built_in"
+    assert generation == 1
+    assert backend.started[session.id] == (str(tmp_path), "claude")
+    started_event = [
+        event
+        for event in control.repository.list_events(session_id=session.id)
+        if event.type == "terminal.started"
+    ][0]
+    assert started_event.payload == {
+        "workspace_id": session.workspace_id,
+        "command": "claude",
+        "generation": 1,
+        "agent_type": "claude",
+        "command_source": "built_in",
+    }
+
+
+def test_terminal_agent_uses_configured_codex_launch_command(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_AGENT_CODEX_COMMAND", "codex-agentbridge-wrapper")
+    control = ControlPlane()
+    backend = FakeTerminalBackend()
+    terminal = TerminalAgentService(control, backend=backend)
+    _, session = create_session(control, tmp_path, agent_type=AgentType.CODEX)
+
+    profile = terminal.resolve_start_command(session_id=session.id)
+    terminal.start_session(session_id=session.id, trace_id="terminal-start")
+
+    assert profile.command == "codex-agentbridge-wrapper"
+    assert profile.source == "env:AGENTBRIDGE_AGENT_CODEX_COMMAND"
+    assert backend.started[session.id] == (
+        str(tmp_path),
+        "codex-agentbridge-wrapper",
+    )
 
 
 def test_terminal_agent_enforces_current_writer_lease_epoch(tmp_path):
@@ -359,6 +422,8 @@ def test_terminal_lifecycle_monitor_auto_restarts_lost_session(tmp_path):
         "workspace_id": session.workspace_id,
         "command": "fake-cli --resume",
         "generation": 2,
+        "agent_type": "claude",
+        "command_source": "explicit",
         "restart_of_generation": 1,
         "restart_reason": "auto_lost_restart",
     }
@@ -1154,6 +1219,8 @@ def test_pty_host_watchdog_restart_can_auto_restart_lost_terminal(
             "workspace_id": session.workspace_id,
             "command": command,
             "generation": 2,
+            "agent_type": "claude",
+            "command_source": "explicit",
             "restart_of_generation": 1,
             "restart_reason": "auto_lost_restart",
         }

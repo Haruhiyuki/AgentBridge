@@ -728,9 +728,16 @@ class LocalTerminalAgentServer:
             }
         if action == "start_session":
             session_id = required_str(payload, "session_id")
+            command = payload.get("command")
+            if command is not None and not isinstance(command, str):
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "command 必须是字符串。",
+                    next_step="请省略 command 以使用 Session 的 Agent 默认启动命令。",
+                )
             self.terminal.start_session(
                 session_id=session_id,
-                command=str(payload.get("command") or "sh"),
+                command=command,
                 trace_id=str(payload.get("trace_id") or "local-terminal"),
             )
             launch_result = self.desktop_launcher.launch(session_id=session_id)

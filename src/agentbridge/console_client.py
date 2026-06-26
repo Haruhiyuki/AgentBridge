@@ -93,15 +93,14 @@ class LocalConsoleClient:
         self.ttl_seconds = ttl_seconds
         self.lease: ConsoleLease | None = None
 
-    async def start_session(self, command: str = "sh") -> None:
-        await self._request_ok(
-            "start_session",
-            {
-                "session_id": self.session_id,
-                "command": command,
-                "trace_id": self._trace_id("start"),
-            },
-        )
+    async def start_session(self, command: str | None = None) -> None:
+        payload = {
+            "session_id": self.session_id,
+            "trace_id": self._trace_id("start"),
+        }
+        if command is not None:
+            payload["command"] = command
+        await self._request_ok("start_session", payload)
 
     async def acquire(self) -> ConsoleLease:
         if self.lease is not None:
@@ -306,7 +305,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--actor-id", default=None)
     parser.add_argument("--role", action="append", dest="roles", default=None)
     parser.add_argument("--start", action="store_true", help="Start the terminal before input")
-    parser.add_argument("--command", default="sh", help="Command used with --start")
+    parser.add_argument(
+        "--command",
+        help="Command used with --start; defaults to the session agent launch command",
+    )
     parser.add_argument("--send", help="Send one text payload and exit")
     parser.add_argument("--paste", help="Send one paste payload and exit")
     parser.add_argument("--snapshot", action="store_true", help="Print snapshot and exit")
