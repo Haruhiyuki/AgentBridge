@@ -108,6 +108,46 @@ class AgentLaunchDetection:
         }
 
 
+@dataclass(frozen=True)
+class AgentLaunchVersionProbe:
+    agent_type: AgentType
+    command: str
+    source: str
+    profile_available: bool
+    profile_unavailable_reason: str | None
+    version_command: str | None
+    version_source: str | None
+    version_executable: str | None
+    version_executable_path: str | None
+    status: str
+    exit_code: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    version_text: str | None = None
+    duration_ms: int | None = None
+    error: str | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "agent_type": self.agent_type.value,
+            "command": self.command,
+            "source": self.source,
+            "profile_available": self.profile_available,
+            "profile_unavailable_reason": self.profile_unavailable_reason,
+            "version_command": self.version_command,
+            "version_source": self.version_source,
+            "version_executable": self.version_executable,
+            "version_executable_path": self.version_executable_path,
+            "status": self.status,
+            "exit_code": self.exit_code,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "version_text": self.version_text,
+            "duration_ms": self.duration_ms,
+            "error": self.error,
+        }
+
+
 DEFAULT_AGENT_COMMANDS: dict[AgentType, str] = {
     AgentType.CLAUDE: "claude",
     AgentType.CODEX: "codex",
@@ -120,11 +160,21 @@ AGENT_COMMAND_ENV_BY_TYPE: dict[AgentType, str] = {
     AgentType.GENERIC_TUI: "AGENTBRIDGE_AGENT_GENERIC_TUI_COMMAND",
 }
 
+AGENT_VERSION_COMMAND_ENV_BY_TYPE: dict[AgentType, str] = {
+    AgentType.CLAUDE: "AGENTBRIDGE_AGENT_CLAUDE_VERSION_COMMAND",
+    AgentType.CODEX: "AGENTBRIDGE_AGENT_CODEX_VERSION_COMMAND",
+    AgentType.GENERIC_TUI: "AGENTBRIDGE_AGENT_GENERIC_TUI_VERSION_COMMAND",
+}
+
+DEFAULT_VERSION_PROBE_AGENT_TYPES = {AgentType.CLAUDE, AgentType.CODEX}
+
 
 @dataclass(frozen=True)
 class AgentLaunchConfig:
     command_by_agent: dict[AgentType, str] = field(default_factory=dict)
     source_by_agent: dict[AgentType, str] = field(default_factory=dict)
+    version_command_by_agent: dict[AgentType, str] = field(default_factory=dict)
+    version_source_by_agent: dict[AgentType, str] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls) -> AgentLaunchConfig:
@@ -139,7 +189,29 @@ class AgentLaunchConfig:
             else:
                 command_by_agent[agent_type] = default_command
                 source_by_agent[agent_type] = "built_in"
-        return cls(command_by_agent=command_by_agent, source_by_agent=source_by_agent)
+
+        version_command_by_agent: dict[AgentType, str] = {}
+        version_source_by_agent: dict[AgentType, str] = {}
+        for agent_type in AgentType:
+            env_name = AGENT_VERSION_COMMAND_ENV_BY_TYPE[agent_type]
+            configured_command = os.environ.get(env_name, "").strip()
+            if configured_command:
+                version_command_by_agent[agent_type] = configured_command
+                version_source_by_agent[agent_type] = f"env:{env_name}"
+                continue
+            default_version_command = cls.default_version_command(
+                agent_type,
+                command_by_agent[agent_type],
+            )
+            if default_version_command is not None:
+                version_command_by_agent[agent_type] = default_version_command
+                version_source_by_agent[agent_type] = "built_in"
+        return cls(
+            command_by_agent=command_by_agent,
+            source_by_agent=source_by_agent,
+            version_command_by_agent=version_command_by_agent,
+            version_source_by_agent=version_source_by_agent,
+        )
 
     def profile_for(self, agent_type: AgentType) -> AgentLaunchProfile:
         command = self.command_by_agent.get(agent_type) or DEFAULT_AGENT_COMMANDS[agent_type]
@@ -190,6 +262,183 @@ class AgentLaunchConfig:
                 return str(path)
             return None
         return shutil.which(executable)
+
+    @classmethod
+    def default_version_command(
+        cls,
+        agent_type: AgentType,
+        command: str,
+    ) -> str | None:
+        if agent_type not in DEFAULT_VERSION_PROBE_AGENT_TYPES:
+            return None
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            return None
+        if not argv:
+            return None
+        return shlex.join([argv[0], "--version"])
+
+    def version_command_for(self, agent_type: AgentType) -> tuple[str | None, str | None]:
+        return (
+            self.version_command_by_agent.get(agent_type),
+            self.version_source_by_agent.get(agent_type),
+        )
+
+    def probe_version(
+        self,
+        agent_type: AgentType,
+        *,
+        timeout_seconds: float,
+        output_limit_chars: int = 4096,
+    ) -> AgentLaunchVersionProbe:
+        detection = self.detect(agent_type)
+        version_command, version_source = self.version_command_for(agent_type)
+        if version_command is None:
+            return AgentLaunchVersionProbe(
+                agent_type=agent_type,
+                command=detection.command,
+                source=detection.source,
+                profile_available=detection.available,
+                profile_unavailable_reason=detection.unavailable_reason,
+                version_command=None,
+                version_source=None,
+                version_executable=None,
+                version_executable_path=None,
+                status="skipped",
+                error="version_probe_not_configured",
+            )
+        try:
+            version_argv = shlex.split(version_command)
+        except ValueError as exc:
+            return AgentLaunchVersionProbe(
+                agent_type=agent_type,
+                command=detection.command,
+                source=detection.source,
+                profile_available=detection.available,
+                profile_unavailable_reason=detection.unavailable_reason,
+                version_command=version_command,
+                version_source=version_source,
+                version_executable=None,
+                version_executable_path=None,
+                status="parse_error",
+                error=str(exc),
+            )
+        if not version_argv:
+            return AgentLaunchVersionProbe(
+                agent_type=agent_type,
+                command=detection.command,
+                source=detection.source,
+                profile_available=detection.available,
+                profile_unavailable_reason=detection.unavailable_reason,
+                version_command=version_command,
+                version_source=version_source,
+                version_executable=None,
+                version_executable_path=None,
+                status="parse_error",
+                error="empty_version_command",
+            )
+        version_executable = version_argv[0]
+        version_executable_path = self._resolve_executable_path(version_executable)
+        if version_executable_path is None:
+            return AgentLaunchVersionProbe(
+                agent_type=agent_type,
+                command=detection.command,
+                source=detection.source,
+                profile_available=detection.available,
+                profile_unavailable_reason=detection.unavailable_reason,
+                version_command=version_command,
+                version_source=version_source,
+                version_executable=version_executable,
+                version_executable_path=None,
+                status="unavailable",
+                error="version_executable_not_found",
+            )
+        run_argv = [version_executable_path, *version_argv[1:]]
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(
+                run_argv,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            return AgentLaunchVersionProbe(
+                agent_type=agent_type,
+                command=detection.command,
+                source=detection.source,
+                profile_available=detection.available,
+                profile_unavailable_reason=detection.unavailable_reason,
+                version_command=version_command,
+                version_source=version_source,
+                version_executable=version_executable,
+                version_executable_path=version_executable_path,
+                status="timeout",
+                stdout=self._truncate_probe_output(exc.stdout, output_limit_chars),
+                stderr=self._truncate_probe_output(exc.stderr, output_limit_chars),
+                duration_ms=duration_ms,
+                error=f"timed out after {timeout_seconds:.3g}s",
+            )
+        except OSError as exc:
+            duration_ms = int((time.monotonic() - started) * 1000)
+            return AgentLaunchVersionProbe(
+                agent_type=agent_type,
+                command=detection.command,
+                source=detection.source,
+                profile_available=detection.available,
+                profile_unavailable_reason=detection.unavailable_reason,
+                version_command=version_command,
+                version_source=version_source,
+                version_executable=version_executable,
+                version_executable_path=version_executable_path,
+                status="failed",
+                duration_ms=duration_ms,
+                error=str(exc),
+            )
+        duration_ms = int((time.monotonic() - started) * 1000)
+        stdout = self._truncate_probe_output(completed.stdout, output_limit_chars)
+        stderr = self._truncate_probe_output(completed.stderr, output_limit_chars)
+        return AgentLaunchVersionProbe(
+            agent_type=agent_type,
+            command=detection.command,
+            source=detection.source,
+            profile_available=detection.available,
+            profile_unavailable_reason=detection.unavailable_reason,
+            version_command=version_command,
+            version_source=version_source,
+            version_executable=version_executable,
+            version_executable_path=version_executable_path,
+            status="ok" if completed.returncode == 0 else "failed",
+            exit_code=completed.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            version_text=self._first_probe_output_line(stdout, stderr),
+            duration_ms=duration_ms,
+        )
+
+    @staticmethod
+    def _truncate_probe_output(value: object, limit: int) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            text = value.decode("utf-8", errors="replace")
+        else:
+            text = str(value)
+        if len(text) <= limit:
+            return text
+        return text[:limit] + "\n[truncated]"
+
+    @staticmethod
+    def _first_probe_output_line(stdout: str, stderr: str) -> str | None:
+        for text in (stdout, stderr):
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped:
+                    return stripped
+        return None
 
 
 @dataclass(frozen=True)
@@ -923,6 +1172,22 @@ class TerminalAgentService:
         return {
             agent_type.value: self.agent_launch_config.detect(agent_type).to_payload()
             for agent_type in AgentType
+        }
+
+    def probe_agent_launch_versions(
+        self,
+        *,
+        agent_types: list[AgentType] | None = None,
+        timeout_seconds: float = 2.0,
+    ) -> dict[str, dict[str, object]]:
+        selected_agent_types = agent_types or list(AgentType)
+        timeout = min(max(timeout_seconds, 0.1), 10.0)
+        return {
+            agent_type.value: self.agent_launch_config.probe_version(
+                agent_type,
+                timeout_seconds=timeout,
+            ).to_payload()
+            for agent_type in selected_agent_types
         }
 
     def restart_session(

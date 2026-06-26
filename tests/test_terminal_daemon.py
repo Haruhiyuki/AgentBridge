@@ -70,6 +70,13 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
             assert lifecycle_status["data"]["running"] is False
             assert lifecycle_status["data"]["backend_supervision"] == {"enabled": False}
 
+            probe = await client.request(
+                "probe_agent_launch_profiles",
+                {"agent_types": ["claude"], "timeout_seconds": 0.1},
+            )
+            assert probe["ok"] is True
+            assert probe["data"]["profiles"]["claude"]["agent_type"] == "claude"
+
             started = await client.request(
                 "start_session",
                 {

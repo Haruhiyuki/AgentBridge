@@ -28,7 +28,7 @@ from agentbridge.api import (
     terminal_auto_restart_command_allowlist_from_env,
 )
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, AgentBridgeError, ErrorCode, LeaseOwnerType
+from agentbridge.domain import Actor, AgentBridgeError, AgentType, ErrorCode, LeaseOwnerType
 from agentbridge.terminal_agent import (
     TerminalAgentService,
     TerminalInputKind,
@@ -726,6 +726,13 @@ class LocalTerminalAgentServer:
                     for session_id, status in observed.items()
                 },
             }
+        if action == "probe_agent_launch_profiles":
+            return {
+                "profiles": self.terminal.probe_agent_launch_versions(
+                    agent_types=agent_types_from_payload(payload),
+                    timeout_seconds=float(payload.get("timeout_seconds") or 2.0),
+                )
+            }
         if action == "start_session":
             session_id = required_str(payload, "session_id")
             command = payload.get("command")
@@ -822,8 +829,9 @@ class LocalTerminalAgentServer:
             f"未知本地 Terminal Agent action：{action}",
             next_step=(
                 "请使用 health、lifecycle_status、run_lifecycle_monitor_once、"
-                "start_session、restart_session、acquire_human_lease、release_lease、"
-                "submit_input、snapshot、status、read_output 或 stream_output。"
+                "probe_agent_launch_profiles、start_session、restart_session、"
+                "acquire_human_lease、release_lease、submit_input、snapshot、status、"
+                "read_output 或 stream_output。"
             ),
         )
 
@@ -905,6 +913,26 @@ def actor_from_payload(payload: dict[str, Any]) -> Actor:
             next_step="请检查本地客户端请求格式。",
         )
     return Actor(id=actor_id, roles={str(role) for role in roles_value})
+
+
+def agent_types_from_payload(payload: dict[str, Any]) -> list[AgentType] | None:
+    value = payload.get("agent_types")
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "agent_types 必须是字符串数组。",
+            next_step="请省略 agent_types，或提供 claude/codex/generic_tui 字符串数组。",
+        )
+    try:
+        return [AgentType(str(item)) for item in value]
+    except ValueError as exc:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "agent_types 包含未知 Agent 类型。",
+            next_step="请使用 claude、codex 或 generic_tui。",
+        ) from exc
 
 
 def peer_uid_from_writer(writer: asyncio.StreamWriter) -> int | None:

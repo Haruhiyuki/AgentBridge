@@ -3438,6 +3438,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
     <section>
       <div class="toolbar">
         <strong>Agent Launch Profiles</strong>
+        <button id="probe-agents" type="button">Probe Versions</button>
       </div>
       <div class="table-wrap">
         <table aria-label="Agent launch profiles">
@@ -3453,6 +3454,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
           <tbody id="agent-profiles"></tbody>
         </table>
       </div>
+      <pre id="agent-probe">{}</pre>
     </section>
     <section>
       <div class="toolbar">
@@ -3599,6 +3601,20 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
       setStatus("Run complete");
     }
 
+    async function probeAgents() {
+      setStatus("Probing");
+      const payload = {
+        actor: actor(),
+        trace_id: "admin-ui-agent-launch-probe",
+      };
+      const result = await requestJson("/api/v1/terminal/agent-launch/probe", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      $("agent-probe").textContent = JSON.stringify(result.profiles || {}, null, 2);
+      setStatus("Probe complete");
+    }
+
     async function run(action) {
       try {
         await action();
@@ -3609,6 +3625,7 @@ TERMINAL_LIFECYCLE_ADMIN_HTML = """<!doctype html>
 
     $("refresh").addEventListener("click", () => run(refresh));
     $("run-once").addEventListener("click", () => run(runOnce));
+    $("probe-agents").addEventListener("click", () => run(probeAgents));
     refresh().catch((error) => setStatus(error.message));
   </script>
 </body>

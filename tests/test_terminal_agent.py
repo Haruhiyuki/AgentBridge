@@ -150,6 +150,23 @@ def test_terminal_lifecycle_status_reports_agent_launch_profiles(tmp_path, monke
     assert profiles["generic_tui"]["agent_type"] == "generic_tui"
 
 
+def test_terminal_agent_probes_configured_agent_version(tmp_path, monkeypatch):
+    claude_wrapper = tmp_path / "claude-agentbridge-wrapper"
+    claude_wrapper.write_text("#!/bin/sh\nprintf 'Claude Test 1.2.3\\n'\n", encoding="utf-8")
+    claude_wrapper.chmod(0o755)
+    monkeypatch.setenv("AGENTBRIDGE_AGENT_CLAUDE_COMMAND", str(claude_wrapper))
+
+    terminal = TerminalAgentService(ControlPlane(), backend=FakeTerminalBackend())
+
+    profiles = terminal.probe_agent_launch_versions(agent_types=[AgentType.CLAUDE])
+
+    assert profiles["claude"]["status"] == "ok"
+    assert profiles["claude"]["exit_code"] == 0
+    assert profiles["claude"]["version_command"] == f"{claude_wrapper} --version"
+    assert profiles["claude"]["version_text"] == "Claude Test 1.2.3"
+    assert profiles["claude"]["stdout"] == "Claude Test 1.2.3\n"
+
+
 def test_terminal_agent_enforces_current_writer_lease_epoch(tmp_path):
     control = ControlPlane()
     backend = FakeTerminalBackend()

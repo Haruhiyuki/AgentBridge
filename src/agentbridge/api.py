@@ -346,6 +346,15 @@ class TerminalLifecycleRunOnceRequest(BaseModel):
     trace_id: str = "terminal-lifecycle-api"
 
 
+class AgentLaunchProbeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    agent_types: list[AgentType] | None = None
+    timeout_seconds: float = Field(default=2.0, ge=0.1, le=10.0)
+    trace_id: str = "terminal-agent-launch-probe-api"
+
+
 class CommandRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1754,6 +1763,30 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
                 session_id: status.to_payload()
                 for session_id, status in observed.items()
             },
+        }
+
+    @app.post("/api/v1/terminal/agent-launch/probe")
+    def probe_terminal_agent_launch_versions(
+        payload: AgentLaunchProbeRequest,
+        control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
+    ):
+        control.require_collection_permission(
+            payload.actor.to_actor(),
+            Permission.TERMINAL_CONTROL,
+            resource_type="terminal_lifecycle",
+            attributes={
+                "operation": "terminal_agent_launch_probe",
+                "agent_types": [
+                    agent_type.value for agent_type in (payload.agent_types or [])
+                ],
+            },
+        )
+        return {
+            "profiles": terminal_service.probe_agent_launch_versions(
+                agent_types=payload.agent_types,
+                timeout_seconds=payload.timeout_seconds,
+            )
         }
 
     @app.websocket("/api/v1/sessions/{session_id}/terminal/ws")
@@ -3468,7 +3501,10 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         and path_segments[6] in {"snapshot", "status"}
     ):
         return DeviceIdentityScope.TERMINAL_READ
-    if path == "/api/v1/terminal/lifecycle-monitor/run-once":
+    if path in {
+        "/api/v1/terminal/lifecycle-monitor/run-once",
+        "/api/v1/terminal/agent-launch/probe",
+    }:
         return DeviceIdentityScope.TERMINAL_CONTROL
     if (
         len(path_segments) >= 7
