@@ -841,6 +841,59 @@ class ControlPlane:
         )
         return updated_session, queue_version
 
+    def claim_next_turn(
+        self,
+        *,
+        actor: Actor,
+        session_id: str,
+        trace_id: str,
+        expected_queue_version: str | None = None,
+        chat_context_id: str | None = None,
+    ) -> tuple[Turn | None, str]:
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        session = self.require_session_permission(
+            effective_actor,
+            Permission.SESSION_MANAGE,
+            session_id=session_id,
+            chat_context_id=chat_context_id,
+            attributes={"operation": "queue_claim_next"},
+        )
+        turn = self.repository.start_next_turn(
+            session_id=session_id,
+            expected_queue_version=expected_queue_version,
+        )
+        queue_version = self.repository.queue_version(session_id)
+        if turn is None:
+            return None, queue_version
+        self.audit(
+            action="turn.claimed",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            details={
+                "turn_id": turn.id,
+                "queue_version": queue_version,
+            },
+        )
+        self.emit_event(
+            event_type="turn.started",
+            source=SemanticEventSource.CONTROL_PLANE,
+            trace_id=trace_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            turn_id=turn.id,
+            payload={
+                "actor_id": effective_actor.id,
+                "claim_source": "queue",
+                "queue_version": queue_version,
+                "prompt_length": len(turn.prompt),
+            },
+        )
+        return turn, queue_version
+
     def close_session(
         self,
         *,

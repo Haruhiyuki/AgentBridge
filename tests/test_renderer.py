@@ -153,6 +153,26 @@ def test_turn_queue_unblocked_event_renders_resume_notice():
     assert "next_epoch=3" in messages[0]
 
 
+def test_turn_started_event_renders_progress_notice():
+    event = make_event(
+        "turn.started",
+        {
+            "prompt_length": 21,
+            "claim_source": "queue",
+            "queue_version": "qv_1234",
+        },
+    )
+    event = event.model_copy(update={"turn_id": "turn_1"})
+
+    document = document_from_event(event)
+    messages = OneBotV11TextRenderer().render(document)
+
+    assert "任务已开始" in messages[0]
+    assert "Turn：turn_1" in messages[0]
+    assert "Prompt 长度：21" in messages[0]
+    assert "来源：queue" in messages[0]
+
+
 def test_approval_request_event_renders_approver_actions():
     event = make_event(
         "approval.requested",

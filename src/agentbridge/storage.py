@@ -1581,6 +1581,23 @@ class InMemoryRepository:
             )
             return updated_turn
 
+    def start_next_turn(
+        self,
+        *,
+        session_id: str,
+        expected_queue_version: str | None = None,
+    ) -> Turn | None:
+        with self._lock:
+            self.get_session(session_id)
+            self._validate_queue_version_locked(
+                session_id=session_id,
+                expected_queue_version=expected_queue_version,
+            )
+            queued_turns = self._sorted_queue_locked(session_id)
+            if not queued_turns:
+                return None
+            return self.start_turn(session_id=session_id, turn_id=queued_turns[0].id)
+
     def finish_turn(self, *, session_id: str, turn_id: str, status: TurnStatus) -> Turn:
         with self._lock:
             session = self.get_session(session_id)

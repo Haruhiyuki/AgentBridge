@@ -22,6 +22,7 @@ from agentbridge.domain import (
     PolicyScope,
     RiskLevel,
     SemanticEventSource,
+    TurnStatus,
     Visibility,
 )
 from agentbridge.persistence import SQLAlchemyRepository
@@ -277,6 +278,64 @@ def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
     )
     assert duplicate_result == session_result
     assert len(second_repo.sessions) == 1
+
+
+def test_sqlalchemy_repository_persists_start_next_turn(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'agentbridge-claim-next.db'}"
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    operator = Actor(id="usr_operator", roles={"operator"})
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    first_control = ControlPlane(repository=first_repo)
+
+    project = first_control.create_project(
+        actor=maintainer,
+        name="Claim Next Persistence",
+        trace_id="claim-next-project",
+    )
+    workspace = first_control.add_workspace(
+        actor=maintainer,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="claim-next-workspace",
+    )
+    session = first_control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Claim Next Session",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="claim-next-session",
+    )
+    first_turn = first_control.enqueue_turn(
+        actor=operator,
+        session_id=session.id,
+        prompt="First persisted claim",
+        trace_id="claim-next-first-turn",
+    )
+    second_turn = first_control.enqueue_turn(
+        actor=operator,
+        session_id=session.id,
+        prompt="Second persisted claim",
+        trace_id="claim-next-second-turn",
+    )
+
+    claimed_turn, queue_version = first_control.claim_next_turn(
+        actor=maintainer,
+        session_id=session.id,
+        trace_id="claim-next-claim",
+    )
+    second_repo = SQLAlchemyRepository(database_url)
+
+    assert claimed_turn is not None
+    assert claimed_turn.id == first_turn.id
+    assert queue_version.startswith("qv_")
+    assert second_repo.get_turn(first_turn.id).status == TurnStatus.RUNNING
+    assert second_repo.get_session(session.id).active_turn_id == first_turn.id
+    assert [turn.id for turn in second_repo.list_queue(session.id)] == [second_turn.id]
+    assert second_repo.list_events(session_id=session.id)[-1].type == "turn.started"
 
 
 def test_sqlalchemy_project_bindings_preserve_unique_default(tmp_path):

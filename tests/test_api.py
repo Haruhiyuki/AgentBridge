@@ -2109,6 +2109,14 @@ def test_managed_device_identity_requires_session_manage_scope_for_session_write
         json=maintainer,
         headers=key_headers,
     )
+    claim_next_response = client.post(
+        f"/api/v1/sessions/{existing_session['id']}/queue/claim-next",
+        json={
+            "actor": maintainer,
+            "trace_id": "session-scope-denied-claim-next",
+        },
+        headers=key_headers,
+    )
     lease_response = client.post(
         f"/api/v1/sessions/{existing_session['id']}/lease/acquire",
         json={
@@ -2124,6 +2132,7 @@ def test_managed_device_identity_requires_session_manage_scope_for_session_write
     assert commands_response.status_code == 200
     assert create_session_response.status_code == 403
     assert close_response.status_code == 403
+    assert claim_next_response.status_code == 403
     assert lease_response.status_code == 403
 
 
@@ -2426,12 +2435,21 @@ def test_managed_device_identity_session_manage_scope_allows_session_write_apis(
         },
         headers=headers,
     )
+    claim_next_response = client.post(
+        f"/api/v1/sessions/{session_id}/queue/claim-next",
+        json={
+            "actor": maintainer,
+            "expected_queue_version": reorder_queue_response.json().get("queue_version"),
+            "trace_id": "session-manager-claim-next",
+        },
+        headers=headers,
+    )
     clear_queue_response = client.post(
         f"/api/v1/sessions/{session_id}/queue/clear",
         json={
             "actor": maintainer,
-            "expected_queue_version": reorder_queue_response.json().get("queue_version"),
-            "confirm_count": 2,
+            "expected_queue_version": claim_next_response.json().get("queue_version"),
+            "confirm_count": 1,
             "trace_id": "session-manager-clear-queue",
         },
         headers=headers,
@@ -2458,10 +2476,12 @@ def test_managed_device_identity_session_manage_scope_allows_session_write_apis(
         second_queued_turn.id,
         first_queued_turn.id,
     ]
+    assert claim_next_response.status_code == 200
+    assert claim_next_response.json()["turn"]["id"] == second_queued_turn.id
+    assert claim_next_response.json()["turn"]["status"] == "running"
     assert clear_queue_response.status_code == 200
     assert clear_queue_response.json()["queue_version"].startswith("qv_")
     assert [turn["id"] for turn in clear_queue_response.json()["turns"]] == [
-        second_queued_turn.id,
         first_queued_turn.id,
     ]
     assert close_response.status_code == 200
@@ -3895,6 +3915,181 @@ def test_session_queue_api_lists_removes_and_clears_queued_turns(tmp_path):
     assert control.repository.turns[first_turn["id"]].status == TurnStatus.CANCELLED
     assert control.repository.turns[second_turn["id"]].status == TurnStatus.CANCELLED
     assert control.repository.turns[third_turn["id"]].status == TurnStatus.CANCELLED
+
+
+def test_session_queue_claim_next_starts_turns_serially(tmp_path):
+    control = ControlPlane()
+    client = TestClient(create_app(control))
+    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    operator = {"id": "usr_operator", "roles": ["operator"]}
+
+    project_response = client.post(
+        "/api/v1/projects",
+        json={
+            "actor": maintainer,
+            "name": "Claim Queue Backend",
+            "trace_id": "claim-queue-project",
+        },
+    )
+    assert project_response.status_code == 200
+    project = project_response.json()
+    workspace_response = client.post(
+        f"/api/v1/projects/{project['id']}/workspaces",
+        json={
+            "actor": maintainer,
+            "machine_id": "local",
+            "path": str(tmp_path / "repo"),
+            "allowed_root": str(tmp_path),
+            "trace_id": "claim-queue-workspace",
+        },
+    )
+    assert workspace_response.status_code == 200
+    workspace = workspace_response.json()
+    session_response = client.post(
+        "/api/v1/sessions",
+        json={
+            "actor": maintainer,
+            "project_id": project["id"],
+            "workspace_id": workspace["id"],
+            "name": "Claim Queue Session",
+            "trace_id": "claim-queue-session",
+        },
+    )
+    assert session_response.status_code == 200
+    session = session_response.json()
+    first_turn = client.post(
+        f"/api/v1/sessions/{session['id']}/turns",
+        json={
+            "actor": operator,
+            "prompt": "First claimable turn",
+            "trace_id": "claim-queue-first",
+        },
+    ).json()
+    second_turn = client.post(
+        f"/api/v1/sessions/{session['id']}/turns",
+        json={
+            "actor": operator,
+            "prompt": "Second claimable turn",
+            "trace_id": "claim-queue-second",
+        },
+    ).json()
+
+    queue_version = client.get(f"/api/v1/sessions/{session['id']}/queue").json()[
+        "queue_version"
+    ]
+    pause_response = client.post(
+        f"/api/v1/sessions/{session['id']}/queue/pause",
+        json={
+            "actor": maintainer,
+            "expected_queue_version": queue_version,
+            "trace_id": "claim-queue-pause",
+        },
+    )
+    paused_claim_response = client.post(
+        f"/api/v1/sessions/{session['id']}/queue/claim-next",
+        json={
+            "actor": maintainer,
+            "expected_queue_version": pause_response.json()["queue_version"],
+            "trace_id": "claim-queue-paused",
+        },
+    )
+    resume_response = client.post(
+        f"/api/v1/sessions/{session['id']}/queue/resume",
+        json={
+            "actor": maintainer,
+            "expected_queue_version": pause_response.json()["queue_version"],
+            "trace_id": "claim-queue-resume",
+        },
+    )
+    first_claim_response = client.post(
+        f"/api/v1/sessions/{session['id']}/queue/claim-next",
+        json={
+            "actor": maintainer,
+            "expected_queue_version": resume_response.json()["queue_version"],
+            "trace_id": "claim-queue-first-claim",
+        },
+    )
+    duplicate_claim_response = client.post(
+        f"/api/v1/sessions/{session['id']}/queue/claim-next",
+        json={
+            "actor": maintainer,
+            "expected_queue_version": first_claim_response.json()["queue_version"],
+            "trace_id": "claim-queue-duplicate-claim",
+        },
+    )
+    active_turn_after_first_claim = control.repository.sessions[
+        session["id"]
+    ].active_turn_id
+    complete_first_response = client.post(
+        f"/api/v1/sessions/{session['id']}/events",
+        json={
+            "type": "turn.completed",
+            "turn_id": first_turn["id"],
+            "trace_id": "claim-queue-complete-first",
+        },
+    )
+    current_queue_version = client.get(f"/api/v1/sessions/{session['id']}/queue").json()[
+        "queue_version"
+    ]
+    second_claim_response = client.post(
+        f"/api/v1/sessions/{session['id']}/queue/claim-next",
+        json={
+            "actor": maintainer,
+            "expected_queue_version": current_queue_version,
+            "trace_id": "claim-queue-second-claim",
+        },
+    )
+    complete_second_response = client.post(
+        f"/api/v1/sessions/{session['id']}/events",
+        json={
+            "type": "turn.completed",
+            "turn_id": second_turn["id"],
+            "trace_id": "claim-queue-complete-second",
+        },
+    )
+    empty_claim_response = client.post(
+        f"/api/v1/sessions/{session['id']}/queue/claim-next",
+        json={
+            "actor": maintainer,
+            "trace_id": "claim-queue-empty-claim",
+        },
+    )
+
+    assert pause_response.status_code == 200
+    assert paused_claim_response.status_code == 409
+    assert paused_claim_response.json()["details"]["queue_paused"] is True
+    assert resume_response.status_code == 200
+    assert first_claim_response.status_code == 200
+    assert first_claim_response.json()["turn"]["id"] == first_turn["id"]
+    assert first_claim_response.json()["turn"]["status"] == "running"
+    assert active_turn_after_first_claim == first_turn["id"]
+    assert duplicate_claim_response.status_code == 409
+    assert duplicate_claim_response.json()["details"]["active_turn_id"] == first_turn["id"]
+    assert complete_first_response.status_code == 200
+    assert second_claim_response.status_code == 200
+    assert second_claim_response.json()["turn"]["id"] == second_turn["id"]
+    assert second_claim_response.json()["turn"]["status"] == "running"
+    assert complete_second_response.status_code == 200
+    assert empty_claim_response.status_code == 200
+    assert empty_claim_response.json()["turn"] is None
+
+    started_events = [
+        event
+        for event in control.repository.list_events(session_id=session["id"])
+        if event.type == "turn.started"
+    ]
+    assert [event.turn_id for event in started_events] == [
+        first_turn["id"],
+        second_turn["id"],
+    ]
+    assert all(event.payload["claim_source"] == "queue" for event in started_events)
+    claimed_audits = [
+        event for event in control.repository.audit_events if event.action == "turn.claimed"
+    ]
+    assert [event.details["turn_id"] for event in claimed_audits] == [
+        first_turn["id"],
+        second_turn["id"],
+    ]
 
 
 def test_project_session_rest_flow_supports_admin_operations(tmp_path):

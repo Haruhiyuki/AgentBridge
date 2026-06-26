@@ -196,6 +196,22 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
                 ),
             )
         )
+    elif event.type == "turn.started":
+        source_text = (
+            f"\n来源：{payload.get('claim_source')}"
+            if payload.get("claim_source")
+            else ""
+        )
+        blocks.append(
+            progress_block(
+                "任务已开始",
+                (
+                    f"Turn：{event.turn_id}\n"
+                    f"Prompt 长度：{payload.get('prompt_length')}"
+                    f"{source_text}"
+                ),
+            )
+        )
     elif event.type == "tool.started":
         blocks.append(
             progress_block(

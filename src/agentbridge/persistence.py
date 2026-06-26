@@ -321,6 +321,7 @@ class SQLAlchemyRepository(InMemoryRepository):
         "reorder_queued_turn",
         "set_turn_queue_paused",
         "start_turn",
+        "start_next_turn",
         "finish_turn",
         "acquire_lease",
         "release_lease",
