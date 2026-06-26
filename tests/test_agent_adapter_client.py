@@ -85,6 +85,151 @@ def test_claude_hook_client_posts_default_schema_checked_event():
     ]
 
 
+def test_control_client_spools_transient_event_to_offline_outbox(tmp_path):
+    outbox_path = tmp_path / "adapter-outbox.jsonl"
+
+    def transport(method, url, headers, payload, timeout_seconds):
+        raise AgentAdapterClientError("connection refused")
+
+    control_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(
+            base_url="http://bridge.local/",
+            session_id="ses_1",
+            offline_outbox_path=outbox_path,
+        ),
+        transport=transport,
+    )
+
+    result = control_client.ingest_event(
+        agent_type=AgentType.CLAUDE,
+        adapter_event_type="MessageDisplay",
+        payload={"text": "offline answer"},
+        idempotency_key="offline-event-1",
+    )
+
+    assert result == {
+        "offline_queued": True,
+        "outbox_path": str(outbox_path),
+        "queued_count": 1,
+        "agent_type": "claude",
+        "adapter_event_type": "MessageDisplay",
+        "trace_id": "agent-adapter-client",
+        "schema_version": "claude-hooks.v1",
+        "idempotency_key": "offline-event-1",
+    }
+    queued = [json.loads(line) for line in outbox_path.read_text(encoding="utf-8").splitlines()]
+    assert [entry["payload"]["adapter_event_type"] for entry in queued] == [
+        "MessageDisplay"
+    ]
+    assert queued[0]["payload"]["payload"] == {"text": "offline answer"}
+
+
+def test_control_client_does_not_spool_permanent_event_error(tmp_path):
+    outbox_path = tmp_path / "adapter-outbox.jsonl"
+
+    def transport(method, url, headers, payload, timeout_seconds):
+        raise AgentAdapterClientError("schema rejected", status_code=400)
+
+    control_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(
+            base_url="http://bridge.local/",
+            session_id="ses_1",
+            offline_outbox_path=outbox_path,
+        ),
+        transport=transport,
+    )
+
+    with pytest.raises(AgentAdapterClientError) as exc_info:
+        control_client.ingest_event(
+            agent_type=AgentType.CLAUDE,
+            adapter_event_type="MessageDisplay",
+            payload={"text": "bad schema"},
+            idempotency_key="permanent-event-1",
+        )
+
+    assert exc_info.value.status_code == 400
+    assert not outbox_path.exists()
+
+
+def test_control_client_flushes_offline_outbox_before_current_event(tmp_path):
+    outbox_path = tmp_path / "adapter-outbox.jsonl"
+
+    def failing_transport(method, url, headers, payload, timeout_seconds):
+        raise AgentAdapterClientError("connection refused")
+
+    first_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(
+            base_url="http://bridge.local",
+            session_id="ses_1",
+            offline_outbox_path=outbox_path,
+        ),
+        transport=failing_transport,
+    )
+    first_client.ingest_event(
+        agent_type=AgentType.CLAUDE,
+        adapter_event_type="MessageDisplay",
+        payload={"text": "first"},
+        idempotency_key="offline-first",
+    )
+
+    calls = []
+
+    def recovered_transport(method, url, headers, payload, timeout_seconds):
+        calls.append((method, url, payload))
+        return {"id": f"evt_{len(calls)}", "type": "assistant.delta"}
+
+    recovered_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(
+            base_url="http://bridge.local",
+            session_id="ses_1",
+            offline_outbox_path=outbox_path,
+        ),
+        transport=recovered_transport,
+    )
+    result = recovered_client.ingest_event(
+        agent_type=AgentType.CLAUDE,
+        adapter_event_type="Stop",
+        payload={"status": "done"},
+        idempotency_key="offline-second",
+    )
+
+    assert result == {"id": "evt_2", "type": "assistant.delta"}
+    assert [call[2]["idempotency_key"] for call in calls] == [
+        "offline-first",
+        "offline-second",
+    ]
+    assert not outbox_path.exists()
+
+
+def test_emit_and_wait_fails_closed_when_interaction_event_is_queued_offline(tmp_path):
+    outbox_path = tmp_path / "adapter-outbox.jsonl"
+
+    def transport(method, url, headers, payload, timeout_seconds):
+        raise AgentAdapterClientError("connection refused")
+
+    control_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(
+            base_url="http://bridge.local",
+            session_id="ses_1",
+            offline_outbox_path=outbox_path,
+        ),
+        transport=transport,
+    )
+    client = CodexAppServerAdapterClient(control_client)
+
+    with pytest.raises(AgentAdapterClientError) as exc_info:
+        client.emit_and_wait(
+            "item/tool/requestUserInput",
+            {"item": {"id": "question-1"}},
+            idempotency_key="offline-question",
+            poll_interval_seconds=0.01,
+        )
+
+    assert "queued offline" in exc_info.value.message
+    assert exc_info.value.payload["offline_queued"] is True
+    assert outbox_path.exists()
+
+
 def test_codex_client_rejects_unsupported_schema_before_transport():
     called = False
 

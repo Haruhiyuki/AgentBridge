@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -101,6 +102,12 @@ class AgentAdapterClientError(RuntimeError):
         self.payload = payload or {}
 
 
+def is_transient_adapter_error(error: AgentAdapterClientError) -> bool:
+    if error.status_code is None:
+        return True
+    return error.status_code in {408, 425, 429} or error.status_code >= 500
+
+
 @dataclass(frozen=True)
 class AgentAdapterClientConfig:
     base_url: str
@@ -109,6 +116,7 @@ class AgentAdapterClientConfig:
     device_id: str | None = None
     device_key: str | None = None
     timeout_seconds: float = 10.0
+    offline_outbox_path: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.base_url.strip():
@@ -119,6 +127,99 @@ class AgentAdapterClientConfig:
             raise ValueError("device_id and device_key must be provided together")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+
+
+class AgentAdapterEventOutbox:
+    schema_version = "agentbridge.adapter_outbox.v1"
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def append(self, request_payload: Mapping[str, object]) -> int:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "schema_version": self.schema_version,
+            "payload": dict(request_payload),
+            "enqueued_at_monotonic": time.monotonic(),
+        }
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n")
+        return len(self.read_entries())
+
+    def flush(self, sender: Callable[[dict[str, object]], dict[str, object]]) -> int:
+        entries = self.read_entries()
+        sent = 0
+        for index, entry in enumerate(entries):
+            payload = entry["payload"]
+            try:
+                sender(payload)
+            except AgentAdapterClientError as exc:
+                if is_transient_adapter_error(exc):
+                    self.replace_entries(entries[index:])
+                    raise AgentAdapterClientError(
+                        "offline adapter outbox flush deferred",
+                        payload={
+                            "sent": sent,
+                            "remaining": len(entries) - index,
+                            "cause": exc.message,
+                        },
+                    ) from exc
+                raise
+            sent += 1
+        self.replace_entries([])
+        return sent
+
+    def read_entries(self) -> list[dict[str, dict[str, object]]]:
+        if not self.path.exists():
+            return []
+        entries: list[dict[str, dict[str, object]]] = []
+        with self.path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    decoded = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise AgentAdapterClientError(
+                        f"offline adapter outbox line {line_number} is not valid JSON",
+                        status_code=400,
+                    ) from exc
+                if not isinstance(decoded, dict):
+                    raise AgentAdapterClientError(
+                        f"offline adapter outbox line {line_number} must be an object",
+                        status_code=400,
+                    )
+                payload = decoded.get("payload")
+                if not isinstance(payload, dict):
+                    raise AgentAdapterClientError(
+                        f"offline adapter outbox line {line_number} must include payload",
+                        status_code=400,
+                    )
+                entries.append({"payload": {str(key): value for key, value in payload.items()}})
+        return entries
+
+    def replace_entries(self, entries: list[dict[str, dict[str, object]]]) -> None:
+        if not entries:
+            with contextlib.suppress(FileNotFoundError):
+                self.path.unlink()
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.path.with_name(f"{self.path.name}.tmp")
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            for entry in entries:
+                handle.write(
+                    json.dumps(
+                        {
+                            "schema_version": self.schema_version,
+                            "payload": entry["payload"],
+                            "enqueued_at_monotonic": time.monotonic(),
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+        os.replace(tmp_path, self.path)
 
 
 class AgentAdapterControlClient:
@@ -134,6 +235,11 @@ class AgentAdapterControlClient:
         self.transport = transport or urllib_json_transport
         self.clock = clock or time.monotonic
         self.sleep = sleep or time.sleep
+        self.offline_outbox = (
+            AgentAdapterEventOutbox(config.offline_outbox_path)
+            if config.offline_outbox_path is not None
+            else None
+        )
 
     def ingest_event(
         self,
@@ -168,11 +274,30 @@ class AgentAdapterControlClient:
         for key, value in optional_fields.items():
             if value is not None:
                 request_payload[key] = value
-        return self._request_json(
-            "POST",
-            self._session_path("agent-adapter/events"),
-            payload=request_payload,
-        )
+        if self.offline_outbox is None:
+            return self._post_adapter_event_payload(request_payload)
+        try:
+            self.flush_offline_events()
+            return self._post_adapter_event_payload(request_payload)
+        except AgentAdapterClientError as exc:
+            if not is_transient_adapter_error(exc):
+                raise
+            queued_count = self.offline_outbox.append(request_payload)
+            return {
+                "offline_queued": True,
+                "outbox_path": str(self.offline_outbox.path),
+                "queued_count": queued_count,
+                "agent_type": agent_type.value,
+                "adapter_event_type": adapter_event_type,
+                "trace_id": trace_id,
+                "schema_version": normalized_schema_version,
+                "idempotency_key": idempotency_key,
+            }
+
+    def flush_offline_events(self) -> int:
+        if self.offline_outbox is None:
+            return 0
+        return self.offline_outbox.flush(self._post_adapter_event_payload)
 
     def poll_responses(
         self,
@@ -272,6 +397,16 @@ class AgentAdapterControlClient:
             self.config.timeout_seconds,
         )
 
+    def _post_adapter_event_payload(
+        self,
+        request_payload: dict[str, object],
+    ) -> dict[str, object]:
+        return self._request_json(
+            "POST",
+            self._session_path("agent-adapter/events"),
+            payload=request_payload,
+        )
+
     def _session_path(self, suffix: str) -> str:
         session_id = quote(self.config.session_id, safe="")
         return f"/api/v1/sessions/{session_id}/{suffix}"
@@ -342,6 +477,11 @@ class NativeAgentAdapterClient:
             turn_id=turn_id,
             interaction_id=interaction_id,
         )
+        if event.get("offline_queued") is True:
+            raise AgentAdapterClientError(
+                "adapter event queued offline; response unavailable until Control Plane reconnects",
+                payload=event,
+            )
         response = self.control_client.wait_for_response(
             event,
             timeout_seconds=timeout_seconds,
@@ -2055,6 +2195,10 @@ def decode_error_payload(exc: HTTPError) -> dict[str, object]:
 def build_config_from_args(args: argparse.Namespace) -> AgentAdapterClientConfig:
     base_url = args.api_url or os.environ.get("AGENTBRIDGE_API_URL") or "http://127.0.0.1:8000"
     session_id = args.session_id or os.environ.get("AGENTBRIDGE_SESSION_ID") or ""
+    offline_outbox_value = (
+        getattr(args, "offline_outbox", None)
+        or os.environ.get("AGENTBRIDGE_ADAPTER_OFFLINE_OUTBOX")
+    )
     api_token = secret_value(
         args.api_token,
         args.api_token_file,
@@ -2075,6 +2219,7 @@ def build_config_from_args(args: argparse.Namespace) -> AgentAdapterClientConfig
         device_id=device_id,
         device_key=device_key,
         timeout_seconds=args.timeout_seconds,
+        offline_outbox_path=Path(offline_outbox_value) if offline_outbox_value else None,
     )
 
 
@@ -2175,6 +2320,11 @@ def add_auth_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--device-key", help="Managed/static device key")
     parser.add_argument("--device-key-file", type=Path, help="File containing device key")
     parser.add_argument("--timeout-seconds", type=float, default=10.0)
+    parser.add_argument(
+        "--offline-outbox",
+        type=Path,
+        help="JSONL file for caching adapter events while Control Plane is unavailable",
+    )
 
 
 def add_emit_arguments(parser: argparse.ArgumentParser) -> None:
