@@ -1481,6 +1481,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     <section>
       <div class="toolbar">
         <button id="refresh" type="button">Refresh</button>
+        <button id="project-session-export-json" type="button">Export JSON</button>
         <label class="compact">
           Actor ID
           <input id="actor-id" value="admin-ui">
@@ -1732,6 +1733,8 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     let selectedProjectId = "";
     let selectedSessionId = "";
     let queueState = null;
+    let projectsLoaded = false;
+    let currentWorkspaces = [];
     let currentSessions = [];
     let currentProjectBindings = null;
     let sessionQueues = new Map();
@@ -1855,6 +1858,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     }
 
     function renderWorkspaces(workspaces) {
+      currentWorkspaces = workspaces;
       const rows = workspaces.map((workspace) => {
         const tr = document.createElement("tr");
         for (const value of [
@@ -2014,6 +2018,54 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
       $("queue-json").textContent = JSON.stringify(queue, null, 2);
     }
 
+    function mapObject(map) {
+      return Object.fromEntries(Array.from(map.entries()));
+    }
+
+    function projectSessionExportPayload() {
+      const selectedProject = projects.find((project) => project.id === selectedProjectId) || null;
+      return {
+        schema_version: "agentbridge.admin_project_session_export.v1",
+        exported_at: new Date().toISOString(),
+        selected_project_id: selectedProjectId || null,
+        selected_session_id: selectedSessionId || null,
+        project_count: projects.length,
+        workspace_count: currentWorkspaces.length,
+        session_count: currentSessions.length,
+        chat_context_id: $("binding-chat-context-id").value.trim() || null,
+        projects,
+        selected_project: selectedProject,
+        project_bindings: currentProjectBindings,
+        workspaces: currentWorkspaces,
+        sessions: currentSessions.map(sessionDetail),
+        queues_by_session: mapObject(sessionQueues),
+        leases_by_session: mapObject(sessionLeases),
+        pending_approvals_by_session: mapObject(sessionPendingApprovals),
+        selected_queue: queueState,
+      };
+    }
+
+    function downloadProjectSessionJson() {
+      if (!projectsLoaded) {
+        setStatus("Refresh before export");
+        return;
+      }
+      const payload = projectSessionExportPayload();
+      const blob = new Blob(
+        [JSON.stringify(payload, null, 2) + "\n"],
+        {type: "application/json"},
+      );
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "agentbridge-projects-sessions.json";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      setStatus("Project/session JSON exported");
+    }
+
     function readWorkspaceMaxWriteSessions() {
       const parsed = Number.parseInt($("workspace-max-write-sessions").value || "0", 10);
       return Number.isFinite(parsed) ? parsed : 0;
@@ -2035,6 +2087,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     async function loadProjects() {
       setStatus("Loading projects");
       projects = await requestJson("/api/v1/projects");
+      projectsLoaded = true;
       if (selectedProjectId && !projects.some((project) => project.id === selectedProjectId)) {
         selectedProjectId = "";
       }
@@ -2274,6 +2327,7 @@ PROJECT_SESSION_ADMIN_HTML = """<!doctype html>
     }
 
     $("refresh").addEventListener("click", () => run(loadProjects));
+    $("project-session-export-json").addEventListener("click", downloadProjectSessionJson);
     $("binding-refresh").addEventListener("click", () => run(loadProjectBindings));
     $("create-project").addEventListener("click", () => run(createProject));
     $("add-workspace").addEventListener("click", () => run(addWorkspace));

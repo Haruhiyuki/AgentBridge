@@ -933,7 +933,8 @@ HTTP/Admin/WebSocket/device/certificate authentication gates; it can export the
 current endpoint/readiness snapshot as JSON for acceptance evidence. The
 project/session page lists projects, adds workspaces, creates sessions, closes selected
 sessions, and surfaces active Turn, queue, pending approval, and lease status through
-the same REST APIs used by external clients. The interaction
+the same REST APIs used by external clients, with JSON export for project/session
+acceptance evidence. The interaction
 page lists and filters questions/approvals, creates new interactions, answers questions,
 votes on approvals, and cancels pending items. The audit/event page filters audit
 records, searches semantic events across streams, supports `q` text search over audit

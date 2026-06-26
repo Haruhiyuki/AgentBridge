@@ -3662,6 +3662,9 @@ def test_project_session_admin_ui_serves_dashboard():
     assert "workspace-writable" in html
     assert "workspace-max-write-sessions" in html
     assert "function syncWorkspaceWritePolicy()" in html
+    assert 'id="project-session-export-json"' in html
+    assert "agentbridge.admin_project_session_export.v1" in html
+    assert "function downloadProjectSessionJson()" in html
     assert "queue-refresh" in html
     assert "queue-pause" in html
     assert "queue-resume" in html
