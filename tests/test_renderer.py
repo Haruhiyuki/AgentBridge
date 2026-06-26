@@ -340,3 +340,43 @@ def test_long_plain_text_is_split_without_dropping_content():
 
     assert "".join(chunks) == "x" * 205
     assert [len(chunk) for chunk in chunks] == [100, 100, 5]
+
+
+def test_long_code_block_splits_into_balanced_fences():
+    code = "\n".join(f"print({index})" for index in range(30))
+    document = RenderDocument(id="rend_1", blocks=[code_block("python", code)])
+
+    chunks = PlainTextRenderer(max_message_chars=120).render(document)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 120 for chunk in chunks)
+    assert all(chunk.startswith("```python\n") for chunk in chunks)
+    assert all(chunk.endswith("\n```") for chunk in chunks)
+    assert all(chunk.count("```") == 2 for chunk in chunks)
+    combined = "\n".join(chunks)
+    for index in range(30):
+        assert f"print({index})" in combined
+
+
+def test_markdown_fenced_code_splits_without_breaking_format():
+    code = "\n".join(f"line_{index} = {index}" for index in range(20))
+    document = RenderDocument(
+        id="rend_1",
+        blocks=[
+            RenderBlock(
+                type=RenderBlockType.MARKDOWN,
+                text=f"Intro\n\n```python\n{code}\n```\n\nDone",
+            )
+        ],
+    )
+
+    chunks = PlainTextRenderer(max_message_chars=120).render(document)
+
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 120 for chunk in chunks)
+    assert chunks[0].startswith("Intro")
+    assert chunks[-1].endswith("Done")
+    assert all(chunk.count("```") in {0, 2} for chunk in chunks)
+    combined = "\n".join(chunks)
+    for index in range(20):
+        assert f"line_{index} = {index}" in combined

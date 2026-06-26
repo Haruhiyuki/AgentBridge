@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 from uuid import uuid4
@@ -106,6 +108,19 @@ class RenderDocument(BaseModel):
     actions: list[RenderAction] = Field(default_factory=list)
     update_key: str | None = None
     visibility: RenderVisibility = RenderVisibility.PUBLIC
+
+
+@dataclass(frozen=True)
+class _MessagePart:
+    text: str
+    language: str | None = None
+    code: str | None = None
+
+
+_CODE_FENCE_RE = re.compile(
+    r"^```([^\n]*)\n(.*?)\n```[ \t]*$",
+    re.DOTALL | re.MULTILINE,
+)
 
 
 def document_from_event(event: SemanticEvent) -> RenderDocument:
@@ -642,6 +657,61 @@ def split_message(text: str, max_chars: int) -> list[str]:
     if len(text) <= max_chars:
         return [text]
     chunks: list[str] = []
+    current = ""
+    for part in iter_message_parts(text):
+        if part.code is not None and len(part.text) > max_chars:
+            current = flush_message_chunk(chunks, current)
+            chunks.extend(split_code_fence(part.language or "", part.code, max_chars))
+            continue
+        for piece in split_plain_text(part.text, max_chars):
+            current = append_message_piece(chunks, current, piece, max_chars)
+    flush_message_chunk(chunks, current)
+    return chunks
+
+
+def iter_message_parts(text: str) -> list[_MessagePart]:
+    parts: list[_MessagePart] = []
+    cursor = 0
+    for match in _CODE_FENCE_RE.finditer(text):
+        if match.start() > cursor:
+            parts.append(_MessagePart(text=text[cursor : match.start()]))
+        parts.append(
+            _MessagePart(
+                text=match.group(0),
+                language=match.group(1).strip(),
+                code=match.group(2),
+            )
+        )
+        cursor = match.end()
+    if cursor < len(text):
+        parts.append(_MessagePart(text=text[cursor:]))
+    return parts
+
+
+def append_message_piece(
+    chunks: list[str], current: str, piece: str, max_chars: int
+) -> str:
+    if not piece:
+        return current
+    if not current:
+        return piece.lstrip("\n")
+    if len(current) + len(piece) <= max_chars:
+        return f"{current}{piece}"
+    flush_message_chunk(chunks, current)
+    return piece.lstrip("\n")
+
+
+def flush_message_chunk(chunks: list[str], current: str) -> str:
+    chunk = current.rstrip("\n")
+    if chunk:
+        chunks.append(chunk)
+    return ""
+
+
+def split_plain_text(text: str, max_chars: int) -> list[str]:
+    if len(text) <= max_chars:
+        return [text]
+    chunks: list[str] = []
     current: list[str] = []
     current_len = 0
     for paragraph in text.split("\n\n"):
@@ -663,6 +733,44 @@ def split_message(text: str, max_chars: int) -> list[str]:
 
 def split_hard(text: str, max_chars: int) -> list[str]:
     return [text[index : index + max_chars] for index in range(0, len(text), max_chars)]
+
+
+def split_code_fence(language: str, code: str, max_chars: int) -> list[str]:
+    opening = code_fence_opening(language, max_chars)
+    closing = "\n```"
+    content_limit = max_chars - len(opening) - len(closing)
+    pieces = split_code_content(code, max(content_limit, 1))
+    return [f"{opening}{piece}{closing}" for piece in pieces]
+
+
+def code_fence_opening(language: str, max_chars: int) -> str:
+    opening = f"```{language}\n" if language else "```\n"
+    if len(opening) + len("\n```") + 1 <= max_chars:
+        return opening
+    return "```\n"
+
+
+def split_code_content(code: str, max_chars: int) -> list[str]:
+    if len(code) <= max_chars:
+        return [code]
+    chunks: list[str] = []
+    current = ""
+    for line in code.splitlines(keepends=True):
+        while len(line) > max_chars:
+            current = flush_code_content_chunk(chunks, current)
+            chunks.append(line[:max_chars])
+            line = line[max_chars:]
+        if current and len(current) + len(line) > max_chars:
+            current = flush_code_content_chunk(chunks, current)
+        current += line
+    flush_code_content_chunk(chunks, current)
+    return chunks or [""]
+
+
+def flush_code_content_chunk(chunks: list[str], current: str) -> str:
+    if current:
+        chunks.append(current)
+    return ""
 
 
 def stable_jsonish(value: dict[str, Any]) -> str:

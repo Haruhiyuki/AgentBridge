@@ -98,7 +98,7 @@ Implemented in this slice:
 - Terminal command WebSocket through `/api/v1/sessions/{id}/terminal/ws`, supporting `health`, `start_session`, `restart_session`, `acquire_lease`, `release_lease`, `submit_input`, `snapshot`, and `status`.
 - Terminal input enforcement against current writer lease owner and epoch, with rejected/accepted semantic events.
 - RenderDocument intermediate representation for bot-facing messages.
-- OneBot/plain-text fallback renderer with code block preservation, action listing, and deterministic message splitting.
+- OneBot/plain-text fallback renderer with code block preservation, action listing, and deterministic message splitting; overlong fenced code blocks, including Markdown-authored fences, are split into length-safe messages with balanced code fences in every chunk.
 - Operator-visible renderer fallback for skipped terminal auto-restarts when a recovered command is not allowlisted.
 - Rendered event APIs through `GET /api/v1/sessions/{id}/rendered-events` and `GET /api/v1/events/rendered`.
 - Bot Gateway delivery service using the renderer.
@@ -242,6 +242,7 @@ Not implemented yet:
 - Desktop terminal auto-open is opt-in. Custom command templates remain supported, and built-in presets cover macOS Terminal plus common Linux terminal emulators. The daemon keeps sensitive local token/socket state out of launched argv; macOS Terminal uses a mode-0700 short-lived launcher script because AppleScript cannot directly propagate the daemon's environment into the new shell.
 - The tmux backend treats an existing `agentbridge_<session-id>` session as resumable state after Agent restart, matching the design's MVP recovery path.
 - Rendering is split into platform-neutral documents and platform renderers. The first renderer intentionally targets text fallback so unsupported Bot platforms still receive coherent output.
+- Text fallback rendering treats fenced code blocks as structural boundaries during message splitting. If a code block exceeds the platform message length, AgentBridge rewraps each code-content slice in its own balanced fence instead of sending an unterminated code block across messages.
 - Bot delivery idempotency is implemented before real platform integration so duplicate event replay cannot cause duplicate sends once a real transport is attached.
 - Bot delivery records are persisted separately from semantic events so replay, delivery retries, and platform message IDs can evolve without mutating event history.
 - OneBot outbound delivery is implemented as a transport contract first. The NoneBot wrapper is optional and dependency-free; matcher/lifecycle registration helpers cover common single- or multi-matcher `matcher.handle()` setup paths, command-registration helpers expose the shared manifest/result protocol plus startup hook wiring to application code, `register_nonebot_lifecycle()` can keep inbound matcher wiring and startup command registration on one plugin instance, and `NoneBotTransport` can send/delete OneBot V11 text deliveries through `send_to()`/`send()` wrappers or `call_api()`. Full NoneBot integration still needs richer message components, deeper driver/bot lifecycle integration, and adapter-specific edit/rich-card capabilities.
