@@ -517,6 +517,46 @@ def test_onebot_events_api_executes_modal_plan_revision(tmp_path):
     assert stored.answer == "Use expand-contract migration first"
 
 
+def test_onebot_events_api_executes_selection_answer(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_event(control, tmp_path)
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    interaction = control.create_interaction(
+        actor=maintainer,
+        session_id=session_id,
+        interaction_type=InteractionType.QUESTION,
+        prompt="Which environment?",
+        options=["staging", "production"],
+        trace_id="selection-question",
+        chat_context_id=context.id,
+    )
+    client = TestClient(create_app(control_plane=control))
+
+    response = client.post(
+        "/api/v1/onebot/events",
+        json={
+            "default_roles": ["operator"],
+            "event": {
+                "post_type": "notice",
+                "notice_type": "selection_submitted",
+                "group_id": 10001,
+                "user_id": 20002,
+                "event_id": "selection-question-1",
+                "payload": {
+                    "command_template": f"/agent answer {interaction.id} {{answer}}",
+                    "selected_value": "production",
+                },
+            },
+        },
+    )
+
+    stored = control.get_interaction(actor=maintainer, interaction_id=interaction.id)
+    assert response.status_code == 200
+    assert response.json()["result"]["canonical_command"] == "interaction.answer"
+    assert stored.status == InteractionStatus.RESOLVED
+    assert stored.answer == "production"
+
+
 def test_onebot_reply_to_approval_delivery_infers_interaction_for_text_fallback(tmp_path):
     control = ControlPlane()
     maintainer = Actor(id="usr_maintainer", roles={"maintainer"})

@@ -425,15 +425,20 @@ def command_text_from_modal_payload(payload: dict[str, Any]) -> str | None:
     if not isinstance(template, str) or not template.strip():
         return None
     values = modal_payload_values(payload)
-    if not values:
-        return None
     placeholders = MODAL_COMMAND_PLACEHOLDER.findall(template)
     if not placeholders:
         return None
     command = template
     for placeholder in placeholders:
         if placeholder not in values:
-            return None
+            if len(placeholders) == 1:
+                scalar = modal_payload_scalar_value(payload)
+                if scalar is not None:
+                    values[placeholder] = scalar
+            if placeholder not in values and len(placeholders) == 1 and len(values) == 1:
+                values[placeholder] = next(iter(values.values()))
+            if placeholder not in values:
+                return None
         command = command.replace(
             "{" + placeholder + "}",
             shlex.quote(values[placeholder]),
@@ -451,6 +456,14 @@ def modal_payload_values(payload: dict[str, Any]) -> dict[str, str]:
                 if field_value is not None
             }
     return {}
+
+
+def modal_payload_scalar_value(payload: dict[str, Any]) -> str | None:
+    for key in ("selected_value", "selected", "selection", "value", "answer"):
+        value = payload.get(key)
+        if value is not None and not isinstance(value, (dict, list)):
+            return str(value)
+    return None
 
 
 def nested_string_field(payload: dict[str, Any], key: str, *, depth: int = 0) -> str | None:

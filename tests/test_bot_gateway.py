@@ -705,6 +705,41 @@ def test_bot_gateway_websocket_includes_button_action_descriptors(tmp_path):
     assert f"/agent approve {interaction.id} once" in frame["messages"][0]["text"]
 
 
+def test_bot_gateway_websocket_includes_question_select_descriptors(tmp_path):
+    control = ControlPlane()
+    context, session_id = create_session_with_turn(control, tmp_path)
+    maintainer = Actor(id="usr_1", roles={"maintainer"})
+    interaction = control.create_interaction(
+        actor=maintainer,
+        session_id=session_id,
+        interaction_type=InteractionType.QUESTION,
+        prompt="Which environment?",
+        options=["staging", "production"],
+        trace_id="bot-ws-select-actions",
+    )
+    client = TestClient(create_app(control))
+
+    with client.websocket_connect(
+        "/api/v1/bot-gateway/session-events/ws"
+        f"?session_id={session_id}&chat_context_id={context.id}"
+        "&after_seq=2&idle_timeout_seconds=0"
+    ) as websocket:
+        frame = websocket.receive_json()
+
+    assert frame["type"] == "bot.render.create"
+    assert frame["event"]["type"] == "question.requested"
+    assert [action["type"] for action in frame["actions"]] == ["select"]
+    assert frame["actions"][0]["command_template"] == (
+        f"/agent answer {interaction.id} {{answer}}"
+    )
+    assert frame["actions"][0]["input"]["name"] == "answer"
+    assert frame["actions"][0]["options"] == [
+        {"label": "staging", "value": "staging"},
+        {"label": "production", "value": "production"},
+    ]
+    assert "1. staging" in frame["messages"][0]["text"]
+
+
 def test_bot_gateway_websocket_includes_plan_action_descriptors(tmp_path):
     control = ControlPlane()
     context, session_id = create_session_with_turn(control, tmp_path)

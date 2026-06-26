@@ -128,6 +128,39 @@ def test_approval_request_event_renders_approver_actions():
     assert "/agent approve int_1 once" in messages[0]
 
 
+def test_question_request_event_renders_select_action_for_options():
+    event = make_event(
+        "question.requested",
+        {
+            "prompt": "Which environment?",
+            "options": ["staging", "production"],
+        },
+    )
+    event = event.model_copy(update={"interaction_id": "int_question"})
+
+    document = document_from_event(event)
+    messages = OneBotV11TextRenderer().render(document)
+    descriptors = render_action_descriptors(document.actions)
+
+    assert [action.type for action in document.actions] == ["select"]
+    assert document.actions[0].command_template == (
+        "/agent answer int_question {answer}"
+    )
+    assert [option.value for option in document.actions[0].options] == [
+        "staging",
+        "production",
+    ]
+    assert "选项：" in messages[0]
+    assert "1. staging" in messages[0]
+    assert descriptors[0]["type"] == "select"
+    assert descriptors[0]["command_template"] == "/agent answer int_question {answer}"
+    assert descriptors[0]["input"]["name"] == "answer"
+    assert descriptors[0]["options"] == [
+        {"label": "staging", "value": "staging"},
+        {"label": "production", "value": "production"},
+    ]
+
+
 def test_plan_request_event_renders_plan_actions_with_modal_revision():
     event = make_event(
         "plan.requested",

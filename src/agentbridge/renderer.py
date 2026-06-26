@@ -37,6 +37,7 @@ class RenderActionStyle(StrEnum):
 class RenderActionType(StrEnum):
     BUTTON = "button"
     MODAL = "modal"
+    SELECT = "select"
 
 
 class RenderActionInput(BaseModel):
@@ -47,6 +48,14 @@ class RenderActionInput(BaseModel):
     placeholder: str | None = None
     required: bool = True
     multiline: bool = False
+
+
+class RenderActionOption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    value: str
+    description: str | None = None
 
 
 class RenderBlock(BaseModel):
@@ -70,6 +79,7 @@ class RenderAction(BaseModel):
     style: RenderActionStyle = RenderActionStyle.DEFAULT
     command_template: str | None = None
     input: RenderActionInput | None = None
+    options: list[RenderActionOption] | None = None
 
 
 class RenderActionDescriptor(BaseModel):
@@ -83,6 +93,7 @@ class RenderActionDescriptor(BaseModel):
     callback_data: str
     command_template: str | None = None
     input: RenderActionInput | None = None
+    options: list[RenderActionOption] | None = None
     payload: dict[str, Any]
 
 
@@ -230,20 +241,47 @@ def document_from_event(event: SemanticEvent) -> RenderDocument:
     elif event.type in {"interaction.requested", "question.requested"}:
         interaction_id = str(event.interaction_id or "")
         title = "需要回答"
+        question_options = render_options_from_payload(payload.get("options"))
+        option_lines = "\n".join(
+            f"{index}. {option.label}" for index, option in enumerate(question_options, start=1)
+        )
+        option_text = f"\n选项：\n{option_lines}" if option_lines else ""
         blocks.append(
             text_block(
                 title,
-                f"Interaction：{interaction_id}\n{payload.get('prompt') or ''}",
+                (
+                    f"Interaction：{interaction_id}\n"
+                    f"{payload.get('prompt') or ''}"
+                    f"{option_text}"
+                ),
             )
         )
-        actions.append(
-            RenderAction(
-                id=f"answer-{interaction_id}",
-                label="回答",
-                command=f"/agent answer {interaction_id} <answer>",
-                style=RenderActionStyle.PRIMARY,
+        if question_options:
+            actions.append(
+                RenderAction(
+                    id=f"answer-select-{interaction_id}",
+                    type=RenderActionType.SELECT,
+                    label="选择回答",
+                    command=f"/agent answer {interaction_id} <answer>",
+                    command_template=f"/agent answer {interaction_id} {{answer}}",
+                    input=RenderActionInput(
+                        name="answer",
+                        label="回答",
+                        placeholder="选择一个回答",
+                    ),
+                    options=question_options,
+                    style=RenderActionStyle.PRIMARY,
+                )
             )
-        )
+        else:
+            actions.append(
+                RenderAction(
+                    id=f"answer-{interaction_id}",
+                    label="回答",
+                    command=f"/agent answer {interaction_id} <answer>",
+                    style=RenderActionStyle.PRIMARY,
+                )
+            )
     elif event.type == "approval.voted":
         visibility = RenderVisibility.APPROVERS
         vote_label = "批准" if payload.get("approve") else "拒绝"
@@ -488,7 +526,7 @@ def render_action_descriptor(action: RenderAction) -> RenderActionDescriptor:
         "style": action.style.value,
     }
     callback_data = action.command
-    if action.type == RenderActionType.MODAL:
+    if action.type in {RenderActionType.MODAL, RenderActionType.SELECT}:
         callback_data = action.id
         payload["type"] = action.type.value
         payload["fallback_command"] = action.command
@@ -496,6 +534,11 @@ def render_action_descriptor(action: RenderAction) -> RenderActionDescriptor:
             payload["command_template"] = action.command_template
         if action.input:
             payload["input"] = action.input.model_dump(mode="json", exclude_none=True)
+        if action.options:
+            payload["options"] = [
+                option.model_dump(mode="json", exclude_none=True)
+                for option in action.options
+            ]
     else:
         payload["command"] = action.command
         payload["callback_data"] = action.command
@@ -508,8 +551,38 @@ def render_action_descriptor(action: RenderAction) -> RenderActionDescriptor:
         callback_data=callback_data,
         command_template=action.command_template,
         input=action.input,
+        options=action.options or None,
         payload=payload,
     )
+
+
+def render_options_from_payload(value: Any) -> list[RenderActionOption]:
+    if not isinstance(value, list):
+        return []
+    options: list[RenderActionOption] = []
+    for item in value:
+        if isinstance(item, str):
+            label = item.strip()
+            if label:
+                options.append(RenderActionOption(label=label, value=label))
+            continue
+        if not isinstance(item, dict):
+            continue
+        label_value = item.get("label") or item.get("text") or item.get("name")
+        value_value = item.get("value") or item.get("id") or label_value
+        label = str(label_value).strip() if label_value is not None else ""
+        option_value = str(value_value).strip() if value_value is not None else ""
+        if not label or not option_value:
+            continue
+        description = item.get("description")
+        options.append(
+            RenderActionOption(
+                label=label,
+                value=option_value,
+                description=str(description).strip() if description is not None else None,
+            )
+        )
+    return options
 
 
 def split_message(text: str, max_chars: int) -> list[str]:
