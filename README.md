@@ -1022,10 +1022,14 @@ device keys, managed devices, or client certificate fingerprints as failures. Se
 `agentbridge.acceptance_evidence.v1` manifest when collecting manual MVP sign-off; use
 `docs/operations/templates/acceptance_evidence.example.json` as the starting point and
 `agentbridge-acceptance init`, `agentbridge-acceptance set-section`,
-`agentbridge-acceptance attach-artifact`, and
+`agentbridge-acceptance attach-artifact`,
+`agentbridge-acceptance attach-admin-export`, and
 `agentbridge-acceptance summary --fail-on-warn` to manage the manifest. The
 `attach-artifact` command copies files into the artifact root, computes sha256 digests,
-and writes digest-backed manifest references for release-candidate evidence; after all
+and writes digest-backed manifest references for release-candidate evidence. The
+`attach-admin-export` command first validates that a downloaded Admin JSON export uses a
+known built-in evidence schema, then copies it into a stable section-scoped artifact
+name with the same digest-backed manifest reference; after all
 sections are signed off, `agentbridge-acceptance bundle` creates a portable ZIP with the
 manifest, bundle index, and verified artifact files, and `agentbridge-acceptance
 verify-bundle` can validate the ZIP offline during release review. Set

@@ -189,6 +189,115 @@ def create_acceptance_bundle_fixture(
     return manifest, bundle
 
 
+def test_acceptance_cli_attaches_admin_export_evidence(tmp_path):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "acceptance-artifacts"
+    export_path = tmp_path / "bot-delivery-export.json"
+    export_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "agentbridge.admin_bot_delivery_export.v1",
+                "records": [],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        acceptance_main(
+            [
+                "init",
+                str(manifest),
+                "--checked-at",
+                "2026-06-27T00:00:00Z",
+            ]
+        )
+        == 0
+    )
+
+    assert (
+        acceptance_main(
+            [
+                "attach-admin-export",
+                str(manifest),
+                "34.3",
+                str(export_path),
+                "--artifact-root",
+                str(artifact_root),
+                "--status",
+                "passed",
+                "--notes",
+                "Bot Delivery Admin export captured.",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    section = payload["sections"]["34.3"]
+    assert section["status"] == "passed"
+    assert section["notes"] == "Bot Delivery Admin export captured."
+    assert section["artifacts"] == [
+        {
+            "path": "bot_experience/admin-bot-delivery.json",
+            "sha256": hashlib.sha256(
+                (artifact_root / "bot_experience/admin-bot-delivery.json").read_bytes()
+            ).hexdigest(),
+        }
+    ]
+    assert (
+        (artifact_root / "bot_experience/admin-bot-delivery.json").read_text(
+            encoding="utf-8"
+        )
+        == export_path.read_text(encoding="utf-8")
+    )
+
+
+def test_acceptance_cli_rejects_unknown_admin_export_schema(
+    tmp_path,
+    capsys,
+):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "acceptance-artifacts"
+    export_path = tmp_path / "unknown-export.json"
+    export_path.write_text(
+        json.dumps({"schema_version": "agentbridge.admin_unknown_export.v1"}),
+        encoding="utf-8",
+    )
+    assert (
+        acceptance_main(
+            [
+                "init",
+                str(manifest),
+                "--checked-at",
+                "2026-06-27T00:00:00Z",
+            ]
+        )
+        == 0
+    )
+
+    result = acceptance_main(
+        [
+            "attach-admin-export",
+            str(manifest),
+            "34.3",
+            str(export_path),
+            "--artifact-root",
+            str(artifact_root),
+            "--status",
+            "passed",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert result == 1
+    assert "unsupported admin export schema_version" in captured.err
+    assert payload["sections"]["34.3"]["status"] == "not_run"
+    assert payload["sections"]["34.3"]["artifacts"] == []
+    assert not artifact_root.exists()
+
+
 def test_health_endpoint_reports_memory_storage():
     client = TestClient(create_app())
 

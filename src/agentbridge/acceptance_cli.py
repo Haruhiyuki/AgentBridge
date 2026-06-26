@@ -25,6 +25,14 @@ from agentbridge.acceptance_evidence import (
 ACCEPTANCE_EXIT_INCOMPLETE = 2
 ACCEPTANCE_EXIT_INVALID = 3
 ACCEPTANCE_BUNDLE_SCHEMA_VERSION = "agentbridge.acceptance_bundle.v1"
+ACCEPTANCE_ADMIN_EXPORT_ARTIFACT_NAMES = {
+    "agentbridge.admin_system_health_export.v1": "admin-system-health.json",
+    "agentbridge.admin_project_session_export.v1": "admin-project-session.json",
+    "agentbridge.admin_interaction_export.v1": "admin-interaction.json",
+    "agentbridge.admin_terminal_lifecycle_export.v1": "admin-terminal-lifecycle.json",
+    "agentbridge.admin_device_identity_export.v1": "admin-device-identity.json",
+    "agentbridge.admin_bot_delivery_export.v1": "admin-bot-delivery.json",
+}
 AcceptanceOutputFormat = Literal["json", "summary"]
 AcceptanceBundleOutputFormat = Literal["json", "summary"]
 
@@ -78,6 +86,29 @@ def build_parser() -> argparse.ArgumentParser:
     attach_parser.add_argument("--notes")
     attach_parser.add_argument("--replace-artifacts", action="store_true")
     attach_parser.add_argument("--force", action="store_true")
+
+    admin_export_parser = subparsers.add_parser(
+        "attach-admin-export",
+        help="Validate and attach a built-in Admin JSON export as acceptance evidence",
+    )
+    admin_export_parser.add_argument("path", type=Path)
+    admin_export_parser.add_argument("section", choices=sorted(ACCEPTANCE_SECTIONS))
+    admin_export_parser.add_argument("source", type=Path)
+    admin_export_parser.add_argument("--artifact-root", type=Path, required=True)
+    admin_export_parser.add_argument(
+        "--name",
+        help=(
+            "Root-relative artifact name. Defaults to "
+            "<section-slug>/<schema-based-name>."
+        ),
+    )
+    admin_export_parser.add_argument(
+        "--status",
+        choices=sorted(ACCEPTANCE_SECTION_STATUSES),
+    )
+    admin_export_parser.add_argument("--notes")
+    admin_export_parser.add_argument("--replace-artifacts", action="store_true")
+    admin_export_parser.add_argument("--force", action="store_true")
 
     summary_parser = subparsers.add_parser("summary", help="Summarize acceptance status")
     summary_parser.add_argument("path", type=Path)
@@ -156,23 +187,7 @@ def set_section(args: argparse.Namespace) -> int:
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         print(f"acceptance manifest update failed: {exc}", file=sys.stderr)
         return 1
-    sections = payload.setdefault("sections", {})
-    if not isinstance(sections, dict):
-        print("acceptance manifest update failed: sections must be a JSON object", file=sys.stderr)
-        return 1
-    current_section = sections.get(args.section)
-    section_payload = current_section if isinstance(current_section, dict) else {}
-    existing_artifacts = section_payload.get("artifacts")
-    artifacts = (
-        []
-        if args.replace_artifacts or not isinstance(existing_artifacts, list)
-        else [
-            artifact
-            for artifact in existing_artifacts
-            if isinstance(artifact, str | dict)
-        ]
-    )
-    artifacts.extend(artifact for artifact in args.artifact if artifact.strip())
+    artifacts: list[object] = [artifact for artifact in args.artifact if artifact.strip()]
     for artifact_sha256 in args.artifact_sha256:
         try:
             artifact_path, sha256 = artifact_sha256.split("=", 1)
@@ -189,14 +204,18 @@ def set_section(args: argparse.Namespace) -> int:
             )
             return 1
         artifacts.append({"path": artifact_path.strip(), "sha256": sha256.strip().lower()})
-    section_payload = {
-        **section_payload,
-        "status": args.status,
-        "artifacts": artifacts,
-    }
-    if args.notes is not None:
-        section_payload["notes"] = args.notes
-    sections[args.section] = section_payload
+    try:
+        update_acceptance_manifest_section(
+            payload,
+            section=args.section,
+            status=args.status,
+            artifacts=artifacts,
+            notes=args.notes,
+            replace_artifacts=args.replace_artifacts,
+        )
+    except ValueError as exc:
+        print(f"acceptance manifest update failed: {exc}", file=sys.stderr)
+        return 1
     write_acceptance_manifest(path, payload)
     print(f"updated {args.section} in {path}")
     return 0
@@ -228,37 +247,139 @@ def attach_artifact(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"acceptance artifact attach failed: {exc}", file=sys.stderr)
         return 1
-    sections = payload.setdefault("sections", {})
-    if not isinstance(sections, dict):
-        print("acceptance artifact attach failed: sections must be a JSON object", file=sys.stderr)
+    try:
+        update_acceptance_manifest_section(
+            payload,
+            section=args.section,
+            status=args.status,
+            artifacts=[artifact_reference],
+            notes=args.notes,
+            replace_artifacts=args.replace_artifacts,
+        )
+    except ValueError as exc:
+        print(f"acceptance artifact attach failed: {exc}", file=sys.stderr)
         return 1
-    current_section = sections.get(args.section)
-    section_payload = current_section if isinstance(current_section, dict) else {}
-    existing_artifacts = section_payload.get("artifacts")
-    artifacts = (
-        []
-        if args.replace_artifacts or not isinstance(existing_artifacts, list)
-        else [
-            artifact
-            for artifact in existing_artifacts
-            if isinstance(artifact, str | dict)
-        ]
-    )
-    artifacts.append(artifact_reference)
-    section_payload = {
-        **section_payload,
-        "status": args.status or section_payload.get("status") or "not_run",
-        "artifacts": artifacts,
-    }
-    if args.notes is not None:
-        section_payload["notes"] = args.notes
-    sections[args.section] = section_payload
     write_acceptance_manifest(manifest_path, payload)
     print(
         f"attached {artifact_reference['path']} to {args.section} in {manifest_path} "
         f"sha256={artifact_reference['sha256']}"
     )
     return 0
+
+
+def attach_admin_export(args: argparse.Namespace) -> int:
+    manifest_path = args.path.expanduser()
+    source_path = args.source.expanduser()
+    artifact_root = args.artifact_root.expanduser()
+    try:
+        payload = load_acceptance_manifest(manifest_path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"acceptance admin export attach failed: {exc}", file=sys.stderr)
+        return 1
+    if not source_path.is_file():
+        print(
+            f"acceptance admin export attach failed: source is not a file: {source_path}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        schema_version = read_acceptance_admin_export_schema(source_path)
+        artifact_reference = copy_acceptance_artifact(
+            source_path,
+            artifact_root=artifact_root,
+            section=args.section,
+            name=args.name
+            or acceptance_admin_export_artifact_name(
+                schema_version,
+                section=args.section,
+            ),
+            force=args.force,
+        )
+        update_acceptance_manifest_section(
+            payload,
+            section=args.section,
+            status=args.status,
+            artifacts=[artifact_reference],
+            notes=args.notes,
+            replace_artifacts=args.replace_artifacts,
+        )
+    except ValueError as exc:
+        print(f"acceptance admin export attach failed: {exc}", file=sys.stderr)
+        return 1
+    write_acceptance_manifest(manifest_path, payload)
+    print(
+        f"attached {artifact_reference['path']} to {args.section} in {manifest_path} "
+        f"schema_version={schema_version} sha256={artifact_reference['sha256']}"
+    )
+    return 0
+
+
+def update_acceptance_manifest_section(
+    payload: dict[str, object],
+    *,
+    section: str,
+    status: str | None,
+    artifacts: list[object],
+    notes: str | None,
+    replace_artifacts: bool,
+) -> None:
+    sections = payload.setdefault("sections", {})
+    if not isinstance(sections, dict):
+        raise ValueError("sections must be a JSON object")
+    current_section = sections.get(section)
+    section_payload = current_section if isinstance(current_section, dict) else {}
+    existing_artifacts = section_payload.get("artifacts")
+    section_artifacts = (
+        []
+        if replace_artifacts or not isinstance(existing_artifacts, list)
+        else [
+            artifact
+            for artifact in existing_artifacts
+            if isinstance(artifact, str | dict)
+        ]
+    )
+    section_artifacts.extend(artifacts)
+    next_status = status or section_payload.get("status") or "not_run"
+    if not isinstance(next_status, str) or not next_status.strip():
+        next_status = "not_run"
+    section_payload = {
+        **section_payload,
+        "status": next_status,
+        "artifacts": section_artifacts,
+    }
+    if notes is not None:
+        section_payload["notes"] = notes
+    sections[section] = section_payload
+
+
+def read_acceptance_admin_export_schema(source_path: Path) -> str:
+    try:
+        payload = json.loads(source_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"could not read admin export: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError("admin export is not UTF-8 JSON") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"admin export JSON is invalid: {exc.msg}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("admin export must be a JSON object")
+    raw_schema_version = payload.get("schema_version")
+    if not isinstance(raw_schema_version, str) or not raw_schema_version.strip():
+        raise ValueError("admin export missing schema_version")
+    schema_version = raw_schema_version.strip()
+    if schema_version not in ACCEPTANCE_ADMIN_EXPORT_ARTIFACT_NAMES:
+        raise ValueError(f"unsupported admin export schema_version: {schema_version}")
+    return schema_version
+
+
+def acceptance_admin_export_artifact_name(
+    schema_version: str,
+    *,
+    section: str,
+) -> str:
+    section_slug = str(ACCEPTANCE_SECTIONS[section]["slug"])
+    artifact_name = ACCEPTANCE_ADMIN_EXPORT_ARTIFACT_NAMES[schema_version]
+    return (Path(section_slug) / artifact_name).as_posix()
 
 
 def copy_acceptance_artifact(
@@ -842,6 +963,8 @@ def main(argv: list[str] | None = None) -> int:
         return set_section(args)
     if args.command == "attach-artifact":
         return attach_artifact(args)
+    if args.command == "attach-admin-export":
+        return attach_admin_export(args)
     if args.command == "summary":
         return summarize_manifest(args)
     if args.command == "bundle":

@@ -56,7 +56,16 @@ When `AGENTBRIDGE_ACCEPTANCE_VERIFY_ARTIFACTS=true`, artifact paths are resolved
 root escapes, non-files, or sha256 mismatches fail the relevant section. Prefer
 `agentbridge-acceptance attach-artifact` for release-candidate evidence because it copies
 the source file into the artifact root, computes the sha256 digest, and writes the
-digest-backed manifest reference in one step. After all sections are signed off,
+digest-backed manifest reference in one step. Use
+`agentbridge-acceptance attach-admin-export` for JSON files downloaded from the built-in
+Admin pages; it rejects unknown Admin export schemas before copying the file and uses a
+stable `<section-slug>/admin-*.json` artifact name by default. It currently accepts:
+`agentbridge.admin_system_health_export.v1`,
+`agentbridge.admin_project_session_export.v1`,
+`agentbridge.admin_interaction_export.v1`,
+`agentbridge.admin_terminal_lifecycle_export.v1`,
+`agentbridge.admin_device_identity_export.v1`, and
+`agentbridge.admin_bot_delivery_export.v1`. After all sections are signed off,
 `agentbridge-acceptance bundle` packages the manifest, a bundle index, and verified
 artifact files into a portable ZIP for release review; `agentbridge-acceptance
 verify-bundle` validates the ZIP offline without extracting it. Readiness warns when
@@ -72,6 +81,10 @@ uv run agentbridge-acceptance attach-artifact "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_
   34.1 ./acceptance/native-session-run.json \
   --artifact-root "$AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT" \
   --status passed --notes "Native PTY acceptance passed."
+uv run agentbridge-acceptance attach-admin-export "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
+  34.3 ./acceptance/admin-bot-delivery.json \
+  --artifact-root "$AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT" \
+  --status passed --notes "Bot Delivery Admin export captured."
 uv run agentbridge-acceptance summary "$AGENTBRIDGE_ACCEPTANCE_EVIDENCE_FILE" \
   --verify-artifacts --artifact-root "$AGENTBRIDGE_ACCEPTANCE_ARTIFACT_ROOT" \
   --fail-on-warn
