@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agentbridge.domain import AgentBridgeError, AgentType, ErrorCode
+from agentbridge.domain import (
+    AgentBridgeError,
+    AgentType,
+    ErrorCode,
+    SemanticEvent,
+    SemanticEventSource,
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,19 @@ ADAPTER_NAME_BY_AGENT: dict[AgentType, str] = {
     AgentType.CLAUDE: "claude_hooks",
     AgentType.CODEX: "codex_app_server",
     AgentType.GENERIC_TUI: "generic_tui",
+}
+
+ADAPTER_INTERACTION_REQUEST_TYPES = {
+    "approval.requested",
+    "question.requested",
+    "plan.requested",
+}
+
+ADAPTER_INTERACTION_RESPONSE_TYPES = {
+    "approval.voted",
+    "interaction.answered",
+    "interaction.cancelled",
+    "interaction.expired",
 }
 
 
@@ -219,3 +238,89 @@ def unsupported_agent_error(agent_type: AgentType) -> AgentBridgeError:
         next_step="请只为 claude 或 codex 会话上报结构化 adapter 事件。",
         details={"agent_type": agent_type.value},
     )
+
+
+def adapter_response_frames_from_events(
+    events: list[SemanticEvent],
+    *,
+    after_seq: int | None = None,
+    limit: int = 100,
+) -> list[dict[str, object]]:
+    adapter_requests: dict[str, SemanticEvent] = {}
+    for event in events:
+        if (
+            event.source == SemanticEventSource.AGENT_ADAPTER
+            and event.type in ADAPTER_INTERACTION_REQUEST_TYPES
+            and event.interaction_id
+        ):
+            adapter_requests.setdefault(event.interaction_id, event)
+
+    frames: list[dict[str, object]] = []
+    for event in events:
+        if after_seq is not None and event.seq <= after_seq:
+            continue
+        if event.type not in ADAPTER_INTERACTION_RESPONSE_TYPES or not event.interaction_id:
+            continue
+        request_event = adapter_requests.get(event.interaction_id)
+        if request_event is None:
+            continue
+        frames.append(adapter_response_frame(event, request_event))
+        if len(frames) >= limit:
+            break
+    return frames
+
+
+def adapter_response_frame(
+    response_event: SemanticEvent,
+    request_event: SemanticEvent,
+) -> dict[str, object]:
+    response_payload = response_event.payload
+    request_payload = request_event.payload
+    return {
+        "seq": response_event.seq,
+        "event_id": response_event.id,
+        "type": response_event.type,
+        "trace_id": response_event.trace_id,
+        "interaction_id": response_event.interaction_id,
+        "turn_id": response_event.turn_id,
+        "ready": adapter_response_ready(response_event),
+        "decision": adapter_response_decision(response_event),
+        "status": response_payload.get("status"),
+        "answer": response_payload.get("answer"),
+        "approve": response_payload.get("approve"),
+        "reason": response_payload.get("reason"),
+        "adapter": request_payload.get("adapter"),
+        "agent_type": request_payload.get("agent_type"),
+        "adapter_event_type": request_payload.get("adapter_event_type"),
+        "adapter_item_id": request_payload.get("adapter_item_id"),
+        "request_event_id": request_event.id,
+        "request_seq": request_event.seq,
+        "request_payload": request_payload,
+        "payload": response_payload,
+    }
+
+
+def adapter_response_ready(event: SemanticEvent) -> bool:
+    if event.type in {
+        "interaction.answered",
+        "interaction.cancelled",
+        "interaction.expired",
+    }:
+        return True
+    if event.type == "approval.voted":
+        return event.payload.get("status") == "resolved"
+    return False
+
+
+def adapter_response_decision(event: SemanticEvent) -> str:
+    if event.type == "interaction.answered":
+        return "answered"
+    if event.type == "interaction.cancelled":
+        return "cancelled"
+    if event.type == "interaction.expired":
+        return "expired"
+    if event.type == "approval.voted":
+        if event.payload.get("status") != "resolved":
+            return "pending"
+        return "approved" if event.payload.get("approve") else "denied"
+    return "unknown"

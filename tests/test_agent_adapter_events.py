@@ -1,7 +1,11 @@
 import pytest
 
-from agentbridge.agent_adapter_events import normalize_agent_adapter_event
-from agentbridge.domain import AgentBridgeError, AgentType
+from agentbridge.agent_adapter_events import (
+    adapter_response_frames_from_events,
+    normalize_agent_adapter_event,
+)
+from agentbridge.control_plane import ControlPlane
+from agentbridge.domain import AgentBridgeError, AgentType, SemanticEventSource
 
 
 def test_normalizes_claude_message_display_to_assistant_delta():
@@ -60,3 +64,50 @@ def test_rejects_unknown_adapter_event_type():
         "agent_type": "claude",
         "adapter_event_type": "UnknownHook",
     }
+
+
+def test_filters_adapter_response_frames_to_adapter_originated_interactions():
+    control = ControlPlane()
+
+    adapter_request = control.emit_event(
+        event_type="question.requested",
+        source=SemanticEventSource.AGENT_ADAPTER,
+        trace_id="adapter-request",
+        session_id="ses_1",
+        interaction_id="int_adapter",
+        payload={
+            "adapter": "codex_app_server",
+            "agent_type": "codex",
+            "adapter_event_type": "tool/requestUserInput",
+            "adapter_item_id": "question-1",
+        },
+    )
+    response = control.emit_event(
+        event_type="interaction.answered",
+        source=SemanticEventSource.CONTROL_PLANE,
+        trace_id="adapter-answer",
+        session_id="ses_1",
+        interaction_id="int_adapter",
+        payload={"answer": "staging", "status": "resolved"},
+    )
+    control.emit_event(
+        event_type="interaction.answered",
+        source=SemanticEventSource.CONTROL_PLANE,
+        trace_id="non-adapter-answer",
+        session_id="ses_1",
+        interaction_id="int_other",
+        payload={"answer": "ignored", "status": "resolved"},
+    )
+
+    frames = adapter_response_frames_from_events(
+        control.repository.list_events(session_id="ses_1")
+    )
+
+    assert len(frames) == 1
+    assert frames[0]["seq"] == response.seq
+    assert frames[0]["request_seq"] == adapter_request.seq
+    assert frames[0]["decision"] == "answered"
+    assert frames[0]["ready"] is True
+    assert frames[0]["answer"] == "staging"
+    assert frames[0]["adapter"] == "codex_app_server"
+    assert frames[0]["adapter_item_id"] == "question-1"

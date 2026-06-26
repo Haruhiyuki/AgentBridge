@@ -2591,6 +2591,39 @@ def test_agent_adapter_event_ingest_maps_codex_approval_request(tmp_path):
     assert interactions[0]["risk_level"] == "high"
     assert interactions[0]["requested_by"] == "agent-adapter"
 
+    vote_response = client.post(
+        f"/api/v1/interactions/{event['interaction_id']}/vote",
+        json={
+            "actor": {"id": "approver", "roles": ["dangerous_approver"]},
+            "approve": True,
+            "reason": "Tests are allowed",
+            "trace_id": "codex-approval-vote",
+        },
+    )
+    responses_response = client.get(
+        f"/api/v1/sessions/{session_id}/agent-adapter/responses"
+    )
+
+    assert vote_response.status_code == 200
+    assert vote_response.json()["status"] == "resolved"
+    assert responses_response.status_code == 200
+    responses = responses_response.json()["responses"]
+    assert len(responses) == 1
+    assert responses[0]["type"] == "approval.voted"
+    assert responses[0]["interaction_id"] == event["interaction_id"]
+    assert responses[0]["decision"] == "approved"
+    assert responses[0]["ready"] is True
+    assert responses[0]["approve"] is True
+    assert responses[0]["reason"] == "Tests are allowed"
+    assert responses[0]["adapter"] == "codex_app_server"
+    assert responses[0]["adapter_item_id"] == "cmd-42"
+    after_response = client.get(
+        f"/api/v1/sessions/{session_id}/agent-adapter/responses",
+        params={"after_seq": responses[0]["seq"]},
+    )
+    assert after_response.status_code == 200
+    assert after_response.json()["responses"] == []
+
 
 def test_agent_adapter_event_ingest_creates_question_interaction(tmp_path):
     client = TestClient(create_app())
@@ -2635,6 +2668,30 @@ def test_agent_adapter_event_ingest_creates_question_interaction(tmp_path):
     assert interactions[0]["type"] == "question"
     assert interactions[0]["options"] == ["staging", "production"]
 
+    answer_response = client.post(
+        f"/api/v1/interactions/{event['interaction_id']}/answer",
+        json={
+            "actor": {"id": "operator", "roles": ["operator"]},
+            "answer": "staging",
+            "trace_id": "codex-question-answer",
+        },
+    )
+    responses_response = client.get(
+        f"/api/v1/sessions/{session_id}/agent-adapter/responses"
+    )
+
+    assert answer_response.status_code == 200
+    assert answer_response.json()["status"] == "resolved"
+    assert responses_response.status_code == 200
+    responses = responses_response.json()["responses"]
+    assert len(responses) == 1
+    assert responses[0]["type"] == "interaction.answered"
+    assert responses[0]["interaction_id"] == event["interaction_id"]
+    assert responses[0]["decision"] == "answered"
+    assert responses[0]["ready"] is True
+    assert responses[0]["answer"] == "staging"
+    assert responses[0]["adapter"] == "codex_app_server"
+
 
 def test_managed_device_identity_session_event_ingest_scope_gates_adapter_events(
     tmp_path,
@@ -2672,6 +2729,10 @@ def test_managed_device_identity_session_event_ingest_scope_gates_adapter_events
         },
         headers=readonly_headers,
     )
+    denied_responses_read = client.get(
+        f"/api/v1/sessions/{session_id}/agent-adapter/responses",
+        headers=readonly_headers,
+    )
     ingest_identity_response = client.post(
         "/api/v1/device-identities",
         json={
@@ -2695,12 +2756,22 @@ def test_managed_device_identity_session_event_ingest_scope_gates_adapter_events
             "x-agentbridge-device-key": "managed-secret",
         },
     )
+    allowed_responses_read = client.get(
+        f"/api/v1/sessions/{session_id}/agent-adapter/responses",
+        headers={
+            "x-agentbridge-device-id": "adapter-event-device",
+            "x-agentbridge-device-key": "managed-secret",
+        },
+    )
 
     assert readonly_identity_response.status_code == 200
     assert denied_response.status_code == 403
+    assert denied_responses_read.status_code == 403
     assert ingest_identity_response.status_code == 200
     assert allowed_response.status_code == 200
     assert allowed_response.json()["type"] == "assistant.delta"
+    assert allowed_responses_read.status_code == 200
+    assert allowed_responses_read.json()["responses"] == []
 
 
 def test_managed_device_identity_requires_audit_read_scope_for_audit_event_http_reads(

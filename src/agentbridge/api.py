@@ -37,7 +37,10 @@ from agentbridge.admin_ui import (
     SYSTEM_HEALTH_ADMIN_HTML,
     TERMINAL_LIFECYCLE_ADMIN_HTML,
 )
-from agentbridge.agent_adapter_events import normalize_agent_adapter_event
+from agentbridge.agent_adapter_events import (
+    adapter_response_frames_from_events,
+    normalize_agent_adapter_event,
+)
 from agentbridge.bot_gateway import (
     BotDeliveryRateLimiter,
     BotDeliveryRetryWorker,
@@ -1575,6 +1578,23 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
                 idempotency_key=payload.idempotency_key,
             )
         return event.model_dump(mode="json")
+
+    @app.get("/api/v1/sessions/{session_id}/agent-adapter/responses")
+    def list_agent_adapter_responses(
+        session_id: str,
+        after_seq: int | None = None,
+        limit: int = 100,
+        control: ControlPlane = Depends(get_control),
+    ):
+        bounded_limit = min(max(limit, 1), 500)
+        events = control.repository.list_events(session_id=session_id, limit=1_000_000)
+        return {
+            "responses": adapter_response_frames_from_events(
+                events,
+                after_seq=after_seq,
+                limit=bounded_limit,
+            )
+        }
 
     @app.post("/api/v1/sessions/{session_id}/interactions")
     def create_interaction(
@@ -3534,6 +3554,14 @@ def http_api_required_device_scope(request: Request) -> DeviceIdentityScope:
         and path_segments[:4] == ["", "api", "v1", "sessions"]
         and path_segments[5] == "agent-adapter"
         and path_segments[6] == "events"
+    ):
+        return DeviceIdentityScope.SESSION_EVENT_INGEST
+    if (
+        method == "GET"
+        and len(path_segments) >= 7
+        and path_segments[:4] == ["", "api", "v1", "sessions"]
+        and path_segments[5] == "agent-adapter"
+        and path_segments[6] == "responses"
     ):
         return DeviceIdentityScope.SESSION_EVENT_INGEST
     if (
