@@ -76,6 +76,11 @@ CLAUDE_HOOK_SETTINGS_BLOCKING_EVENTS = {
 CODEX_INTERACTION_APP_SERVER_EVENTS = {
     "item/commandExecution/requestApproval",
     "item/fileChange/requestApproval",
+    "item/tool/requestUserInput",
+    "tool/requestUserInput",
+}
+CODEX_QUESTION_APP_SERVER_EVENTS = {
+    "item/tool/requestUserInput",
     "tool/requestUserInput",
 }
 CODEX_APP_SERVER_STREAM_OUTPUT_FORMATS = {"json-rpc", "action", "bridge-json"}
@@ -1382,7 +1387,9 @@ def codex_app_server_failure_action_payload(
     message: Mapping[str, object],
     error: str,
 ) -> dict[str, object]:
-    decision = "cancelled" if adapter_event_type == "tool/requestUserInput" else "denied"
+    decision = (
+        "cancelled" if adapter_event_type in CODEX_QUESTION_APP_SERVER_EVENTS else "denied"
+    )
     response = {
         "decision": decision,
         "approve": False if decision == "denied" else None,
@@ -1984,6 +1991,7 @@ def default_adapter_capabilities(agent_type: AgentType) -> list[str]:
             "codex.app_server",
             "codex.app_server.json_rpc",
             "codex.app_server.jsonl_stream",
+            "codex.app_server.provider_schema_snapshot",
             "codex.app_server.stdio_proxy",
         ]
     raise ValueError(f"structured adapter capabilities are not supported for {agent_type.value}")

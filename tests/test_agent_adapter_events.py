@@ -55,6 +55,28 @@ def test_normalizes_codex_approval_request_to_approval_event():
     assert normalized.payload["adapter_item_id"] == "cmd-1"
 
 
+def test_normalizes_provider_codex_user_input_request_to_question_event():
+    normalized = normalize_agent_adapter_event(
+        agent_type=AgentType.CODEX,
+        adapter_event_type="item/tool/requestUserInput",
+        payload={
+            "itemId": "question-1",
+            "questions": [
+                {
+                    "id": "environment",
+                    "question": "Which environment?",
+                    "options": [{"label": "staging", "description": "Use staging"}],
+                }
+            ],
+        },
+        schema_version="codex-app-server.v1",
+    )
+
+    assert normalized.event_type == "question.requested"
+    assert normalized.payload["adapter_item_id"] == "question-1"
+    assert normalized.payload["prompt"] == "item/tool/requestUserInput"
+
+
 def test_rejects_unknown_adapter_event_type():
     with pytest.raises(AgentBridgeError) as exc_info:
         normalize_agent_adapter_event(
@@ -162,6 +184,16 @@ def test_adapter_schema_behavior_matrix_lists_supported_versions():
         matrix["schemas"][0]["response_application"]["json_rpc_result_path"]
         == "result.agentbridge"
     )
+    provider_snapshot = matrix["schemas"][0]["provider_schema_snapshot"]
+    assert provider_snapshot["captured_from"]["codex_cli_version"] == "codex-cli 0.141.0"
+    assert provider_snapshot["server_requests"]["item/tool/requestUserInput"][
+        "required_params"
+    ] == ["itemId", "questions", "threadId", "turnId"]
+    coverage = matrix["schemas"][0]["provider_schema_coverage"]
+    assert "item/tool/requestUserInput" in coverage["verified_adapter_event_types"]
+    assert "tool/requestUserInput" in coverage["legacy_alias_event_types"]
+    assert "turn/failed" in coverage["legacy_alias_event_types"]
+    assert coverage["unverified_adapter_event_types"] == []
 
 
 def test_filters_adapter_response_frames_to_adapter_originated_interactions():

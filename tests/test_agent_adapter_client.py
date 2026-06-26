@@ -286,6 +286,7 @@ def test_handshake_payload_for_agent_uses_supported_schema_and_capabilities():
         "codex.app_server",
         "codex.app_server.json_rpc",
         "codex.app_server.jsonl_stream",
+        "codex.app_server.provider_schema_snapshot",
         "codex.app_server.stdio_proxy",
     ]
     assert payload["warnings"] == []
@@ -733,6 +734,64 @@ def test_codex_app_server_message_bridge_waits_for_approval_and_outputs_json_rpc
                 "codex-app-server:item/commandExecution/requestApproval:rpc:42"
             ),
         },
+    )
+
+
+def test_codex_app_server_message_bridge_waits_for_provider_user_input_request():
+    calls = []
+
+    def transport(method, url, headers, payload, timeout_seconds):
+        calls.append((method, url, payload))
+        if method == "POST":
+            return {
+                "id": "evt_question",
+                "seq": 8,
+                "interaction_id": "int_question",
+                "payload": {"adapter_item_id": "question-1"},
+            }
+        return {
+            "responses": [
+                {
+                    "seq": 9,
+                    "request_event_id": "evt_question",
+                    "interaction_id": "int_question",
+                    "adapter_event_type": "item/tool/requestUserInput",
+                    "adapter_item_id": "question-1",
+                    "ready": True,
+                    "decision": "answered",
+                    "answer": "staging",
+                }
+            ]
+        }
+
+    control_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(base_url="http://bridge.local", session_id="ses_1"),
+        transport=transport,
+    )
+
+    result = handle_codex_app_server_message(
+        control_client=control_client,
+        message={
+            "method": "item/tool/requestUserInput",
+            "id": "rpc-question",
+            "params": {
+                "itemId": "question-1",
+                "questions": [{"id": "env", "question": "Which environment?"}],
+            },
+        },
+        poll_interval_seconds=0.01,
+    )
+
+    assert result["action"]["action"] == "user_input_response"
+    assert result["action"]["answer"] == "staging"
+    assert result["json_rpc_response"] == {
+        "id": "rpc-question",
+        "result": {"agentbridge": result["action"]},
+    }
+    assert calls[0][2]["adapter_event_type"] == "item/tool/requestUserInput"
+    assert calls[0][2]["payload"]["json_rpc_method"] == "item/tool/requestUserInput"
+    assert calls[0][2]["idempotency_key"] == (
+        "codex-app-server:item/tool/requestUserInput:rpc:rpc-question"
     )
 
 

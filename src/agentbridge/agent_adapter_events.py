@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from agentbridge.agent_adapter_provider_schemas import provider_schema_snapshot_for
 from agentbridge.domain import (
     AgentBridgeError,
     AgentType,
@@ -34,6 +35,7 @@ CLAUDE_EVENT_TYPE_MAP: dict[str, str] = {
 }
 
 CODEX_EVENT_TYPE_MAP: dict[str, str] = {
+    "error": "turn.failed",
     "item/agentMessage/delta": "assistant.delta",
     "item/started": "tool.started",
     "item/completed": "tool.completed",
@@ -42,6 +44,7 @@ CODEX_EVENT_TYPE_MAP: dict[str, str] = {
     "turn/plan/updated": "plan.updated",
     "item/commandExecution/requestApproval": "approval.requested",
     "item/fileChange/requestApproval": "approval.requested",
+    "item/tool/requestUserInput": "question.requested",
     "tool/requestUserInput": "question.requested",
     "turn/completed": "turn.completed",
     "turn/failed": "turn.failed",
@@ -209,6 +212,14 @@ def adapter_schema_snapshot_for(
         schema_version=schema_version or default_adapter_schema_version_for(agent_type),
     )
     event_map = adapter_event_type_map_for(agent_type)
+    provider_schema_snapshot = provider_schema_snapshot_for(
+        agent_type_value=agent_type.value,
+        schema_version=normalized_schema_version,
+    )
+    provider_schema_coverage = adapter_provider_schema_coverage(
+        event_map=event_map,
+        provider_schema_snapshot=provider_schema_snapshot,
+    )
     return {
         "protocol": AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
         "agent_type": agent_type.value,
@@ -262,6 +273,38 @@ def adapter_schema_snapshot_for(
             "pending_decision": "pending",
         },
         "response_application": adapter_response_application_for(agent_type),
+        "provider_schema_snapshot": provider_schema_snapshot,
+        "provider_schema_coverage": provider_schema_coverage,
+    }
+
+
+def adapter_provider_schema_coverage(
+    *,
+    event_map: dict[str, str],
+    provider_schema_snapshot: dict[str, object] | None,
+) -> dict[str, object] | None:
+    if provider_schema_snapshot is None:
+        return None
+    provider_methods: set[str] = set()
+    for section_name in ("server_requests", "server_notifications"):
+        section = provider_schema_snapshot.get(section_name)
+        if isinstance(section, dict):
+            provider_methods.update(str(method) for method in section)
+    legacy_aliases = provider_schema_snapshot.get("legacy_aliases")
+    legacy_methods = set(str(method) for method in legacy_aliases) if isinstance(
+        legacy_aliases, dict
+    ) else set()
+    verified = sorted(method for method in event_map if method in provider_methods)
+    legacy = sorted(method for method in event_map if method in legacy_methods)
+    unverified = sorted(
+        method for method in event_map if method not in provider_methods | legacy_methods
+    )
+    return {
+        "generated_by": provider_schema_snapshot.get("captured_from"),
+        "verified_adapter_event_types": verified,
+        "legacy_alias_event_types": legacy,
+        "unverified_adapter_event_types": unverified,
+        "all_adapter_event_types_provider_verified": not legacy and not unverified,
     }
 
 
