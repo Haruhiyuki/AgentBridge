@@ -33,6 +33,14 @@ ACCEPTANCE_ADMIN_EXPORT_ARTIFACT_NAMES = {
     "agentbridge.admin_device_identity_export.v1": "admin-device-identity.json",
     "agentbridge.admin_bot_delivery_export.v1": "admin-bot-delivery.json",
 }
+ACCEPTANCE_ADMIN_EXPORT_SECTIONS = {
+    "agentbridge.admin_system_health_export.v1": ("34.1", "34.4", "34.8"),
+    "agentbridge.admin_project_session_export.v1": ("34.1", "34.5", "34.6"),
+    "agentbridge.admin_interaction_export.v1": ("34.3", "34.4", "34.7"),
+    "agentbridge.admin_terminal_lifecycle_export.v1": ("34.1", "34.2", "34.8"),
+    "agentbridge.admin_device_identity_export.v1": ("34.4",),
+    "agentbridge.admin_bot_delivery_export.v1": ("34.3", "34.7", "34.8"),
+}
 AcceptanceOutputFormat = Literal["json", "summary"]
 AcceptanceBundleOutputFormat = Literal["json", "summary"]
 
@@ -108,6 +116,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     admin_export_parser.add_argument("--notes")
     admin_export_parser.add_argument("--replace-artifacts", action="store_true")
+    admin_export_parser.add_argument(
+        "--allow-section-mismatch",
+        action="store_true",
+        help="Allow attaching a known Admin export outside its recommended sections",
+    )
     admin_export_parser.add_argument("--force", action="store_true")
 
     summary_parser = subparsers.add_parser("summary", help="Summarize acceptance status")
@@ -284,6 +297,11 @@ def attach_admin_export(args: argparse.Namespace) -> int:
         return 1
     try:
         schema_version = read_acceptance_admin_export_schema(source_path)
+        validate_acceptance_admin_export_section(
+            schema_version,
+            args.section,
+            allow_mismatch=args.allow_section_mismatch,
+        )
         artifact_reference = copy_acceptance_artifact(
             source_path,
             artifact_root=artifact_root,
@@ -370,6 +388,21 @@ def read_acceptance_admin_export_schema(source_path: Path) -> str:
     if schema_version not in ACCEPTANCE_ADMIN_EXPORT_ARTIFACT_NAMES:
         raise ValueError(f"unsupported admin export schema_version: {schema_version}")
     return schema_version
+
+
+def validate_acceptance_admin_export_section(
+    schema_version: str,
+    section: str,
+    *,
+    allow_mismatch: bool,
+) -> None:
+    allowed_sections = ACCEPTANCE_ADMIN_EXPORT_SECTIONS[schema_version]
+    if section in allowed_sections or allow_mismatch:
+        return
+    raise ValueError(
+        f"admin export schema_version {schema_version} is intended for sections "
+        f"{', '.join(allowed_sections)}; use --allow-section-mismatch to attach anyway"
+    )
 
 
 def acceptance_admin_export_artifact_name(

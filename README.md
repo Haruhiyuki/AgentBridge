@@ -1029,7 +1029,8 @@ device keys, managed devices, or client certificate fingerprints as failures. Se
 and writes digest-backed manifest references for release-candidate evidence. The
 `attach-admin-export` command first validates that a downloaded Admin JSON export uses a
 known built-in evidence schema, then copies it into a stable section-scoped artifact
-name with the same digest-backed manifest reference; after all
+name with the same digest-backed manifest reference, and rejects mismatched design
+sections unless `--allow-section-mismatch` is supplied; after all
 sections are signed off, `agentbridge-acceptance bundle` creates a portable ZIP with the
 manifest, bundle index, and verified artifact files, and `agentbridge-acceptance
 verify-bundle` can validate the ZIP offline during release review. Set

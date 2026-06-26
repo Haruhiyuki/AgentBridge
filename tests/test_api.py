@@ -298,6 +298,96 @@ def test_acceptance_cli_rejects_unknown_admin_export_schema(
     assert not artifact_root.exists()
 
 
+def test_acceptance_cli_rejects_admin_export_section_mismatch(
+    tmp_path,
+    capsys,
+):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "acceptance-artifacts"
+    export_path = tmp_path / "bot-delivery-export.json"
+    export_path.write_text(
+        json.dumps({"schema_version": "agentbridge.admin_bot_delivery_export.v1"}),
+        encoding="utf-8",
+    )
+    assert (
+        acceptance_main(
+            [
+                "init",
+                str(manifest),
+                "--checked-at",
+                "2026-06-27T00:00:00Z",
+            ]
+        )
+        == 0
+    )
+
+    result = acceptance_main(
+        [
+            "attach-admin-export",
+            str(manifest),
+            "34.1",
+            str(export_path),
+            "--artifact-root",
+            str(artifact_root),
+            "--status",
+            "passed",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert result == 1
+    assert "intended for sections 34.3, 34.7, 34.8" in captured.err
+    assert payload["sections"]["34.1"]["status"] == "not_run"
+    assert payload["sections"]["34.1"]["artifacts"] == []
+    assert not artifact_root.exists()
+
+
+def test_acceptance_cli_allows_admin_export_section_mismatch_override(tmp_path):
+    manifest = tmp_path / "acceptance-evidence.json"
+    artifact_root = tmp_path / "acceptance-artifacts"
+    export_path = tmp_path / "bot-delivery-export.json"
+    export_path.write_text(
+        json.dumps({"schema_version": "agentbridge.admin_bot_delivery_export.v1"}),
+        encoding="utf-8",
+    )
+    assert (
+        acceptance_main(
+            [
+                "init",
+                str(manifest),
+                "--checked-at",
+                "2026-06-27T00:00:00Z",
+            ]
+        )
+        == 0
+    )
+
+    assert (
+        acceptance_main(
+            [
+                "attach-admin-export",
+                str(manifest),
+                "34.1",
+                str(export_path),
+                "--artifact-root",
+                str(artifact_root),
+                "--status",
+                "passed",
+                "--allow-section-mismatch",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload["sections"]["34.1"]["status"] == "passed"
+    assert payload["sections"]["34.1"]["artifacts"][0]["path"] == (
+        "native_session/admin-bot-delivery.json"
+    )
+    assert (artifact_root / "native_session/admin-bot-delivery.json").is_file()
+
+
 def test_health_endpoint_reports_memory_storage():
     client = TestClient(create_app())
 

@@ -59,13 +59,20 @@ the source file into the artifact root, computes the sha256 digest, and writes t
 digest-backed manifest reference in one step. Use
 `agentbridge-acceptance attach-admin-export` for JSON files downloaded from the built-in
 Admin pages; it rejects unknown Admin export schemas before copying the file and uses a
-stable `<section-slug>/admin-*.json` artifact name by default. It currently accepts:
-`agentbridge.admin_system_health_export.v1`,
-`agentbridge.admin_project_session_export.v1`,
-`agentbridge.admin_interaction_export.v1`,
-`agentbridge.admin_terminal_lifecycle_export.v1`,
-`agentbridge.admin_device_identity_export.v1`, and
-`agentbridge.admin_bot_delivery_export.v1`. After all sections are signed off,
+stable `<section-slug>/admin-*.json` artifact name by default. It also blocks attaching
+a known Admin export outside the recommended design-document sections unless the operator
+passes `--allow-section-mismatch`:
+
+| Admin export schema | Recommended sections |
+| --- | --- |
+| `agentbridge.admin_system_health_export.v1` | 34.1, 34.4, 34.8 |
+| `agentbridge.admin_project_session_export.v1` | 34.1, 34.5, 34.6 |
+| `agentbridge.admin_interaction_export.v1` | 34.3, 34.4, 34.7 |
+| `agentbridge.admin_terminal_lifecycle_export.v1` | 34.1, 34.2, 34.8 |
+| `agentbridge.admin_device_identity_export.v1` | 34.4 |
+| `agentbridge.admin_bot_delivery_export.v1` | 34.3, 34.7, 34.8 |
+
+After all sections are signed off,
 `agentbridge-acceptance bundle` packages the manifest, a bundle index, and verified
 artifact files into a portable ZIP for release review; `agentbridge-acceptance
 verify-bundle` validates the ZIP offline without extracting it. Readiness warns when
