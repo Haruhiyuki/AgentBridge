@@ -601,6 +601,14 @@ class SQLAlchemyRepository(InMemoryRepository):
                     break
         return events
 
+    def get_semantic_event(self, event_id: str) -> SemanticEvent | None:
+        stmt = select(semantic_events_table).where(semantic_events_table.c.id == event_id)
+        with self._lock, self.engine.connect() as connection:
+            row = connection.execute(stmt).first()
+            if row is None:
+                return None
+            return SemanticEvent.model_validate(row.payload)
+
     def _persist_state(self) -> None:
         with self._lock, self.engine.begin() as connection:
             for table in (

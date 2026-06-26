@@ -2057,6 +2057,13 @@ class InMemoryRepository:
         with self._lock:
             return self.event_idempotency.get(idempotency_key)
 
+    def get_semantic_event(self, event_id: str) -> SemanticEvent | None:
+        with self._lock:
+            for event in reversed(self.semantic_events):
+                if event.id == event_id:
+                    return event
+            return None
+
     def list_events(
         self,
         *,

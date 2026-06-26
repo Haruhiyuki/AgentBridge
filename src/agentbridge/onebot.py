@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -442,8 +443,14 @@ def execute_onebot_inbound_command(
         thread_id=inbound.thread_id,
         user_id=inbound.user_id,
     )
+    raw_text = command_text_with_reply_interaction(
+        inbound.raw_text,
+        reply_message_id=inbound.reply_message_id,
+        chat_context_id=context.id,
+        control=control,
+    )
     invocation = command_service.parse(
-        raw_text=inbound.raw_text,
+        raw_text=raw_text,
         actor=inbound.actor,
         chat_context_id=context.id,
         idempotency_key=inbound.idempotency_key,
@@ -455,3 +462,95 @@ def execute_onebot_inbound_command(
         "chat_context_id": context.id,
         "result": result.model_dump(mode="json"),
     }
+
+
+def command_text_with_reply_interaction(
+    raw_text: str,
+    *,
+    reply_message_id: str | None,
+    chat_context_id: str,
+    control: Any,
+) -> str:
+    if reply_message_id is None:
+        return raw_text
+    interaction_id = interaction_id_from_reply_message(
+        reply_message_id=reply_message_id,
+        chat_context_id=chat_context_id,
+        control=control,
+    )
+    if interaction_id is None:
+        return raw_text
+    return inject_reply_interaction_id(raw_text, interaction_id=interaction_id)
+
+
+def interaction_id_from_reply_message(
+    *,
+    reply_message_id: str,
+    chat_context_id: str,
+    control: Any,
+) -> str | None:
+    candidates = platform_message_id_candidates(reply_message_id)
+    records = control.repository.list_bot_delivery_records(chat_context_id=chat_context_id)
+    for record in reversed(records):
+        if record.platform_message_id not in candidates:
+            continue
+        event = control.repository.get_semantic_event(record.event_id)
+        if event is not None and event.interaction_id:
+            return event.interaction_id
+    return None
+
+
+def platform_message_id_candidates(reply_message_id: str) -> set[str]:
+    value = str(reply_message_id)
+    candidates = {value}
+    if value.startswith("onebot:"):
+        candidates.add(value.removeprefix("onebot:"))
+    else:
+        candidates.add(f"onebot:{value}")
+    return candidates
+
+
+def inject_reply_interaction_id(raw_text: str, *, interaction_id: str) -> str:
+    prefix, body = split_command_prefix(raw_text)
+    if prefix is None or not body:
+        return raw_text
+    try:
+        tokens = shlex.split(body)
+    except ValueError:
+        return raw_text
+    if not tokens:
+        return raw_text
+    root = tokens[0]
+    normalized_root = {
+        "回答": "answer",
+        "批准": "approve",
+        "拒绝": "deny",
+    }.get(root, root)
+    args = tokens[1:]
+    if normalized_root == "answer":
+        if args and looks_like_interaction_id(args[0]):
+            return raw_text
+        return shlex.join([prefix, root, interaction_id, *args])
+    if normalized_root == "approve":
+        if args and looks_like_interaction_id(args[0]):
+            return raw_text
+        return shlex.join([prefix, root, interaction_id, *args])
+    if normalized_root == "deny":
+        if args and looks_like_interaction_id(args[0]):
+            return raw_text
+        return shlex.join([prefix, root, interaction_id, *args])
+    return raw_text
+
+
+def split_command_prefix(raw_text: str) -> tuple[str | None, str]:
+    stripped = raw_text.strip()
+    if not stripped:
+        return None, ""
+    parts = stripped.split(maxsplit=1)
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], parts[1]
+
+
+def looks_like_interaction_id(value: str) -> bool:
+    return value.startswith("int_")

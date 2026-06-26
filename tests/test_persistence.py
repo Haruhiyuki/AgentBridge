@@ -1015,6 +1015,25 @@ def test_interaction_cancellation_survives_repository_restart(tmp_path):
     assert second_repo.get_interaction(interaction.id).answer == "superseded"
 
 
+def test_semantic_event_lookup_by_id_survives_repository_restart(tmp_path):
+    database_url = f"sqlite:///{tmp_path / 'semantic-event-lookup.db'}"
+
+    first_repo = SQLAlchemyRepository(database_url, create_schema=True)
+    first_control = ControlPlane(repository=first_repo)
+    event = first_control.emit_event(
+        event_type="question.requested",
+        source=SemanticEventSource.CONTROL_PLANE,
+        trace_id="semantic-event-lookup",
+        interaction_id="int_lookup",
+        payload={"prompt": "Which environment?"},
+    )
+
+    second_repo = SQLAlchemyRepository(database_url)
+
+    assert second_repo.get_semantic_event(event.id) == event
+    assert second_repo.get_semantic_event("evt_missing") is None
+
+
 def test_approval_policy_overrides_survive_repository_restart(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'approval-policy.db'}"
     maintainer = Actor(id="usr_1", roles={"maintainer"})

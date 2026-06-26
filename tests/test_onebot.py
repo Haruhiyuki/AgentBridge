@@ -476,6 +476,138 @@ def test_onebot_events_api_executes_action_callback_with_click_actor(tmp_path):
     assert stored.votes == {"onebot:20002": True}
 
 
+def test_onebot_reply_to_approval_delivery_infers_interaction_for_text_fallback(tmp_path):
+    control = ControlPlane()
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    project = control.create_project(actor=maintainer, name="Backend", trace_id="project")
+    workspace = control.add_workspace(
+        actor=maintainer,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="workspace",
+    )
+    context = control.get_or_create_chat_context(
+        bot_instance_id="onebot-http",
+        platform="onebot.v11",
+        chat_space_id="10001",
+    )
+    session = control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Reply Approval",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="session",
+    )
+    interaction = control.create_interaction(
+        actor=maintainer,
+        session_id=session.id,
+        interaction_type=InteractionType.APPROVAL,
+        prompt="Allow reply approval?",
+        required_votes=1,
+        trace_id="approval",
+        chat_context_id=context.id,
+    )
+    records = BotGatewayService(control).deliver_session_events(
+        session_id=session.id,
+        chat_context_id=context.id,
+    )
+    approval_message = next(record for record in records if "Allow reply approval?" in record.text)
+    client = TestClient(create_app(control_plane=control))
+
+    response = client.post(
+        "/api/v1/onebot/events",
+        json={
+            "default_roles": ["approver"],
+            "event": {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 10001,
+                "user_id": 20002,
+                "message_id": 40001,
+                "reply_message_id": approval_message.platform_message_id,
+                "raw_message": "/agent approve once",
+            },
+        },
+    )
+
+    stored = control.get_interaction(actor=maintainer, interaction_id=interaction.id)
+    assert response.status_code == 200
+    assert response.json()["result"]["canonical_command"] == "approval.vote"
+    assert stored.status == InteractionStatus.RESOLVED
+    assert stored.votes == {"onebot:20002": True}
+
+
+def test_onebot_reply_to_question_delivery_infers_interaction_for_text_answer(tmp_path):
+    control = ControlPlane()
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    project = control.create_project(actor=maintainer, name="Backend", trace_id="project")
+    workspace = control.add_workspace(
+        actor=maintainer,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="workspace",
+    )
+    context = control.get_or_create_chat_context(
+        bot_instance_id="onebot-http",
+        platform="onebot.v11",
+        chat_space_id="10001",
+    )
+    session = control.create_session(
+        actor=maintainer,
+        project_id=project.id,
+        workspace_id=workspace.id,
+        name="Reply Question",
+        agent_type=project.default_agent,
+        visibility=Visibility.GROUP,
+        trace_id="session",
+    )
+    interaction = control.create_interaction(
+        actor=maintainer,
+        session_id=session.id,
+        interaction_type=InteractionType.QUESTION,
+        prompt="Which environment?",
+        required_votes=1,
+        trace_id="question",
+        chat_context_id=context.id,
+    )
+    records = BotGatewayService(control).deliver_session_events(
+        session_id=session.id,
+        chat_context_id=context.id,
+    )
+    question_message = next(record for record in records if "Which environment?" in record.text)
+    client = TestClient(create_app(control_plane=control))
+
+    response = client.post(
+        "/api/v1/onebot/events",
+        json={
+            "default_roles": ["operator"],
+            "event": {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 10001,
+                "user_id": 20002,
+                "message_id": 40002,
+                "message": [
+                    {"type": "reply", "data": {"id": question_message.platform_message_id}},
+                    {"type": "text", "data": {"text": "/agent answer staging"}},
+                ],
+            },
+        },
+    )
+
+    stored = control.get_interaction(actor=maintainer, interaction_id=interaction.id)
+    assert response.status_code == 200
+    assert response.json()["result"]["canonical_command"] == "interaction.answer"
+    assert stored.status == InteractionStatus.RESOLVED
+    assert stored.answer == "staging"
+
+
 def test_managed_device_identity_requires_onebot_event_ingest_scope_for_events():
     client = TestClient(create_app())
     admin = {"id": "security-admin", "roles": ["admin"]}

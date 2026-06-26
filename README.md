@@ -652,6 +652,19 @@ callback events must carry the clicking `user_id` so the command actor can be
 re-authorized through RBAC/access policy instead of trusting the button payload.
 Managed device credentials need `onebot_event_ingest` to call this endpoint.
 
+For text-only fallback, users may reply to a Bot-rendered question or approval message
+and omit the Interaction ID:
+
+```text
+/agent answer staging
+/agent approve once
+/agent deny missing context
+```
+
+AgentBridge resolves the replied platform message through Bot delivery records back to
+the semantic event's `interaction_id`, then executes the expanded command as the
+replying `onebot:<user_id>` actor.
+
 For NoneBot deployments, register a matcher from application setup code:
 
 ```python
@@ -713,6 +726,10 @@ Users can inspect and resolve them through commands:
 /agent deny <interaction-id> too risky
 /agent approval cancel <interaction-id> superseded
 ```
+
+On OneBot-style text-only platforms, replying to the rendered question or approval
+message lets users omit `<interaction-id>` for `/agent answer`, `/agent approve`, and
+`/agent deny`.
 
 REST callers can use `GET /api/v1/interactions`,
 `POST /api/v1/sessions/{id}/interactions`, `POST /api/v1/interactions/{id}/answer`,
