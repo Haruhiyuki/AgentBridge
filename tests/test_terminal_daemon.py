@@ -206,6 +206,66 @@ def test_local_terminal_daemon_requires_token_and_forwards_terminal_actions(tmp_
     asyncio.run(scenario())
 
 
+def test_local_terminal_daemon_claim_next_can_submit_prompt(tmp_path):
+    async def scenario():
+        control = ControlPlane()
+        backend = FakeTerminalBackend()
+        terminal = TerminalAgentService(control, backend=backend)
+        session = create_session(control, tmp_path)
+        socket_path = Path(f"/tmp/agentbridge-claim-submit-{uuid4().hex}.sock")
+        server = LocalTerminalAgentServer(
+            control=control,
+            terminal=terminal,
+            auth_token="secret-token",
+            lifecycle_monitor_enabled=False,
+        )
+        await server.start(socket_path)
+        try:
+            client = LocalTerminalAgentClient(socket_path, "secret-token")
+            started = await client.request(
+                "start_session",
+                {
+                    "session_id": session.id,
+                    "command": "fake-cli",
+                    "trace_id": "daemon-claim-submit-start",
+                },
+            )
+            assert started["ok"] is True
+            queued_turn = control.enqueue_turn(
+                actor=Actor(id="usr_1", roles={"maintainer"}),
+                session_id=session.id,
+                prompt="daemon queued task",
+                trace_id="daemon-claim-submit-turn",
+            )
+
+            claimed = await client.request(
+                "claim_next_turn",
+                {
+                    "session_id": session.id,
+                    "actor_id": "usr_1",
+                    "roles": ["maintainer"],
+                    "submit_prompt": True,
+                    "owner_type": "bot",
+                    "owner_id": "terminal-agent",
+                    "request_id": "daemon-claim-submit-input",
+                    "trace_id": "daemon-claim-submit",
+                },
+            )
+            snapshot = await client.request("snapshot", {"session_id": session.id})
+
+            assert claimed["ok"] is True
+            assert claimed["data"]["turn"]["id"] == queued_turn.id
+            assert claimed["data"]["turn"]["status"] == "running"
+            assert claimed["data"]["lease"]["owner_type"] == "bot"
+            assert claimed["data"]["request_id"] == "daemon-claim-submit-input"
+            assert snapshot["data"]["snapshot"] == "daemon queued task\n"
+            assert control.repository.get_turn(queued_turn.id).status == TurnStatus.RUNNING
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
+
+
 def test_local_terminal_daemon_reloads_token_file(tmp_path):
     async def scenario():
         token_file = tmp_path / "local-token"

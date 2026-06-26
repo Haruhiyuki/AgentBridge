@@ -3645,16 +3645,34 @@ def handle_terminal_ws_action(
             expected_queue_version, str
         ):
             raise TypeError("expected_queue_version must be a string")
-        turn, queue_version = control.claim_next_turn(
+        submit_prompt = payload.get("submit_prompt") or False
+        if not isinstance(submit_prompt, bool):
+            raise TypeError("submit_prompt must be a boolean")
+        owner_id = payload.get("owner_id") or "terminal-agent"
+        if not isinstance(owner_id, str):
+            raise TypeError("owner_id must be a string")
+        request_id = payload.get("request_id")
+        if request_id is not None and not isinstance(request_id, str):
+            raise TypeError("request_id must be a string")
+        append_newline = payload.get("append_newline")
+        if append_newline is None:
+            append_newline = True
+        if not isinstance(append_newline, bool):
+            raise TypeError("append_newline must be a boolean")
+        return terminal_service.claim_next_turn(
             actor=actor,
             session_id=session_id,
             trace_id=str(payload.get("trace_id") or "terminal-ws"),
             expected_queue_version=expected_queue_version,
+            submit_prompt=submit_prompt,
+            owner_type=LeaseOwnerType(
+                str(payload.get("owner_type") or LeaseOwnerType.BOT.value)
+            ),
+            owner_id=owner_id,
+            ttl_seconds=int(payload.get("ttl_seconds") or 300),
+            request_id=request_id,
+            append_newline=append_newline,
         )
-        return {
-            "queue_version": queue_version,
-            "turn": turn.model_dump(mode="json") if turn else None,
-        }
     if action == "submit_input":
         actor = actor_from_terminal_ws_payload(payload)
         control.require_terminal_control(

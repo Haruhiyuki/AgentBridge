@@ -807,16 +807,50 @@ class LocalTerminalAgentServer:
                     "expected_queue_version 必须是字符串。",
                     next_step="请省略 expected_queue_version 或传入最新 queue_version。",
                 )
-            turn, queue_version = self.control.claim_next_turn(
+            submit_prompt = payload.get("submit_prompt") or False
+            if not isinstance(submit_prompt, bool):
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "submit_prompt 必须是布尔值。",
+                    next_step="请传入 true/false，或省略该字段。",
+                )
+            owner_id = payload.get("owner_id") or "terminal-agent"
+            if not isinstance(owner_id, str):
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "owner_id 必须是字符串。",
+                    next_step="请提供写入者 ID，或省略以使用 terminal-agent。",
+                )
+            request_id = payload.get("request_id")
+            if request_id is not None and not isinstance(request_id, str):
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "request_id 必须是字符串。",
+                    next_step="请提供字符串 request_id，或省略以自动生成。",
+                )
+            append_newline = payload.get("append_newline")
+            if append_newline is None:
+                append_newline = True
+            if not isinstance(append_newline, bool):
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    "append_newline 必须是布尔值。",
+                    next_step="请传入 true/false，或省略该字段。",
+                )
+            return self.terminal.claim_next_turn(
                 actor=actor,
                 session_id=required_str(payload, "session_id"),
                 trace_id=str(payload.get("trace_id") or "local-terminal"),
                 expected_queue_version=expected_queue_version,
+                submit_prompt=submit_prompt,
+                owner_type=LeaseOwnerType(
+                    str(payload.get("owner_type") or LeaseOwnerType.BOT.value)
+                ),
+                owner_id=owner_id,
+                ttl_seconds=int(payload.get("ttl_seconds") or 300),
+                request_id=request_id,
+                append_newline=append_newline,
             )
-            return {
-                "queue_version": queue_version,
-                "turn": turn.model_dump(mode="json") if turn else None,
-            }
         if action == "submit_input":
             request_id = payload.get("request_id")
             request_id = self.terminal.submit_input(

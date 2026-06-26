@@ -30,6 +30,7 @@ from agentbridge.agent_adapter_events import (
 )
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
+    Actor,
     AgentBridgeError,
     AgentType,
     ErrorCode,
@@ -1876,6 +1877,74 @@ class TerminalAgentService:
             idempotency_key=request_id,
         )
         return request_id
+
+    def claim_next_turn(
+        self,
+        *,
+        actor: Actor,
+        session_id: str,
+        trace_id: str,
+        expected_queue_version: str | None = None,
+        submit_prompt: bool = False,
+        owner_type: LeaseOwnerType = LeaseOwnerType.BOT,
+        owner_id: str = "terminal-agent",
+        ttl_seconds: int = 300,
+        request_id: str | None = None,
+        append_newline: bool = True,
+    ) -> dict[str, object]:
+        lease = None
+        if submit_prompt:
+            terminal_status = self.status(
+                session_id=session_id,
+                trace_id=f"{trace_id}:pre-submit-status",
+            )
+            if not terminal_status.started or not terminal_status.running:
+                raise AgentBridgeError(
+                    ErrorCode.RESOURCE_CONFLICT,
+                    "终端会话尚未运行，不能提交 queued Turn。",
+                    next_step="请先启动或恢复终端后再领取并提交 Turn。",
+                    status_code=409,
+                    details={
+                        "session_id": session_id,
+                        "started": terminal_status.started,
+                        "running": terminal_status.running,
+                    },
+                )
+            lease = self.control.acquire_lease(
+                actor=actor,
+                session_id=session_id,
+                owner_type=owner_type,
+                owner_id=owner_id,
+                ttl_seconds=ttl_seconds,
+                trace_id=f"{trace_id}:lease",
+            )
+        turn, queue_version = self.control.claim_next_turn(
+            actor=actor,
+            session_id=session_id,
+            trace_id=trace_id,
+            expected_queue_version=expected_queue_version,
+        )
+        submitted_request_id = None
+        if submit_prompt and turn is not None and lease is not None:
+            prompt = turn.prompt
+            if append_newline and not prompt.endswith("\n"):
+                prompt += "\n"
+            submitted_request_id = self.submit_input(
+                session_id=session_id,
+                epoch=lease.epoch,
+                owner_type=lease.owner_type,
+                owner_id=lease.owner_id,
+                kind=TerminalInputKind.TEXT,
+                data=prompt,
+                trace_id=f"{trace_id}:input",
+                request_id=request_id or f"turn-input:{turn.id}",
+            )
+        return {
+            "queue_version": queue_version,
+            "turn": turn.model_dump(mode="json") if turn else None,
+            "lease": lease.model_dump(mode="json") if lease else None,
+            "request_id": submitted_request_id,
+        }
 
     def snapshot(self, *, session_id: str) -> str:
         self.control.repository.get_session(session_id)

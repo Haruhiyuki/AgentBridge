@@ -7132,6 +7132,79 @@ def test_terminal_websocket_accepts_commands_with_token(monkeypatch, tmp_path):
     assert control.repository.get_turn(queued_turn["id"]).status == TurnStatus.RUNNING
 
 
+def test_terminal_websocket_claim_next_can_submit_prompt(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTBRIDGE_WS_TOKEN", "secret")
+    control = ControlPlane()
+    client = TestClient(create_app(control))
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    session_id = _create_session_with_project(
+        client,
+        tmp_path,
+        chat_space_id="terminal-ws-claim-submit",
+        prefix="terminal-ws-claim-submit",
+        name="Terminal WS Claim Submit",
+    )
+    queued_turn = client.post(
+        f"/api/v1/sessions/{session_id}/turns",
+        json={
+            "actor": actor,
+            "prompt": "run queued task",
+            "trace_id": "terminal-ws-claim-submit-turn",
+        },
+    ).json()
+
+    with client.websocket_connect(
+        f"/api/v1/sessions/{session_id}/terminal/ws?token=secret"
+    ) as websocket:
+        websocket.send_json(
+            {
+                "id": "start",
+                "type": "start_session",
+                "payload": {
+                    "actor": actor,
+                    "command": "fake-cli",
+                    "trace_id": "terminal-ws-claim-submit-start",
+                },
+            }
+        )
+        assert websocket.receive_json()["ok"] is True
+
+        websocket.send_json(
+            {
+                "id": "claim-submit",
+                "type": "claim_next_turn",
+                "payload": {
+                    "actor": actor,
+                    "submit_prompt": True,
+                    "owner_type": "bot",
+                    "owner_id": "terminal-agent",
+                    "request_id": "terminal-ws-claim-submit-input",
+                    "trace_id": "terminal-ws-claim-submit",
+                },
+            }
+        )
+        claimed = websocket.receive_json()
+        assert claimed["type"] == "terminal.result"
+        assert claimed["id"] == "claim-submit"
+        assert claimed["ok"] is True
+        assert claimed["data"]["turn"]["id"] == queued_turn["id"]
+        assert claimed["data"]["turn"]["status"] == "running"
+        assert claimed["data"]["lease"]["owner_type"] == "bot"
+        assert claimed["data"]["request_id"] == "terminal-ws-claim-submit-input"
+
+        websocket.send_json(
+            {
+                "id": "snapshot",
+                "type": "snapshot",
+                "payload": {"actor": actor},
+            }
+        )
+        snapshot = websocket.receive_json()
+
+    assert snapshot["data"]["snapshot"] == "run queued task\n"
+    assert control.repository.get_turn(queued_turn["id"]).status == TurnStatus.RUNNING
+
+
 def test_terminal_lifecycle_monitor_can_autostart_from_api_env(monkeypatch):
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_LIFECYCLE_MONITOR_ENABLED", "true")
     monkeypatch.setenv("AGENTBRIDGE_TERMINAL_LIFECYCLE_POLL_INTERVAL_SECONDS", "60")
