@@ -4402,11 +4402,21 @@ def test_managed_device_identity_requires_bot_gateway_manage_scope_for_bot_gatew
         json={"idempotency_key": "missing", "action": "acknowledge"},
         headers={"x-agentbridge-client-cert-fingerprint": "aa:bb:cc"},
     )
+    command_registration_response = client.post(
+        "/api/v1/bot-gateway/command-registration-results",
+        json={
+            "platform": "discord",
+            "status": "succeeded",
+            "idempotency_key": "discord:commands",
+        },
+        headers=key_headers,
+    )
 
     assert create_response.status_code == 200
     assert status_response.status_code == 403
     assert retry_response.status_code == 403
     assert delivery_result_response.status_code == 403
+    assert command_registration_response.status_code == 403
 
 
 def test_managed_device_identity_requires_bot_gateway_read_scope_for_bot_gateway_gets():
@@ -4534,12 +4544,25 @@ def test_managed_device_identity_bot_gateway_manage_scope_allows_bot_gateway_pos
         json={},
         headers=headers,
     )
+    command_registration_response = client.post(
+        "/api/v1/bot-gateway/command-registration-results",
+        json={
+            "platform": "discord",
+            "status": "succeeded",
+            "idempotency_key": "discord:commands",
+        },
+        headers=headers,
+    )
 
     assert create_response.status_code == 200
     assert retry_worker_response.status_code == 200
     assert retry_worker_response.json()["records"] == []
     assert retry_failed_response.status_code == 200
     assert retry_failed_response.json() == []
+    assert command_registration_response.status_code == 200
+    assert command_registration_response.json()["event"]["type"] == (
+        "bot.command_registration.result"
+    )
 
 
 def test_api_returns_product_error_payload_for_permission_denied():

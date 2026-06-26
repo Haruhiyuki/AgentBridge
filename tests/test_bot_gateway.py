@@ -575,6 +575,55 @@ def test_bot_gateway_inbound_events_record_messages_and_execute_slash_commands()
     assert len(events) == 1
 
 
+def test_bot_gateway_command_registration_results_record_idempotent_events():
+    app = create_app()
+    client = TestClient(app)
+
+    payload = {
+        "bot_instance_id": "discord-main",
+        "adapter": "discord",
+        "platform": "discord",
+        "scope": "guild",
+        "channel_id": "guild-1",
+        "registration_id": "commands-v3",
+        "status": "success",
+        "commands": [
+            {"name": "agent", "description": "Run AgentBridge commands"},
+            {"name": "agent-approve", "description": "Approve an interaction"},
+        ],
+        "payload": {"remote_revision": "rev-3"},
+        "idempotency_key": "discord:guild-1:commands-v3",
+    }
+
+    first = client.post(
+        "/api/v1/bot-gateway/command-registration-results",
+        json=payload,
+    )
+    repeated = client.post(
+        "/api/v1/bot-gateway/command-registration-results",
+        json=payload,
+    )
+
+    assert first.status_code == 200
+    assert repeated.status_code == 200
+    assert repeated.json()["event"]["id"] == first.json()["event"]["id"]
+    event = first.json()["event"]
+    assert event["type"] == "bot.command_registration.result"
+    assert event["source"] == "bot_gateway"
+    assert event["idempotency_key"] == (
+        "discord:guild-1:commands-v3:bot.command_registration.result"
+    )
+    assert event["payload"]["status"] == "succeeded"
+    assert event["payload"]["command_count"] == 2
+    assert event["payload"]["commands"][0]["name"] == "agent"
+    assert event["payload"]["payload"] == {"remote_revision": "rev-3"}
+    events = app.state.control.repository.list_semantic_events(
+        event_type="bot.command_registration.result",
+        trace_id="discord:guild-1:commands-v3",
+    )
+    assert len(events) == 1
+
+
 def test_bot_gateway_delivery_results_api_tracks_ack_edit_delete(tmp_path):
     control = ControlPlane()
     context, session_id = create_session_with_turn(control, tmp_path)

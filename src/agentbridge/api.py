@@ -448,6 +448,25 @@ class BotGatewayInboundEventRequest(BaseModel):
     trace_id: str | None = None
 
 
+class BotCommandRegistrationResultRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bot_instance_id: str = "bot-gateway"
+    adapter: str | None = None
+    platform: str
+    scope: str | None = None
+    channel_id: str | None = None
+    thread_id: str | None = None
+    registration_id: str | None = None
+    status: str
+    commands: list[dict[str, object]] = Field(default_factory=list)
+    error: str | None = None
+    payload: dict[str, object] = Field(default_factory=dict)
+    occurred_at: datetime | None = None
+    idempotency_key: str | None = None
+    trace_id: str | None = None
+
+
 class RetryBotDeliveriesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2127,6 +2146,13 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         return record.model_dump(mode="json")
 
+    @app.post("/api/v1/bot-gateway/command-registration-results")
+    def record_bot_command_registration_result(
+        payload: BotCommandRegistrationResultRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        return handle_bot_command_registration_result(payload, control=control)
+
     @app.post("/api/v1/bot-gateway/deliveries/edit")
     def edit_bot_delivery(
         payload: EditBotDeliveryRequest,
@@ -2858,6 +2884,12 @@ BOT_GATEWAY_EXECUTABLE_UPSTREAM_EVENT_TYPES = {
     "bot.modal.submitted",
 }
 
+BOT_COMMAND_REGISTRATION_RESULT_STATUSES = {
+    "succeeded",
+    "failed",
+    "partial",
+}
+
 
 def handle_bot_gateway_inbound_event(
     payload: BotGatewayInboundEventRequest,
@@ -2945,6 +2977,90 @@ def handle_bot_gateway_inbound_event(
         }
     )
     return response
+
+
+def handle_bot_command_registration_result(
+    payload: BotCommandRegistrationResultRequest,
+    *,
+    control: ControlPlane,
+) -> dict[str, object]:
+    status = normalized_bot_command_registration_status(payload.status)
+    occurred_at = payload.occurred_at or utc_now()
+    idempotency_key = payload.idempotency_key or bot_command_registration_idempotency_key(
+        payload
+    )
+    trace_id = payload.trace_id or idempotency_key
+    event = control.emit_event(
+        event_type="bot.command_registration.result",
+        source=SemanticEventSource.BOT_GATEWAY,
+        trace_id=trace_id,
+        payload={
+            "bot_instance_id": payload.bot_instance_id,
+            "adapter": payload.adapter,
+            "platform": payload.platform,
+            "scope": payload.scope,
+            "channel_id": payload.channel_id,
+            "thread_id": payload.thread_id,
+            "registration_id": payload.registration_id,
+            "status": status,
+            "command_count": len(payload.commands),
+            "commands": payload.commands,
+            "error": payload.error,
+            "payload": payload.payload,
+            "occurred_at": occurred_at.isoformat(),
+        },
+        idempotency_key=f"{idempotency_key}:bot.command_registration.result",
+    )
+    return {"event": event.model_dump(mode="json")}
+
+
+def normalized_bot_command_registration_status(status: str) -> str:
+    normalized = status.strip().lower()
+    aliases = {
+        "success": "succeeded",
+        "ok": "succeeded",
+        "error": "failed",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in BOT_COMMAND_REGISTRATION_RESULT_STATUSES:
+        raise AgentBridgeError(
+            ErrorCode.COMMAND_ARGUMENT_INVALID,
+            "未知 Bot command registration result 状态。",
+            next_step="请使用 succeeded、failed 或 partial。",
+            status_code=400,
+            details={"status": status},
+        )
+    return normalized
+
+
+def bot_command_registration_idempotency_key(
+    payload: BotCommandRegistrationResultRequest,
+) -> str:
+    scope_key = bot_command_registration_scope_key(payload)
+    result_id = payload.registration_id or bot_command_registration_fingerprint(payload)
+    return (
+        "bot-command-registration:"
+        f"{payload.platform}:{payload.bot_instance_id}:{scope_key}:{result_id}"
+    )
+
+
+def bot_command_registration_scope_key(
+    payload: BotCommandRegistrationResultRequest,
+) -> str:
+    scope = payload.scope or "global"
+    scope_id = payload.channel_id or payload.thread_id or "global"
+    return f"{scope}:{scope_id}"
+
+
+def bot_command_registration_fingerprint(
+    payload: BotCommandRegistrationResultRequest,
+) -> str:
+    body = payload.model_dump(
+        mode="json",
+        exclude={"idempotency_key", "trace_id", "occurred_at"},
+    )
+    canonical = json.dumps(body, sort_keys=True, ensure_ascii=False)
+    return f"result:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
 
 
 def normalized_bot_gateway_upstream_event_type(event_type: str) -> str:

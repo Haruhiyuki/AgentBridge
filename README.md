@@ -657,6 +657,15 @@ curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/inbound-events \
   -d '{"event_type":"bot.slash_command.received","platform":"discord","channel_id":"chan-1","user_id":"usr-1","event_id":"slash-1","command":"health"}'
 ```
 
+Adapters that register native slash commands or command menus can report platform
+registration results as immutable Bot Gateway semantic events:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/bot-gateway/command-registration-results \
+  -H 'content-type: application/json' \
+  -d '{"platform":"discord","scope":"guild","channel_id":"guild-1","registration_id":"commands-v3","status":"succeeded","commands":[{"name":"agent"}]}'
+```
+
 The OneBot endpoint also accepts action callback payloads that contain a rendered action
 descriptor command, including nested `data.payload.command` or `payload.command` shapes:
 
