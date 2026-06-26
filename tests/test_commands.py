@@ -865,6 +865,148 @@ def test_question_and_plan_commands_use_typed_interactions(tmp_path):
     assert exc_info.value.code == ErrorCode.COMMAND_ARGUMENT_INVALID
 
 
+def test_numbered_interaction_commands_use_type_filtered_pending_lists(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+
+    execute(
+        commands,
+        f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+        maintainer,
+        context.id,
+        "interaction-code-project",
+    )
+    session_result = execute(
+        commands,
+        "/agent session new Interaction Codes",
+        maintainer,
+        context.id,
+        "interaction-code-session",
+    )
+    session_id = str(session_result.data["session_id"])
+    question = control.create_interaction(
+        actor=maintainer,
+        session_id=session_id,
+        interaction_type=InteractionType.QUESTION,
+        prompt="Which environment?",
+        trace_id="interaction-code-question",
+        chat_context_id=context.id,
+    )
+    approval = control.create_interaction(
+        actor=maintainer,
+        session_id=session_id,
+        interaction_type=InteractionType.APPROVAL,
+        prompt="Deploy now?",
+        trace_id="interaction-code-approval",
+        chat_context_id=context.id,
+    )
+    plan = control.create_interaction(
+        actor=maintainer,
+        session_id=session_id,
+        interaction_type=InteractionType.PLAN,
+        prompt="Plan: run tests then deploy.",
+        trace_id="interaction-code-plan",
+        chat_context_id=context.id,
+    )
+
+    question_list = execute(
+        commands,
+        "/agent question list",
+        maintainer,
+        context.id,
+        "interaction-code-question-list",
+    )
+    approval_list = execute(
+        commands,
+        "/agent approvals",
+        maintainer,
+        context.id,
+        "interaction-code-approval-list",
+    )
+    plan_list = execute(
+        commands,
+        "/agent plan list",
+        maintainer,
+        context.id,
+        "interaction-code-plan-list",
+    )
+    answer_result = execute(
+        commands,
+        "/agent answer 1 staging",
+        maintainer,
+        context.id,
+        "interaction-code-answer",
+    )
+    approval_result = execute(
+        commands,
+        "/agent approve 1",
+        maintainer,
+        context.id,
+        "interaction-code-approve",
+    )
+    plan_result = execute(
+        commands,
+        "/agent plan approve 1",
+        maintainer,
+        context.id,
+        "interaction-code-plan-approve",
+    )
+
+    assert [item["id"] for item in question_list.data["interactions"]] == [question.id]
+    assert [item["id"] for item in approval_list.data["interactions"]] == [approval.id]
+    assert [item["id"] for item in plan_list.data["interactions"]] == [plan.id]
+    assert answer_result.data["interaction_id"] == question.id
+    assert answer_result.data["interaction"]["answer"] == "staging"
+    assert approval_result.data["interaction_id"] == approval.id
+    assert approval_result.data["interaction"]["status"] == "resolved"
+    assert plan_result.data["interaction_id"] == plan.id
+    assert plan_result.data["interaction"]["answer"] == "approved"
+
+
+def test_numbered_interaction_selector_rejects_wrong_type(tmp_path):
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+
+    execute(
+        commands,
+        f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+        maintainer,
+        context.id,
+        "interaction-type-project",
+    )
+    session_result = execute(
+        commands,
+        "/agent session new Interaction Type",
+        maintainer,
+        context.id,
+        "interaction-type-session",
+    )
+    control.create_interaction(
+        actor=maintainer,
+        session_id=str(session_result.data["session_id"]),
+        interaction_type=InteractionType.QUESTION,
+        prompt="Which environment?",
+        trace_id="interaction-type-question",
+        chat_context_id=context.id,
+    )
+
+    with pytest.raises(AgentBridgeError) as exc_info:
+        execute(
+            commands,
+            "/agent approve 1",
+            maintainer,
+            context.id,
+            "interaction-type-approve",
+        )
+
+    assert exc_info.value.code == ErrorCode.COMMAND_ARGUMENT_INVALID
+    assert exc_info.value.details == {"index": 1, "count": 0}
+
+
 def test_unknown_ascii_command_is_rejected_but_non_command_text_becomes_prompt():
     control = ControlPlane()
     commands = CommandService(control)

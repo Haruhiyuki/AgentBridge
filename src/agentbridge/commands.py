@@ -550,8 +550,8 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
     command_spec(
         "interaction.show",
         aliases=["approval show", "question show", "plan show"],
-        summary="Show one interaction by ID.",
-        usage="/agent approval show <interaction-id>",
+        summary="Show one interaction by ID or list number.",
+        usage="/agent approval show <interaction-id|number>",
         argument_schema=command_arguments_schema(
             {"interaction": STRING_SCHEMA, "interaction_type": OPTIONAL_STRING_SCHEMA},
             required=["interaction"],
@@ -564,7 +564,7 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
         "interaction.answer",
         aliases=["answer", "回答"],
         summary="Answer a free-text question interaction.",
-        usage="/agent answer <interaction-id> <answer>",
+        usage="/agent answer <interaction-id|number> <answer>",
         argument_schema=command_arguments_schema(
             {"interaction": STRING_SCHEMA, "answer": STRING_SCHEMA},
             required=["interaction", "answer"],
@@ -578,7 +578,7 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
         "interaction.cancel",
         aliases=["approval cancel"],
         summary="Cancel a pending interaction.",
-        usage="/agent approval cancel <interaction-id> [reason]",
+        usage="/agent approval cancel <interaction-id|number> [reason]",
         argument_schema=command_arguments_schema(
             {"interaction": STRING_SCHEMA, "reason": OPTIONAL_STRING_SCHEMA},
             required=["interaction"],
@@ -592,7 +592,7 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
         "approval.vote",
         aliases=["approve", "deny", "批准", "拒绝"],
         summary="Approve or deny an approval interaction.",
-        usage="/agent approve <interaction-id> [once]",
+        usage="/agent approve <interaction-id|number> [once]",
         argument_schema=command_arguments_schema(
             {
                 "interaction": STRING_SCHEMA,
@@ -622,7 +622,7 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
         "plan.approve",
         aliases=["plan approve"],
         summary="Approve a proposed plan.",
-        usage="/agent plan approve <interaction-id>",
+        usage="/agent plan approve <interaction-id|number>",
         argument_schema=command_arguments_schema(
             {"interaction": STRING_SCHEMA},
             required=["interaction"],
@@ -636,7 +636,7 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
         "plan.revise",
         aliases=["plan revise"],
         summary="Request changes to a proposed plan.",
-        usage="/agent plan revise <interaction-id> <feedback>",
+        usage="/agent plan revise <interaction-id|number> <feedback>",
         argument_schema=command_arguments_schema(
             {"interaction": STRING_SCHEMA, "feedback": STRING_SCHEMA},
             required=["interaction", "feedback"],
@@ -650,7 +650,7 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
         "plan.cancel",
         aliases=["plan cancel", "plan deny"],
         summary="Cancel a proposed plan interaction.",
-        usage="/agent plan cancel <interaction-id> [reason]",
+        usage="/agent plan cancel <interaction-id|number> [reason]",
         argument_schema=command_arguments_schema(
             {"interaction": STRING_SCHEMA, "reason": OPTIONAL_STRING_SCHEMA},
             required=["interaction"],
@@ -1124,20 +1124,30 @@ class CommandService:
 
     def _parse_approval(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
         if not tokens:
-            return "interaction.list", {"pending": True}
+            return "interaction.list", {
+                "pending": True,
+                "interaction_type": InteractionType.APPROVAL.value,
+            }
         action = self._canonical_token(tokens[0])
         positional, options = parse_options(tokens[1:])
         if action == "show":
             if not positional:
                 raise missing_argument("approval show", "<interaction-id>")
-            return "interaction.show", {"interaction": positional[0]}
+            return "interaction.show", {
+                "interaction": positional[0],
+                "interaction_type": InteractionType.APPROVAL.value,
+            }
         if action == "list":
-            return "interaction.list", {"pending": bool(options.get("pending"))}
+            return "interaction.list", {
+                "pending": bool(options.get("pending", True)),
+                "interaction_type": InteractionType.APPROVAL.value,
+            }
         if action == "cancel":
             if not positional:
                 raise missing_argument("approval cancel", "<interaction-id>")
             return "interaction.cancel", {
                 "interaction": positional[0],
+                "interaction_type": InteractionType.APPROVAL.value,
                 "reason": " ".join(positional[1:]).strip() or None,
             }
         raise AgentBridgeError(
@@ -1148,7 +1158,10 @@ class CommandService:
 
     def _parse_approvals(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
         _, options = parse_options(tokens)
-        return "interaction.list", {"pending": bool(options.get("pending", True))}
+        return "interaction.list", {
+            "pending": bool(options.get("pending", True)),
+            "interaction_type": InteractionType.APPROVAL.value,
+        }
 
     def _parse_question(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
         if not tokens:
@@ -1713,16 +1726,10 @@ class CommandService:
                 },
             )
         if command == "interaction.show":
-            interaction = self.control.get_interaction(
-                actor=invocation.actor,
-                interaction_id=str(args["interaction"]),
-                chat_context_id=invocation.chat_context_id,
+            interaction = self._resolve_interaction_arg(
+                invocation,
+                expected_type=self._expected_interaction_type(invocation),
             )
-            if args.get("interaction_type"):
-                self._require_interaction_type(
-                    interaction,
-                    InteractionType(str(args["interaction_type"])),
-                )
             return self._result(
                 invocation,
                 "Interaction",
@@ -1764,12 +1771,10 @@ class CommandService:
                 },
             )
         if command == "plan.approve":
-            current = self.control.get_interaction(
-                actor=invocation.actor,
-                interaction_id=str(args["interaction"]),
-                chat_context_id=invocation.chat_context_id,
+            current = self._resolve_interaction_arg(
+                invocation,
+                expected_type=InteractionType.PLAN,
             )
-            self._require_interaction_type(current, InteractionType.PLAN)
             interaction = self.control.answer_interaction(
                 actor=invocation.actor,
                 interaction_id=current.id,
@@ -1789,12 +1794,10 @@ class CommandService:
                 },
             )
         if command == "plan.revise":
-            current = self.control.get_interaction(
-                actor=invocation.actor,
-                interaction_id=str(args["interaction"]),
-                chat_context_id=invocation.chat_context_id,
+            current = self._resolve_interaction_arg(
+                invocation,
+                expected_type=InteractionType.PLAN,
             )
-            self._require_interaction_type(current, InteractionType.PLAN)
             interaction = self.control.answer_interaction(
                 actor=invocation.actor,
                 interaction_id=current.id,
@@ -1815,12 +1818,10 @@ class CommandService:
                 },
             )
         if command == "plan.cancel":
-            current = self.control.get_interaction(
-                actor=invocation.actor,
-                interaction_id=str(args["interaction"]),
-                chat_context_id=invocation.chat_context_id,
+            current = self._resolve_interaction_arg(
+                invocation,
+                expected_type=InteractionType.PLAN,
             )
-            self._require_interaction_type(current, InteractionType.PLAN)
             interaction = self.control.cancel_interaction(
                 actor=invocation.actor,
                 interaction_id=current.id,
@@ -1840,9 +1841,13 @@ class CommandService:
                 },
             )
         if command == "interaction.answer":
+            current = self._resolve_interaction_arg(
+                invocation,
+                expected_type=InteractionType.QUESTION,
+            )
             interaction = self.control.answer_interaction(
                 actor=invocation.actor,
-                interaction_id=str(args["interaction"]),
+                interaction_id=current.id,
                 answer=str(args["answer"]),
                 trace_id=invocation.trace_id,
                 chat_context_id=invocation.chat_context_id,
@@ -1858,9 +1863,13 @@ class CommandService:
                 },
             )
         if command == "interaction.cancel":
+            current = self._resolve_interaction_arg(
+                invocation,
+                expected_type=self._expected_interaction_type(invocation),
+            )
             interaction = self.control.cancel_interaction(
                 actor=invocation.actor,
-                interaction_id=str(args["interaction"]),
+                interaction_id=current.id,
                 reason=str(args["reason"]) if args.get("reason") else None,
                 trace_id=invocation.trace_id,
                 chat_context_id=invocation.chat_context_id,
@@ -1876,9 +1885,13 @@ class CommandService:
                 },
             )
         if command == "approval.vote":
+            current = self._resolve_interaction_arg(
+                invocation,
+                expected_type=InteractionType.APPROVAL,
+            )
             interaction = self.control.vote_interaction(
                 actor=invocation.actor,
-                interaction_id=str(args["interaction"]),
+                interaction_id=current.id,
                 approve=bool(args["approve"]),
                 reason=str(args["reason"]) if args.get("reason") else None,
                 trace_id=invocation.trace_id,
@@ -2147,6 +2160,55 @@ class CommandService:
             next_step="请执行 /agent session new 或 /agent session use <session>。",
         )
 
+    def _resolve_interaction_arg(
+        self,
+        invocation: CommandInvocation,
+        *,
+        expected_type: InteractionType | None = None,
+    ) -> Interaction:
+        token = str(invocation.args["interaction"])
+        if token.isdecimal():
+            index = parse_selection_index("interaction", token)
+            interactions = self.control.list_interactions(
+                actor=invocation.actor,
+                chat_context_id=invocation.chat_context_id,
+                session_id=None,
+                status=None,
+            )
+            interactions = [
+                interaction
+                for interaction in interactions
+                if interaction.status
+                in {InteractionStatus.PENDING, InteractionStatus.PARTIALLY_APPROVED}
+            ]
+            if expected_type is not None:
+                interactions = [
+                    interaction
+                    for interaction in interactions
+                    if interaction.type == expected_type
+                ]
+            return select_numbered_item(
+                interactions,
+                index,
+                item_label=interaction_type_label(expected_type),
+                list_command=interaction_list_command(expected_type),
+            )
+        interaction = self.control.get_interaction(
+            actor=invocation.actor,
+            interaction_id=token,
+            chat_context_id=invocation.chat_context_id,
+        )
+        if expected_type is not None:
+            self._require_interaction_type(interaction, expected_type)
+        return interaction
+
+    def _expected_interaction_type(
+        self,
+        invocation: CommandInvocation,
+    ) -> InteractionType | None:
+        interaction_type = invocation.args.get("interaction_type")
+        return InteractionType(str(interaction_type)) if interaction_type else None
+
     def _require_interaction_type(
         self,
         interaction: Interaction,
@@ -2270,6 +2332,26 @@ def select_numbered_item[T](
             details={"index": index, "count": len(items)},
         )
     return items[index - 1]
+
+
+def interaction_type_label(interaction_type: InteractionType | None) -> str:
+    if interaction_type == InteractionType.APPROVAL:
+        return "审批"
+    if interaction_type == InteractionType.QUESTION:
+        return "问题"
+    if interaction_type == InteractionType.PLAN:
+        return "计划"
+    return "交互"
+
+
+def interaction_list_command(interaction_type: InteractionType | None) -> str:
+    if interaction_type == InteractionType.APPROVAL:
+        return "/agent approvals"
+    if interaction_type == InteractionType.QUESTION:
+        return "/agent question list"
+    if interaction_type == InteractionType.PLAN:
+        return "/agent plan list"
+    return "/agent approvals"
 
 
 def risk_level_from_policy_key(value: str) -> RiskLevel:

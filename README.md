@@ -822,18 +822,23 @@ Users can inspect and resolve them through commands:
 
 ```text
 /agent approvals
-/agent approval show <interaction-id>
-/agent question show <interaction-id>
-/agent answer <interaction-id> Use expand-contract migration
-/agent approve <interaction-id> once
-/agent deny <interaction-id> too risky
-/agent approval cancel <interaction-id> superseded
+/agent approval show <interaction-id|number>
+/agent question list
+/agent question show <interaction-id|number>
+/agent answer <interaction-id|number> Use expand-contract migration
+/agent approve <interaction-id|number> once
+/agent deny <interaction-id|number> too risky
+/agent approval cancel <interaction-id|number> superseded
 /agent plan list
-/agent plan show <interaction-id>
-/agent plan approve <interaction-id>
-/agent plan revise <interaction-id> Use expand-contract migration first
-/agent plan cancel <interaction-id> obsolete
+/agent plan show <interaction-id|number>
+/agent plan approve <interaction-id|number>
+/agent plan revise <interaction-id|number> Use expand-contract migration first
+/agent plan cancel <interaction-id|number> obsolete
 ```
+
+Pure numeric interaction arguments are one-based indexes into the current pending list
+for that command type: approvals use `/agent approvals`, questions use
+`/agent question list`, and plans use `/agent plan list`.
 
 On OneBot-style text-only platforms, replying to the rendered question, approval, or
 plan message lets users omit `<interaction-id>` for `/agent answer`, `/agent approve`,
