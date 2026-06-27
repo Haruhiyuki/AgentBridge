@@ -13,7 +13,9 @@ import signal as process_signal
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
+import threading
 import time
 import zlib
 from collections.abc import Callable, Mapping
@@ -72,13 +74,22 @@ def open_desktop_terminal(
     if resolved in {"", "auto"}:
         resolved = "macos-terminal" if sys.platform == "darwin" else "xterm"
     if resolved == "macos-terminal":
-        script = (
-            'tell application "Terminal"\n'
-            "    activate\n"
-            f'    do script "{attach_command}"\n'
-            "end tell"
-        )
-        subprocess.Popen(["osascript", "-e", script])  # noqa: S603,S607
+        # 用一次性 .command 启动脚本 + open，而非 osascript `do script`。
+        # do script 是「往 shell 里逐字键入命令」，Terminal 冷启动/并发开窗时会串入杂字符
+        # （曾出现命令被加上 `1` 前缀 → `1/opt/.../tmux ...: no such file` 而失败）。
+        # 打开脚本文件是原子执行，不经 shell 键入，免疫这类串扰。
+        fd, launcher = tempfile.mkstemp(prefix="agentbridge-attach-", suffix=".command")
+        with os.fdopen(fd, "w") as handle:
+            handle.write(f"#!/bin/sh\nexec {attach_command}\n")
+        os.chmod(launcher, 0o755)
+        subprocess.Popen(["open", "-a", "Terminal", launcher])  # noqa: S603,S607
+
+        def _cleanup(path: str) -> None:
+            time.sleep(15)  # 等 Terminal 打开并读取脚本后再删，避免累积临时文件。
+            with suppress(OSError):
+                os.unlink(path)
+
+        threading.Thread(target=_cleanup, args=(launcher,), daemon=True).start()
     elif resolved == "iterm":
         script = (
             'tell application "iTerm"\n'
