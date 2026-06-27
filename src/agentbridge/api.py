@@ -1695,6 +1695,15 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         title="AgentBridge Control Plane",
         version="0.1.0",
         lifespan=lifespan,
+        openapi_tags=[
+            {
+                "name": "bot-integration",
+                "description": (
+                    "接入任意聊天平台的最小契约：转发信封 → 回发 result → 流式拉会话。"
+                    "见 docs/BOT_INTEGRATION.md 与 examples/minimal_bot.py。"
+                ),
+            },
+        ],
     )
     app.state.control = control
     app.state.commands = commands
@@ -2238,13 +2247,13 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             actor=payload.to_actor(), name=name, trace_id="api"
         )
 
-    @app.get("/api/v1/identity-roles")
+    @app.get("/api/v1/identity-roles", tags=["bot-integration"])
     def list_identity_roles(control: ControlPlane = Depends(get_control)):
         """列出服务端保存的「平台身份 → 角色」绑定。"""
         actor = Actor(id="api", roles={"admin"})
         return {"bindings": control.list_identity_roles(actor)}
 
-    @app.put("/api/v1/identity-roles")
+    @app.put("/api/v1/identity-roles", tags=["bot-integration"])
     def set_identity_roles(
         payload: SetIdentityRolesRequest,
         control: ControlPlane = Depends(get_control),
@@ -2258,7 +2267,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             trace_id=payload.trace_id,
         )
 
-    @app.post("/api/v1/identity-roles/delete")
+    @app.post("/api/v1/identity-roles/delete", tags=["bot-integration"])
     def delete_identity_roles(
         payload: DeleteIdentityRolesRequest,
         control: ControlPlane = Depends(get_control),
@@ -2754,7 +2763,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             rendered.append(rendered_event_payload(event=event, renderer=renderer))
         return rendered
 
-    @app.get("/api/v1/sessions/{session_id}/chat-events")
+    @app.get("/api/v1/sessions/{session_id}/chat-events", tags=["bot-integration"])
     def list_chat_events(
         session_id: str,
         control: ControlPlane = Depends(get_control),
@@ -2784,7 +2793,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             "queue_paused": queue_paused,
         }
 
-    @app.get("/api/v1/sessions/{session_id}/chat-events/stream")
+    @app.get("/api/v1/sessions/{session_id}/chat-events/stream", tags=["bot-integration"])
     async def stream_chat_events_sse(
         session_id: str,
         control: ControlPlane = Depends(get_control),
@@ -3441,7 +3450,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         )
         return [record.model_dump(mode="json") for record in records]
 
-    @app.post("/api/v1/bot-gateway/inbound-events")
+    @app.post("/api/v1/bot-gateway/inbound-events", tags=["bot-integration"])
     def ingest_bot_gateway_inbound_event(
         payload: BotGatewayInboundEventRequest,
         command_service: CommandService = Depends(get_commands),

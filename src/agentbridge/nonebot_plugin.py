@@ -1,3 +1,12 @@
+"""NoneBot 适配器参考实现（进阶 / 全功能）。
+
+本模块面向**已用 NoneBot 框架**、且要原生命令注册、消息编辑/删除、按钮/选择等富交互的接入。
+它较重（处理 NoneBot 各种签名/事件形态），不代表"接入很难"。
+
+只想快速接一个平台？**先看 `docs/BOT_INTEGRATION.md` 与 `examples/minimal_bot.py`**：用通用
+入口 + SSE 出站流（或 `agentbridge.bot_client`），平台胶水通常 100~150 行即可，无需本模块。
+"""
+
 from __future__ import annotations
 
 import asyncio
