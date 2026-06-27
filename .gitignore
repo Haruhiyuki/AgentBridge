@@ -13,3 +13,6 @@ htmlcov/
 agentbridge.db
 *.sqlite
 *.sqlite3
+
+# 设计文档：本地保留、不再随仓库追踪
+AgentBridge_项目总设计文档_v0.2_多项目多会话指令版.md
