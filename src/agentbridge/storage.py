@@ -336,6 +336,7 @@ class InMemoryRepository:
         workspace_type: WorkspaceType = WorkspaceType.SHARED,
         is_writable: bool = True,
         max_write_sessions: int = 1,
+        create_dir: bool = False,
     ) -> Workspace:
         with self._lock:
             self.get_project(project_id)
@@ -372,6 +373,18 @@ class InMemoryRepository:
                         "max_write_sessions": effective_max_write_sessions,
                     },
                 )
+            if create_dir:
+                # 仅在已通过 allowed_root 边界校验后才创建，确保 mkdir 不会越界。
+                try:
+                    resolved_path.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    raise AgentBridgeError(
+                        ErrorCode.WORKSPACE_PATH_DENIED,
+                        f"无法创建工作目录：{resolved_path}（{exc.strerror or exc}）",
+                        next_step="请检查上级目录的写入权限，或换一个工作目录。",
+                        status_code=400,
+                        details={"path": str(resolved_path)},
+                    ) from exc
             workspace = Workspace(
                 id=new_id("wsp"),
                 project_id=project_id,

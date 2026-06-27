@@ -197,6 +197,7 @@ class ControlPlane:
         workspace_type: WorkspaceType = WorkspaceType.SHARED,
         is_writable: bool = True,
         max_write_sessions: int = 1,
+        create_dir: bool = False,
         trace_id: str,
         chat_context_id: str | None = None,
     ) -> Workspace:
@@ -211,6 +212,7 @@ class ControlPlane:
                 "machine_id": machine_id,
                 "is_writable": is_writable,
                 "max_write_sessions": max_write_sessions,
+                "create_dir": create_dir,
                 **self._chat_policy_attributes(chat_context_id),
             },
         )
@@ -222,6 +224,7 @@ class ControlPlane:
             workspace_type=workspace_type,
             is_writable=is_writable,
             max_write_sessions=max_write_sessions,
+            create_dir=create_dir,
         )
         self.audit(
             action="project.workspace_added",
@@ -246,6 +249,52 @@ class ControlPlane:
             },
         )
         return workspace
+
+    def provision_project(
+        self,
+        *,
+        actor: Actor,
+        name: str,
+        working_dir: str,
+        machine_id: str = "local",
+        default_agent: AgentType = AgentType.CLAUDE,
+        max_active_sessions: int = 10,
+        max_running_turns: int = 4,
+        max_queued_turns: int = 100,
+        daily_turns_per_user: int = 50,
+        create_dir: bool = True,
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> tuple[Project, Workspace]:
+        """一步开通项目：建 Project + 在 ``working_dir`` 建 Workspace（按需 mkdir）。
+
+        ``working_dir`` 即项目工作目录，同时作为该 Workspace 的 ``allowed_root``（边界=项目目录
+        本身，最紧），由 Bot「在 ~ 下按项目名建文件夹」和控制台「指定/浏览目录」两条入口共用。
+        """
+        project = self.create_project(
+            actor=actor,
+            name=name,
+            default_agent=default_agent,
+            max_active_sessions=max_active_sessions,
+            max_running_turns=max_running_turns,
+            max_queued_turns=max_queued_turns,
+            daily_turns_per_user=daily_turns_per_user,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+        )
+        workspace = self.add_workspace(
+            actor=actor,
+            project_id=project.id,
+            machine_id=machine_id,
+            path=working_dir,
+            allowed_root=working_dir,
+            is_writable=True,
+            max_write_sessions=1,
+            create_dir=create_dir,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+        )
+        return project, workspace
 
     def bind_project(
         self,

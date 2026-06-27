@@ -9269,3 +9269,65 @@ def test_terminal_websocket_restart_uses_last_started_command(tmp_path):
         },
     }
     assert recovered_backend.started[session_id] == (str(tmp_path), "fake-cli --resume")
+
+
+def test_provision_project_creates_workspace_directory(tmp_path):
+    client = TestClient(create_app())
+    actor = {"id": "usr_admin", "roles": ["maintainer"]}
+    workdir = tmp_path / "我的新项目"
+    assert not workdir.exists()
+    resp = client.post(
+        "/api/v1/projects/provision",
+        json={
+            "actor": actor,
+            "name": "我的新项目",
+            "working_dir": str(workdir),
+            "default_agent": "claude",
+            "create_dir": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["project"]["default_agent"] == "claude"
+    assert body["working_dir"] == str(workdir.resolve())
+    # 目录被真正建出来。
+    assert workdir.is_dir()
+    # 工作区登记到该项目，path 与 allowed_root 都是工作目录本身（边界最紧）。
+    ws = client.get(f"/api/v1/projects/{body['project']['id']}/workspaces").json()
+    assert len(ws) == 1
+    assert ws[0]["path"] == str(workdir.resolve())
+    assert ws[0]["allowed_root"] == str(workdir.resolve())
+
+
+def test_provision_project_create_dir_false_does_not_mkdir(tmp_path):
+    client = TestClient(create_app())
+    actor = {"id": "usr_admin", "roles": ["maintainer"]}
+    workdir = tmp_path / "nodir"
+    resp = client.post(
+        "/api/v1/projects/provision",
+        json={
+            "actor": actor,
+            "name": "NoDir",
+            "working_dir": str(workdir),
+            "create_dir": False,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert not workdir.exists()
+
+
+def test_filesystem_directories_browse_is_bounded(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_PROJECT_BASE_DIR", str(tmp_path))
+    (tmp_path / "alpha").mkdir()
+    (tmp_path / "beta").mkdir()
+    (tmp_path / ".hidden").mkdir()
+    client = TestClient(create_app())
+    d = client.get("/api/v1/filesystem/directories").json()
+    assert d["root"] == str(tmp_path.resolve())
+    assert d["parent"] is None  # 浏览根不可上越。
+    names = [x["name"] for x in d["directories"]]
+    assert "alpha" in names and "beta" in names
+    assert ".hidden" not in names  # 隐藏目录过滤。
+    # 越界保护：传根外路径回落到根。
+    d2 = client.get("/api/v1/filesystem/directories", params={"path": "/etc"}).json()
+    assert d2["path"] == str(tmp_path.resolve())

@@ -118,7 +118,7 @@ from agentbridge.renderer import (
     document_from_event,
     render_action_descriptors,
 )
-from agentbridge.storage import InMemoryRepository
+from agentbridge.storage import InMemoryRepository, is_within
 from agentbridge.terminal_agent import (
     DEFAULT_PTY_OUTPUT_LIMIT_CHARS,
     FakeTerminalBackend,
@@ -163,6 +163,30 @@ class CreateProjectRequest(BaseModel):
     max_running_turns: int = Field(default=4, ge=0)
     max_queued_turns: int = Field(default=100, ge=0)
     daily_turns_per_user: int = Field(default=50, ge=0)
+    trace_id: str = "api"
+
+
+class ProvisionProjectRequest(BaseModel):
+    """一步开通项目：建项目 + 在工作目录建工作区（按需 mkdir）。
+
+    ``working_dir`` 显式给定则用它；否则用 ``base_dir``（默认环境变量
+    ``AGENTBRIDGE_PROJECT_BASE_DIR``，再默认 ``~``）拼上由项目名净化出的文件夹名。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    name: str
+    working_dir: str | None = None
+    base_dir: str | None = None
+    machine_id: str = "local"
+    default_agent: AgentType = AgentType.CLAUDE
+    max_active_sessions: int = Field(default=10, ge=0)
+    max_running_turns: int = Field(default=4, ge=0)
+    max_queued_turns: int = Field(default=100, ge=0)
+    daily_turns_per_user: int = Field(default=50, ge=0)
+    create_dir: bool = True
+    chat_context_id: str | None = None
     trace_id: str = "api"
 
 
@@ -1495,6 +1519,22 @@ def readiness_summary(checks: list[dict[str, object]]) -> dict[str, object]:
     }
 
 
+def project_base_dir() -> Path:
+    """项目目录浏览/新建的根目录：环境变量 ``AGENTBRIDGE_PROJECT_BASE_DIR``，默认用户家目录 ``~``。
+
+    目录浏览接口被限制在该根之内（不可越界），新建项目默认在该根下按项目名建文件夹。
+    """
+    raw = (os.environ.get("AGENTBRIDGE_PROJECT_BASE_DIR", "") or "~").strip() or "~"
+    return Path(raw).expanduser().resolve(strict=False)
+
+
+def sanitize_folder_name(name: str) -> str:
+    """把项目名净化成安全的单层文件夹名：去掉路径分隔符与首尾点/空格，保留中文等可见字符。"""
+    cleaned = name.strip().replace("/", "-").replace("\\", "-").replace("\x00", "")
+    cleaned = cleaned.strip(". ")
+    return cleaned or "project"
+
+
 def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     control = control_plane or ControlPlane(
         repository=create_repository_from_env(),
@@ -1683,6 +1723,85 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             trace_id=payload.trace_id,
         )
         return project.model_dump(mode="json")
+
+    @app.post("/api/v1/projects/provision")
+    def provision_project(
+        payload: ProvisionProjectRequest, control: ControlPlane = Depends(get_control)
+    ):
+        # 计算工作目录：显式 working_dir 优先；否则 base_dir（默认 env/~）拼净化后的项目名文件夹。
+        if payload.working_dir and payload.working_dir.strip():
+            working = Path(payload.working_dir).expanduser()
+        else:
+            base = (
+                Path(payload.base_dir).expanduser()
+                if payload.base_dir and payload.base_dir.strip()
+                else project_base_dir()
+            )
+            working = base / sanitize_folder_name(payload.name)
+        resolved_working = str(working.resolve(strict=False))
+        project, workspace = control.provision_project(
+            actor=payload.actor.to_actor(),
+            name=payload.name,
+            working_dir=resolved_working,
+            machine_id=payload.machine_id,
+            default_agent=payload.default_agent,
+            max_active_sessions=payload.max_active_sessions,
+            max_running_turns=payload.max_running_turns,
+            max_queued_turns=payload.max_queued_turns,
+            daily_turns_per_user=payload.daily_turns_per_user,
+            create_dir=payload.create_dir,
+            trace_id=payload.trace_id,
+            chat_context_id=payload.chat_context_id,
+        )
+        return {
+            "project": project.model_dump(mode="json"),
+            "workspace": workspace.model_dump(mode="json"),
+            "working_dir": workspace.path,
+        }
+
+    @app.get("/api/v1/filesystem/directories")
+    def list_filesystem_directories(
+        path: str | None = None, control: ControlPlane = Depends(get_control)
+    ):
+        """受限目录浏览：列出某目录下的子目录，供控制台新建项目时可视化选父目录。
+
+        浏览被限制在 ``project_base_dir()`` 根之内（默认 ``~``，可经
+        ``AGENTBRIDGE_PROJECT_BASE_DIR`` 配置），越界一律回落到根，隐藏点目录。
+        """
+        actor = Actor(id="api", roles={"admin"})
+        control.require_collection_permission(
+            actor,
+            Permission.PROJECT_MANAGE,
+            resource_type="filesystem",
+            attributes={"operation": "browse_directories"},
+        )
+        root = project_base_dir()
+        target = (
+            Path(path).expanduser().resolve(strict=False)
+            if path and path.strip()
+            else root
+        )
+        if not is_within(target, root):
+            target = root
+        directories: list[dict[str, str]] = []
+        if target.is_dir():
+            try:
+                for child in sorted(target.iterdir(), key=lambda p: p.name.lower()):
+                    if child.is_dir() and not child.name.startswith("."):
+                        directories.append({"name": child.name, "path": str(child)})
+            except OSError:
+                pass
+        parent = (
+            str(target.parent)
+            if target != root and is_within(target.parent, root)
+            else None
+        )
+        return {
+            "root": str(root),
+            "path": str(target),
+            "parent": parent,
+            "directories": directories,
+        }
 
     @app.get("/api/v1/projects/{project_id}")
     def get_project(project_id: str, control: ControlPlane = Depends(get_control)):
