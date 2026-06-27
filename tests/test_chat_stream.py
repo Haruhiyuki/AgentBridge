@@ -205,3 +205,69 @@ def test_empty_answer_falls_back_to_neutral_done():
     messages, _ = chat_messages_from_events(events)
     assert kinds(messages) == ["answer"]
     assert "完成" in messages[0]["text"]
+
+
+def test_orphan_tail_after_completion_is_delivered():
+    """后台命令（如「休眠 N 秒后回答」）场景：turn 完成后 agent 才续写答案。
+
+    真实事件序列（取自 Claude 把 sleep 当后台命令的实测）：工具→「已开始休眠」分片→
+    turn.completed→（N 秒后）无 turn_id 的迟到分片。迟到分片后面再无 completion，
+    必须作为独立答案投递，否则永远发不出去（用户实测「两条总结都没回」）。
+    """
+    events = [
+        ev(73, "turn.started", turn_id="turn_b"),
+        ev(75, "tool.started", turn_id="turn_b"),
+        ev(76, "tool.completed", turn_id="turn_b"),
+        ev(77, "assistant.delta", turn_id="turn_b", payload={"text": "已开始休眠 30 秒。"}),
+        ev(78, "turn.completed", turn_id="turn_b"),
+        # 完成之后才到的尾段，且不带 turn_id（归位到 current_turn=turn_b）。
+        ev(79, "assistant.delta", payload={"text": "⏰ 30 秒已到。"}),
+        ev(80, "assistant.delta", payload={"text": "群聊驱动本地终端协作（10 字）"}),
+    ]
+    messages, cursor = chat_messages_from_events(events)
+    texts = [m["text"] for m in messages]
+    assert kinds(messages) == ["answer", "answer", "answer"]
+    assert texts[0] == "已开始休眠 30 秒。"
+    assert texts[1] == "⏰ 30 秒已到。"
+    assert texts[2] == "群聊驱动本地终端协作（10 字）"
+    assert cursor == 80
+
+
+def test_orphan_tail_not_reduplicated_by_late_completion():
+    """孤儿尾段独立投递后，若之后又来一个 completion，不得把它重复并入（跨轮询确定性）。"""
+    base = [
+        ev(73, "turn.started", turn_id="turn_b"),
+        ev(75, "tool.started", turn_id="turn_b"),
+        ev(76, "tool.completed", turn_id="turn_b"),
+        ev(77, "assistant.delta", turn_id="turn_b", payload={"text": "已开始休眠。"}),
+        ev(78, "turn.completed", turn_id="turn_b"),
+        ev(79, "assistant.delta", payload={"text": "⏰ 到点了。"}),
+        ev(80, "assistant.delta", payload={"text": "群聊驱动本地终端协作"}),
+        # 迟到的第二个 Stop：不应让 79/80 再被合并发一遍。
+        ev(85, "turn.completed", turn_id="turn_b"),
+    ]
+    messages, _ = chat_messages_from_events(base)
+    texts = [m["text"] for m in messages]
+    # 79/80 各出现且仅出现一次；第二个 completion 无新内容 → 不产出多余消息。
+    assert texts.count("⏰ 到点了。") == 1
+    assert texts.count("群聊驱动本地终端协作") == 1
+    assert texts.count("✅ 本轮已完成。") == 0
+
+    # 增量轮询：bot 已读到 seq 80 后，再拉一次不应重复投递 79/80。
+    later, _ = chat_messages_from_events(base, after_seq=80)
+    assert all("到点了" not in m["text"] and "群聊驱动" not in m["text"] for m in later)
+
+
+def test_progress_only_turn_has_no_redundant_done_marker():
+    """只产出工具前进度叙述、最终段为空的 turn：完成时不应再补「✅ 本轮已完成。」刷屏。"""
+    events = [
+        ev(1, "turn.started", turn_id="turn_1"),
+        ev(2, "assistant.delta", turn_id="turn_1", payload={"text": "正在处理…"}),
+        ev(3, "tool.started", turn_id="turn_1"),
+        ev(4, "tool.completed", turn_id="turn_1"),
+        ev(5, "turn.completed", turn_id="turn_1"),
+    ]
+    messages, _ = chat_messages_from_events(events)
+    # 进度叙述照常投递，但没有多余的「✅ 本轮已完成。」。
+    assert kinds(messages) == ["progress"]
+    assert all("本轮已完成" not in m["text"] for m in messages)

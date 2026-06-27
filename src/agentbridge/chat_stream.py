@@ -196,11 +196,45 @@ def chat_messages_from_events(
         # 该分片后面还有工具事件 → 属于"过程叙述"，即时作为进度输出；否则属于最终答案的尾段。
         return seq <= last_tool_seq.get(key_for_seq.get(seq, ""), 0)
 
-    def final_answer_for(turn_key: str) -> str:
-        # 最终答案 = 最后一个工具事件之后的分片（过程叙述已作为进度即时发过）。
-        cutoff = last_tool_seq.get(turn_key, 0)
-        final = [text for seq, text in deltas_by_turn.get(turn_key, []) if seq > cutoff]
-        return _to_plain_text(_join_blocks(final))
+    # 完成边界感知的最终答案：每个 turn.completed 只取"自上一次完成以来、且在本工具之后"的
+    # 新分片。后台命令（如 sleep）会让 Claude 多次 Stop、产生多个 turn.completed；若每次都把
+    # "最后工具之后的全部分片"重算合并，迟到分片就会被反复并入、形成增长式重复投递。这里用
+    # answered_upto 记录每个 turn key 已被前序完成事件消费到的 seq，预扫一遍所有完成/失败事件，
+    # 算出每个完成事件该发的那段文本，保证同一段分片只随其首个完成事件发出一次。
+    answered_upto: dict[str, int] = {}
+    answer_text_by_seq: dict[int, str] = {}
+    skip_completion_seqs: set[int] = set()
+    orphan_delta_seqs: set[int] = set()
+    seen_completion_key: set[str] = set()
+    for event in ordered:
+        ckey = key_for_seq.get(event.seq, "")
+        if event.type == "assistant.delta":
+            # 孤儿尾段：turn 已完成之后、该 key 又冒出的最终段分片（后台命令跑完后 agent 才续写的
+            # 答案，如「休眠 N 秒后回答」）。此后通常不会再有 completion 来收集它，必须在此独立投递
+            # 一次，并推进 answered_upto——这样即便之后又来一个 completion，也不会把它重复并入。
+            if event.seq > last_tool_seq.get(ckey, 0) and ckey in seen_completion_key:
+                orphan_delta_seqs.add(event.seq)
+                answered_upto[ckey] = max(answered_upto.get(ckey, 0), event.seq)
+        elif event.type == "turn.completed" or event.type in FAIL_TYPES:
+            cutoff = last_tool_seq.get(ckey, 0)
+            lower = max(cutoff, answered_upto.get(ckey, 0))
+            final = [
+                text
+                for seq, text in deltas_by_turn.get(ckey, [])
+                if lower < seq <= event.seq
+            ]
+            answered_upto[ckey] = max(answered_upto.get(ckey, 0), event.seq)
+            if event.type == "turn.completed":
+                text = _to_plain_text(_join_blocks(final))
+                if text:
+                    answer_text_by_seq[event.seq] = text
+                elif ckey not in seen_completion_key and ckey not in deltas_by_turn:
+                    # 该 key 从未产出任何分片（如 Codex 暂无 hooks）→ 给中性完成提示。
+                    answer_text_by_seq[event.seq] = ""
+                else:
+                    # 已发过进度/答案，或属后台命令多次 Stop 的空收尾 → 跳过，避免「✅本轮已完成」刷屏。
+                    skip_completion_seqs.add(event.seq)
+            seen_completion_key.add(ckey)
 
     # 尚未结束的 turn，其"最终答案尾段"（最后工具之后的分片）要等 turn 结束才合并发出；
     # 在此之前游标不能越过这些分片，否则它们会被游标跳过、永远发不出来。
@@ -248,8 +282,22 @@ def chat_messages_from_events(
                             "text": piece,
                         }
                     )
+            elif event.seq in orphan_delta_seqs:
+                # 已完成 turn 的迟到尾段：独立作为一条答案投递（不再有 completion 来合并它）。
+                piece = _to_plain_text(_payload_text(event)).strip()
+                if piece:
+                    messages.append(
+                        {
+                            "seq": event.seq,
+                            "kind": "answer",
+                            "turn_id": event.turn_id,
+                            "text": piece,
+                        }
+                    )
         elif event.type == "turn.completed":
-            text = final_answer_for(key_for_seq.get(event.seq, "")).strip()
+            if event.seq in skip_completion_seqs:
+                continue
+            text = answer_text_by_seq.get(event.seq, "").strip()
             messages.append(
                 {
                     "seq": event.seq,
