@@ -3872,6 +3872,38 @@ def test_agent_adapter_event_ingest_rejects_schema_and_agent_mismatch(tmp_path):
     }
 
 
+def test_chat_events_sse_stream_emits_messages_and_closes_on_completion(tmp_path):
+    """SSE 出站流：把可直接发送的聊天消息逐条推出，并在本轮空闲后自动关流（emit done）。"""
+    client = TestClient(create_app())
+    session_id = _create_session_with_project(
+        client, tmp_path, chat_space_id="group-sse", prefix="sse", name="SSE"
+    )
+    # 工具前的过程叙述 → 投影成一条 progress 消息（delta 在工具之前）。
+    client.post(
+        f"/api/v1/sessions/{session_id}/events",
+        json={
+            "type": "assistant.delta", "source": "agent_adapter", "trace_id": "t",
+            "turn_id": "turn_sse", "payload": {"text": "正在处理…"},
+        },
+    )
+    client.post(
+        f"/api/v1/sessions/{session_id}/events",
+        json={
+            "type": "tool.started", "source": "agent_adapter", "trace_id": "t",
+            "turn_id": "turn_sse", "payload": {"tool_name": "Bash"},
+        },
+    )
+    body = client.get(
+        f"/api/v1/sessions/{session_id}/chat-events/stream"
+        "?after_seq=0&idle_grace_seconds=0&poll_interval_seconds=0.01&max_seconds=5"
+    ).text
+    assert "event: message" in body
+    assert "正在处理" in body
+    # 会话本就空闲（无活动/排队 turn）→ 很快 emit done 并自动关流。
+    assert "event: done" in body
+    assert '"reason": "completed"' in body
+
+
 def test_agent_adapter_event_ingest_maps_codex_approval_request(tmp_path):
     client = TestClient(create_app())
     session_id = _create_session_with_project(

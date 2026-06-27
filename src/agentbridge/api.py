@@ -22,7 +22,13 @@ from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from pydantic import BaseModel, ConfigDict, Field
 
 from agentbridge.acceptance_cli import acceptance_json_bytes, verify_acceptance_bundle
@@ -2724,6 +2730,71 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             "queued_turns": len(queued_turns),
             "queue_paused": queue_paused,
         }
+
+    @app.get("/api/v1/sessions/{session_id}/chat-events/stream")
+    async def stream_chat_events_sse(
+        session_id: str,
+        control: ControlPlane = Depends(get_control),
+        after_seq: int | None = None,
+        poll_interval_seconds: float = 1.0,
+        idle_grace_seconds: float = 8.0,
+        max_seconds: float = 1800.0,
+    ):
+        """聊天消息的 SSE 出站流：把已合并、可直接发送的消息逐条推给 bot，并在本轮（含排队多轮）
+        真正结束时**自动关流**。这样 bot 不必再自己写「轮询 + 游标推进 + active 判定 + 空闲宽限」
+        循环——连上、把每条 ``message`` 帧的 text 发回平台、流关了就收尾即可。
+
+        帧格式（标准 SSE）：
+        - ``event: message``，data 为 ``{seq, kind, text, turn_id?, interaction_id?}``；
+        - ``event: done``，data 为 ``{cursor, reason}``，表示本轮结束、流即将关闭；
+        - ``: keep-alive`` 注释行用于保活，客户端忽略即可。
+        """
+        # 会话不存在直接 404，而不是开一个空流。
+        control.repository.get_session(session_id)
+        start_seq = after_seq or 0
+
+        async def event_stream():
+            cursor = start_seq
+            idle_deadline: float | None = None
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + max_seconds
+            while loop.time() < deadline:
+                events = control.repository.list_events(
+                    session_id=session_id, limit=1_000_000
+                )
+                messages, cursor = chat_messages_from_events(events, after_seq=cursor)
+                for message in messages:
+                    yield (
+                        "event: message\n"
+                        f"data: {json.dumps(message, ensure_ascii=False)}\n\n"
+                    )
+                session = control.repository.get_session(session_id)
+                queued_turns, _, _ = control.repository.queue_snapshot(session_id)
+                active = bool(session.active_turn_id) or bool(queued_turns)
+                if messages or active:
+                    idle_deadline = None
+                else:
+                    now = loop.time()
+                    if idle_deadline is None:
+                        idle_deadline = now + idle_grace_seconds
+                    elif now >= idle_deadline:
+                        yield (
+                            "event: done\n"
+                            f"data: {json.dumps({'cursor': cursor, 'reason': 'completed'})}\n\n"
+                        )
+                        return
+                await asyncio.sleep(poll_interval_seconds)
+                yield ": keep-alive\n\n"
+            yield (
+                "event: done\n"
+                f"data: {json.dumps({'cursor': cursor, 'reason': 'max_seconds'})}\n\n"
+            )
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.websocket("/api/v1/sessions/{session_id}/events/ws")
     async def stream_events(

@@ -4,8 +4,9 @@ AgentBridge 把「身份解析 → 项目/会话路由 → 鉴权 → 幂等 →
 **服务端**。聊天平台适配器（bot）因此可以很薄——通常 **100~150 行平台胶水**即可，无需在 bot 里
 自己做角色映射、项目/工作区 provision、或手写流式合并逻辑。
 
-> 可运行的最小参考：[`examples/minimal_bot.py`](../examples/minimal_bot.py)（零依赖，仅用标准库
-> urllib 把 HTTP 契约显式写出来）。任何语言照搬这三步即可。
+> - Python 适配器：直接用官方轻量客户端 [`agentbridge.bot_client`](../src/agentbridge/bot_client.py)
+>   （零额外依赖），示例见 [`examples/minimal_bot.py`](../examples/minimal_bot.py)。
+> - 其它语言：照下面的 HTTP 契约实现这三步即可。
 
 ## 适配器只需做三件事
 
@@ -58,30 +59,45 @@ Authorization: Bearer <api-token>
 > OneBot/QQ 也可以用历史端点 `POST /api/v1/onebot/events`（接收 OneBot v11 原生事件结构）。
 > **新平台一律推荐用上面的通用入口**，无需构造任何平台特有的事件结构。
 
-## 2. 出站：流式拉取一轮回复
+## 2. 出站：流式拉取一轮回复（推荐用 SSE）
 
-若 `result` 里带 `session_id`，说明启动了 agent 工作，回答会随时间产生。轮询：
+若 `result` 里带 `session_id`，说明启动了 agent 工作，回答会随时间产生。
+
+### 推荐：SSE 流（服务端自动关流）
 
 ```
-GET /api/v1/sessions/{session_id}/chat-events?after_seq=<cursor>
+GET /api/v1/sessions/{session_id}/chat-events/stream?after_seq=<cursor>
 ```
 
-响应（服务端已合并/去噪/限频，`messages[].text` 可直接发送）：
+返回 `text/event-stream`。**服务端封装了「轮询 + 游标推进 + active 判定 + 空闲宽限」**，并在
+本轮（含排队多轮）真正结束时**自动关流**——bot 连上、把每条 `message` 帧的 text 发回平台、流关
+就收尾即可，无需自己写循环：
 
-```jsonc
-{
-  "messages": [ { "seq": 43, "kind": "answer|progress|question|approval|plan|error", "text": "…" } ],
-  "cursor": 43,            // 下次以 after_seq=cursor 继续
-  "active": true,          // 仍有活动或排队 turn 即为 true —— 用它判断本轮是否结束
-  "queued_turns": 0
-}
+```text
+event: message
+data: {"seq": 43, "kind": "answer", "text": "…"}    ← 把 text 发给用户
+
+: keep-alive                                          ← 保活注释行，忽略
+
+event: done
+data: {"cursor": 43, "reason": "completed"}           ← 本轮结束，流即将关闭
 ```
 
-循环要点（参考实现已封装好）：以 `cursor` 推进 `after_seq`；逐条转发 `messages[].text`；当
-`active=false` 且追上游标、并过了一个小的空闲宽限（接住后台命令的迟到尾段）后结束。
+可选 query：`idle_grace_seconds`（默认 8）、`poll_interval_seconds`（默认 1）、`max_seconds`（默认 1800）。
 
-`kind` 语义：`answer` 最终回答、`progress` 过程进度、`question`/`approval`/`plan` 交互请求
-（用户用 `/ab answer`、`/ab approve` 等回复）、`error` 失败。
+> Python：`AgentBridgeBotClient.stream_replies(session_id, on_message)` 一行搞定。
+
+### 简单替代：游标轮询
+
+不便用 SSE 时，轮询 `GET /api/v1/sessions/{session_id}/chat-events?after_seq=<cursor>`，响应为
+`{messages, cursor, active, queued_turns}`：以 `cursor` 推进 `after_seq`、逐条转发 `messages[].text`、
+当 `active=false` 且追上游标并过了一个小空闲宽限后结束。（`deliver-session-events` 与 WebSocket
+`*/rendered-events/ws`、`bot-gateway/session-events/ws` 是面向幂等投递/富交互的进阶机制。）
+
+### 消息 `kind` 语义
+
+`answer` 最终回答、`progress` 过程进度、`question`/`approval`/`plan` 交互请求（用户用
+`/ab answer`、`/ab approve` 等回复）、`error` 失败。
 
 ## 3. 身份与权限
 
