@@ -1960,6 +1960,13 @@ class TerminalAgentService:
         )
         self._terminal_opener = terminal_opener
         self._opened_visible_terminals: set[str] = set()
+        # 刚开窗后 tmux attach 握手需要几秒；这期间 is_attached 会瞬时为 False。若生命周期监控
+        # 此刻调 ensure_visible_window，会误判"没人 attach"而再开一个窗（两个窗 attach 同一会话，
+        # 都能用但多余）。记录每会话最近一次开窗时刻，宽限期内不再重复开窗。
+        self._visible_window_opened_at: dict[str, float] = {}
+        self.visible_window_reopen_grace_seconds = float(
+            os.environ.get("AGENTBRIDGE_VISIBLE_WINDOW_REOPEN_GRACE_SECONDS", "12") or 12
+        )
         self._terminal_open_last_error: str | None = None
         self.lifecycle_policy = lifecycle_policy or TerminalLifecyclePolicy()
         self.agent_launch_config = agent_launch_config or AgentLaunchConfig.from_env()
@@ -2077,6 +2084,7 @@ class TerminalAgentService:
                     command_template=self.terminal_open_command,
                 )
             self._opened_visible_terminals.add(session_id)
+            self._visible_window_opened_at[session_id] = time.monotonic()
             self._terminal_open_last_error = None
             return True
         except Exception as exc:  # 打开窗口失败不应阻断会话启动。
@@ -2087,6 +2095,14 @@ class TerminalAgentService:
         """确保该会话当前有可见窗口在 attach：若用户关掉了窗口（tmux 仍在跑但无人 attach），
         重新开一个窗口 attach 上去；已有窗口则不重复开。供「关窗后重新提问应自动再开窗」。"""
         if not self.auto_open_terminal:
+            return False
+        # 刚开过窗的宽限期内不再开：此时 attach 握手可能尚未完成，is_attached 会瞬时为 False，
+        # 若据此再开窗会得到两个 attach 同一会话的重复窗口。
+        opened_at = self._visible_window_opened_at.get(session_id)
+        if (
+            opened_at is not None
+            and (time.monotonic() - opened_at) < self.visible_window_reopen_grace_seconds
+        ):
             return False
         is_attached = getattr(self.backend, "is_attached", None)
         if is_attached is not None:
@@ -2124,6 +2140,7 @@ class TerminalAgentService:
             except Exception as exc:
                 self._terminal_open_last_error = str(exc)
         self._opened_visible_terminals.discard(session_id)
+        self._visible_window_opened_at.pop(session_id, None)
         self._terminal_started_monotonic.pop(session_id, None)
         return {"stopped": stopped, "reason": reason}
 

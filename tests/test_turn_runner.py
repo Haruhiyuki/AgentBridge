@@ -182,6 +182,42 @@ def test_auto_open_visible_terminal_once(tmp_path):
     assert len(opened) == 1
 
 
+def test_ensure_visible_window_grace_prevents_double_window(tmp_path):
+    """刚开窗后宽限期内 ensure_visible_window 不再开窗：避免 attach 未完成时被误判为没人 attach
+    而开出第二个 attach 同一会话的重复窗口（用户实测：一个会话冒出两个终端窗口）。"""
+    opened: list[str] = []
+    control = ControlPlane()
+    backend = FakeTerminalBackend()
+    backend.attach_command = lambda *, session_id: f"tmux attach -t {session_id}"
+    # attach 握手未完成 → is_attached 瞬时为 False（真实场景里的竞态）。
+    backend.is_attached = lambda *, session_id: False
+    terminal = TerminalAgentService(
+        control, backend=backend, auto_open_terminal=True, terminal_opener=opened.append
+    )
+    actor = Actor(id="u", roles={"maintainer"})
+    project = control.create_project(
+        actor=actor, name="P", default_agent=AgentType.CLAUDE, trace_id="p"
+    )
+    ws = control.add_workspace(
+        actor=actor, project_id=project.id, machine_id="local",
+        path=str(tmp_path), allowed_root=str(tmp_path), trace_id="w",
+    )
+    session = control.create_session(
+        actor=actor, project_id=project.id, workspace_id=ws.id, name="S",
+        agent_type=AgentType.CLAUDE, visibility=Visibility.GROUP, trace_id="s",
+    )
+    terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start")
+    assert opened == [f"tmux attach -t {session.id}"]
+    # 紧接着生命周期监控调 ensure_visible_window（is_attached 仍 False）→ 宽限期内不重复开窗。
+    assert terminal.ensure_visible_window(session.id) is False
+    assert len(opened) == 1
+
+    # 宽限期过后仍没人 attach（用户确实关掉了窗口）→ 才重新开窗。
+    terminal.visible_window_reopen_grace_seconds = 0
+    terminal.ensure_visible_window(session.id)
+    assert len(opened) == 2
+
+
 @pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux 未安装")
 def test_tmux_backend_attach_command_and_cursor():
     from agentbridge.terminal_agent import TmuxTerminalBackend
