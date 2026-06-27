@@ -1434,6 +1434,19 @@ class TmuxTerminalBackend:
         with suppress(AgentBridgeError):
             self._run(["kill-session", "-t", name])
 
+    def is_attached(self, *, session_id: str) -> bool:
+        """该 tmux 会话当前是否有客户端 attach（即是否有可见窗口连着它）。"""
+        name = self._tmux_name(session_id)
+        if not self._has_session(name):
+            return False
+        try:
+            result = self._run(
+                ["display-message", "-p", "-t", name, "#{session_attached}"]
+            )
+        except AgentBridgeError:
+            return False
+        return result.stdout.strip() not in ("", "0")
+
     def attach_command(self, *, session_id: str) -> str:
         """返回一条可在桌面终端里执行、用于 attach 到该会话 tmux 的命令（供可见窗口接管）。
         用 tmux 的绝对路径，避免新开终端窗口的 PATH 里找不到 tmux。"""
@@ -1999,6 +2012,20 @@ class TerminalAgentService:
             self._terminal_open_last_error = str(exc)
             return False
 
+    def ensure_visible_window(self, session_id: str) -> bool:
+        """确保该会话当前有可见窗口在 attach：若用户关掉了窗口（tmux 仍在跑但无人 attach），
+        重新开一个窗口 attach 上去；已有窗口则不重复开。供「关窗后重新提问应自动再开窗」。"""
+        if not self.auto_open_terminal:
+            return False
+        is_attached = getattr(self.backend, "is_attached", None)
+        if is_attached is not None:
+            try:
+                if is_attached(session_id=session_id):
+                    return False  # 已有窗口 attach，无需重开。
+            except Exception:
+                pass
+        return self.open_terminal_window(session_id, force=True)
+
     def stop_session(
         self,
         *,
@@ -2549,6 +2576,10 @@ class TerminalAgentService:
                 return self._advance_skip(session_id, "terminal_not_running")
             self.start_session(session_id=session_id, trace_id=f"{trace_id}:start")
             started_terminal = True
+        else:
+            # 终端本就在跑（如用户关掉窗口后重新提问）：若当前没有可见窗口 attach，则重新开窗，
+            # 让本轮任务有终端可见。start_session 路径已自带开窗，故仅在「已在跑」分支补这一步。
+            self.ensure_visible_window(session_id)
         # 原生 TUI 启动后需要预热时间才能正确接收输入；预热未满时本轮先不提交，
         # 由后续监控拍提交（避免把任务打进尚未就绪的 TUI 而丢键/不提交）。
         started_at = self._terminal_started_monotonic.get(session_id)

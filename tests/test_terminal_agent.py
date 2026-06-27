@@ -1864,3 +1864,45 @@ def test_resume_command_for_per_agent():
     assert resume_command_for(AgentType.CODEX, "/bin/codex") == "/bin/codex resume --last"
     # 不支持 resume 的 agent 原样返回。
     assert resume_command_for(AgentType.GENERIC_TUI, "sh") == "sh"
+
+
+def test_ensure_visible_window_reopens_only_when_detached():
+    """关窗后重提问应重开窗：终端在跑但无窗口 attach 时 ensure_visible_window 重开，已 attach 则不重开。"""
+
+    class _Stub(FakeTerminalBackend):
+        def attach_command(self, *, session_id):
+            return f"attach:{session_id}"
+
+        def is_attached(self, *, session_id):
+            return getattr(self, "_attached", False)
+
+    control = ControlPlane()
+    backend = _Stub()
+    opened: list[str] = []
+    terminal = TerminalAgentService(
+        control,
+        backend=backend,
+        auto_open_terminal=True,
+        terminal_opener=lambda cmd: opened.append(cmd),
+    )
+
+    backend._attached = False  # 没有窗口 → 重开
+    assert terminal.ensure_visible_window("ses_x") is True
+    assert opened == ["attach:ses_x"]
+
+    opened.clear()
+    backend._attached = True  # 已有窗口 → 不重复开
+    assert terminal.ensure_visible_window("ses_x") is False
+    assert opened == []
+
+    # auto_open 关闭时绝不开窗（无界面/服务器环境）。
+    opened.clear()
+    backend._attached = False
+    terminal_no_open = TerminalAgentService(
+        control,
+        backend=backend,
+        auto_open_terminal=False,
+        terminal_opener=lambda cmd: opened.append(cmd),
+    )
+    assert terminal_no_open.ensure_visible_window("ses_x") is False
+    assert opened == []
