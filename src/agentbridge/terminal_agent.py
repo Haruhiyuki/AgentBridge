@@ -35,6 +35,7 @@ from agentbridge.claude_hook_deploy import (
     ClaudeHookDeploymentConfig,
     deploy_claude_hooks,
 )
+from agentbridge.codex_output import extract_codex_answer
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
     Actor,
@@ -2313,6 +2314,19 @@ class TerminalAgentService:
         active_for = now - float(watch["first_seen"])
         if idle_for < self.idle_complete_seconds or active_for < self.idle_min_active_seconds:
             return None
+        # 没有结构化输出的 agent（如 Codex）：从原生 TUI 抽取真实回答，作为 assistant.delta 先
+        # 投递，再发 turn.completed——这样群里能看到真实答案而不是占位完成提示。
+        answer = self._extract_terminal_answer(session_id, session.agent_type)
+        if answer:
+            self.control.ingest_session_event(
+                session_id=session_id,
+                event_type="assistant.delta",
+                source=SemanticEventSource.TERMINAL_AGENT,
+                trace_id=f"{trace_id}:idle-answer",
+                turn_id=turn_id,
+                idempotency_key=f"turn-idle-answer:{turn_id}",
+                payload={"text": answer, "extracted_from": "terminal"},
+            )
         self.control.ingest_session_event(
             session_id=session_id,
             event_type="turn.completed",
@@ -2324,6 +2338,16 @@ class TerminalAgentService:
         )
         self._turn_idle_watch.pop(session_id, None)
         return {"session_id": session_id, "turn_id": turn_id, "idle_seconds": idle_for}
+
+    def _extract_terminal_answer(self, session_id: str, agent_type: AgentType) -> str:
+        """从原生 TUI 抽取最后一段回答（目前支持 Codex）。失败返回空串。"""
+        if agent_type != AgentType.CODEX:
+            return ""
+        try:
+            snapshot = self.backend.snapshot(session_id=session_id)
+        except Exception:
+            return ""
+        return extract_codex_answer(snapshot)
 
     @staticmethod
     def _advance_skip(session_id: str, reason: str) -> dict[str, object]:
