@@ -158,6 +158,44 @@ def test_progress_emits_incrementally_across_polls():
     assert cursor == 3
 
 
+def test_two_column_table_becomes_key_value_list():
+    md = (
+        "可执行入口\n\n"
+        "| 命令 | 作用 |\n"
+        "|---|---|\n"
+        "| agentbridge-api | 启动控制平面 |\n"
+        "| agentbridge-console | 本地接管客户端 |\n"
+    )
+    events = [
+        ev(1, "turn.started", turn_id="turn_1"),
+        ev(2, "assistant.delta", turn_id="turn_1", payload={"text": md}),
+        ev(3, "turn.completed", turn_id="turn_1"),
+    ]
+    text = chat_messages_from_events(events)[0][0]["text"]
+    assert "|" not in text  # 管道全部消失
+    assert "命令 / 作用：" in text
+    assert "• agentbridge-api：启动控制平面" in text
+    assert "• agentbridge-console：本地接管客户端" in text
+
+
+def test_three_column_table_becomes_records():
+    md = (
+        "| 角色 | 权限 | 说明 |\n"
+        "| :--- | :--- | :--- |\n"
+        "| 操作者 | session.send | 可发任务 |\n"
+    )
+    events = [
+        ev(1, "turn.started", turn_id="turn_1"),
+        ev(2, "assistant.delta", turn_id="turn_1", payload={"text": md}),
+        ev(3, "turn.completed", turn_id="turn_1"),
+    ]
+    text = chat_messages_from_events(events)[0][0]["text"]
+    assert "|" not in text
+    assert "• 操作者" in text
+    assert "权限：session.send" in text
+    assert "说明：可发任务" in text
+
+
 def test_empty_answer_falls_back_to_neutral_done():
     # Codex 暂无 hooks：没有 assistant.delta，完成时给中性提示。
     events = [

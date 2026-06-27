@@ -63,27 +63,86 @@ _MD_BOLD = re.compile(r"\*\*([^*]+)\*\*|__([^_]+)__")
 _MD_INLINE_CODE = re.compile(r"`([^`]+)`")
 _MD_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
 _MULTI_BLANK = re.compile(r"\n{3,}")
+_TABLE_SEP_CELL = re.compile(r"^:?-{1,}:?$")
+
+
+def _split_table_row(line: str) -> list[str]:
+    body = line.strip()
+    if body.startswith("|"):
+        body = body[1:]
+    if body.endswith("|"):
+        body = body[:-1]
+    return [cell.strip() for cell in body.split("|")]
+
+
+def _is_table_separator(line: str) -> bool:
+    if "|" not in line and "-" not in line:
+        return False
+    cells = _split_table_row(line)
+    return bool(cells) and all(_TABLE_SEP_CELL.match(cell) for cell in cells if cell != "")
+
+
+def _render_table(header: list[str], rows: list[list[str]]) -> list[str]:
+    """把一个 markdown 表格渲染成聊天框易读的记录式列表：
+    2 列 → 「键：值」每行一条；≥3 列 → 每行一个小记录（首列作标题，其余「表头：值」缩进）。"""
+    ncol = max(len(header), max((len(r) for r in rows), default=0))
+    out: list[str] = []
+    head_label = " / ".join(h for h in header if h)
+    if head_label:
+        out.append(head_label + "：")
+    for row in rows:
+        cells = (row + [""] * ncol)[:ncol]
+        if ncol <= 1:
+            value = cells[0] if cells else ""
+            if value:
+                out.append(f"• {value}")
+        elif ncol == 2:
+            left, right = cells[0], cells[1]
+            out.append(f"• {left}：{right}" if right else f"• {left}")
+        else:
+            out.append(f"• {cells[0]}")
+            for index in range(1, ncol):
+                label = header[index] if index < len(header) else f"列{index + 1}"
+                if cells[index]:
+                    out.append(f"  {label}：{cells[index]}")
+    return out
+
+
+def _convert_tables(text: str) -> list[str]:
+    """识别 markdown 表格块（表头行 + 分隔行 + 数据行）并替换成记录式列表，其余行原样保留。"""
+    lines = text.split("\n")
+    out: list[str] = []
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        if "|" in line and i + 1 < n and _is_table_separator(lines[i + 1]):
+            header = _split_table_row(line)
+            j = i + 2
+            rows: list[list[str]] = []
+            while j < n and "|" in lines[j] and lines[j].strip():
+                rows.append(_split_table_row(lines[j]))
+                j += 1
+            out.extend(_render_table(header, rows))
+            i = j
+            continue
+        out.append(line)
+        i += 1
+    return out
 
 
 def _to_plain_text(text: str) -> str:
     """把 agent 回答里的 markdown 降级成聊天平台（QQ 等不渲染 markdown）易读的纯文本：
-    去代码围栏/表格分隔行、去标题 # 与 **加粗** 标记、行内 `代码`、链接 [文本](url) → 文本 (url)，
-    并把表格行简化、压缩多余空行。保留换行与列表结构。"""
+    把表格解析成记录式列表、去代码围栏、去标题 # 与 **加粗** 标记、行内 `代码`、
+    链接 [文本](url) → 文本 (url)，并压缩多余空行。保留换行与列表结构。"""
     text = _MD_FENCE_LINE.sub("", text)
-    text = _MD_TABLE_SEP_LINE.sub("", text)
+    text = "\n".join(_convert_tables(text))
+    text = _MD_TABLE_SEP_LINE.sub("", text)  # 清理未成块的残留分隔行
     text = _MD_HEADING.sub("", text)
     text = _MD_BOLD.sub(lambda m: m.group(1) or m.group(2), text)
     text = _MD_INLINE_CODE.sub(r"\1", text)
     text = _MD_LINK.sub(r"\1 (\2)", text)
-    rendered_lines: list[str] = []
-    for line in text.split("\n"):
-        stripped = line.rstrip()
-        body = stripped.strip()
-        if body.startswith("|") and body.endswith("|") and len(body) > 1:
-            cells = [cell.strip() for cell in body.strip("|").split("|")]
-            stripped = " | ".join(cell for cell in cells if cell)
-        rendered_lines.append(stripped)
-    return _MULTI_BLANK.sub("\n\n", "\n".join(rendered_lines)).strip()
+    text = "\n".join(line.rstrip() for line in text.split("\n"))
+    return _MULTI_BLANK.sub("\n\n", text).strip()
 
 
 def _format_ask(kind: str, payload: dict[str, object]) -> str:
