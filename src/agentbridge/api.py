@@ -159,7 +159,7 @@ class CreateProjectRequest(BaseModel):
     aliases: list[str] = Field(default_factory=list)
     description: str | None = None
     default_agent: AgentType = AgentType.CLAUDE
-    max_active_sessions: int = Field(default=10, ge=0)
+    max_active_sessions: int = Field(default=50, ge=0)
     max_running_turns: int = Field(default=4, ge=0)
     max_queued_turns: int = Field(default=100, ge=0)
     daily_turns_per_user: int = Field(default=50, ge=0)
@@ -206,7 +206,7 @@ class ProvisionProjectRequest(BaseModel):
     base_dir: str | None = None
     machine_id: str = "local"
     default_agent: AgentType = AgentType.CLAUDE
-    max_active_sessions: int = Field(default=10, ge=0)
+    max_active_sessions: int = Field(default=50, ge=0)
     max_running_turns: int = Field(default=4, ge=0)
     max_queued_turns: int = Field(default=100, ge=0)
     daily_turns_per_user: int = Field(default=50, ge=0)
@@ -224,7 +224,7 @@ class CreateWorkspaceRequest(BaseModel):
     allowed_root: str
     workspace_type: WorkspaceType = WorkspaceType.SHARED
     is_writable: bool = True
-    max_write_sessions: int = Field(default=1, ge=0)
+    max_write_sessions: int = Field(default=8, ge=0)
     trace_id: str = "api"
 
 

@@ -277,7 +277,7 @@ class Project(BaseModel):
     description: str | None = None
     status: ProjectStatus = ProjectStatus.ACTIVE
     default_agent: AgentType = AgentType.CLAUDE
-    max_active_sessions: int = Field(default=10, ge=0)
+    max_active_sessions: int = Field(default=50, ge=0)
     max_running_turns: int = Field(default=4, ge=0)
     max_queued_turns: int = Field(default=100, ge=0)
     daily_turns_per_user: int = Field(default=50, ge=0)
@@ -305,7 +305,7 @@ class Workspace(BaseModel):
     allowed_root: str
     type: WorkspaceType = WorkspaceType.SHARED
     is_writable: bool = True
-    max_write_sessions: int = 1
+    max_write_sessions: int = 8
     created_at: datetime = Field(default_factory=utc_now)
 
 

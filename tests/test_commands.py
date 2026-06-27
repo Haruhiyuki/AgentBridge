@@ -1663,6 +1663,7 @@ def test_workspace_write_lease_capacity_blocks_parallel_writers(tmp_path):
         machine_id="local",
         path=str(tmp_path),
         allowed_root=str(tmp_path),
+        max_write_sessions=1,  # 显式设 1 以测「容量到上限即阻塞」，不依赖（已放宽的）默认值。
         trace_id="workspace",
     )
     first_session = control.create_session(

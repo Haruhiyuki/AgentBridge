@@ -209,7 +209,7 @@ class InMemoryRepository:
         aliases: list[str] | None = None,
         description: str | None = None,
         default_agent: AgentType = AgentType.CLAUDE,
-        max_active_sessions: int = 10,
+        max_active_sessions: int = 50,
         max_running_turns: int = 4,
         max_queued_turns: int = 100,
         daily_turns_per_user: int = 50,
@@ -335,7 +335,7 @@ class InMemoryRepository:
         allowed_root: str,
         workspace_type: WorkspaceType = WorkspaceType.SHARED,
         is_writable: bool = True,
-        max_write_sessions: int = 1,
+        max_write_sessions: int = 8,
         create_dir: bool = False,
     ) -> Workspace:
         with self._lock:
