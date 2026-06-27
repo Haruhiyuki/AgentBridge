@@ -129,8 +129,8 @@ def test_markdown_is_downgraded_to_plain_text():
     assert "一句话定位\nAgentBridge" in text
 
 
-def test_drops_pre_tool_narration():
-    # 工具前的过程性叙述（"让我先看看…"）应被丢弃，只保留最后工具之后的真实回答。
+def test_pre_tool_narration_streams_as_progress_answer_is_clean():
+    # 工具前的过程叙述即时作为"进度"消息输出（长任务实时反馈），最终答案单独成一条且不含叙述。
     events = [
         ev(1, "turn.started", turn_id="turn_1"),
         ev(2, "assistant.delta", turn_id="turn_1", payload={"text": "让我先看看代码库。"}),
@@ -139,9 +139,23 @@ def test_drops_pre_tool_narration():
         ev(5, "assistant.delta", turn_id="turn_1", payload={"text": "这是最终答案。"}),
         ev(6, "turn.completed", turn_id="turn_1"),
     ]
-    text = chat_messages_from_events(events)[0][0]["text"]
-    assert text == "这是最终答案。"
-    assert "让我先看看" not in text
+    messages, _ = chat_messages_from_events(events)
+    assert kinds(messages) == ["progress", "answer"]
+    assert messages[0]["text"] == "让我先看看代码库。"
+    assert messages[1]["text"] == "这是最终答案。"
+
+
+def test_progress_emits_incrementally_across_polls():
+    # 模拟轮询：中间叙述在它之后出现工具时即可被取走，无需等到整轮结束。
+    events = [
+        ev(1, "turn.started", turn_id="turn_1"),
+        ev(2, "assistant.delta", turn_id="turn_1", payload={"text": "正在分析…"}),
+        ev(3, "tool.started", turn_id="turn_1", payload={"tool_name": "Bash"}),
+    ]
+    messages, cursor = chat_messages_from_events(events)
+    assert kinds(messages) == ["progress"]
+    assert messages[0]["text"] == "正在分析…"
+    assert cursor == 3
 
 
 def test_empty_answer_falls_back_to_neutral_done():

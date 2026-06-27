@@ -1,9 +1,10 @@
 """面向聊天用户的事件投影。
 
 AgentBridge 内部的语义事件流既服务于运营/审计（终端生命周期、租约、队列、输入回执…），
-又服务于聊天用户。后者只该看到少数"对人有意义"的内容：Agent 的回答、需要处理的提问/审批/
-计划、以及失败。本模块把原始事件流投影成可直接发给用户的聊天消息——过滤掉全部管道噪声，
-并把 assistant 的分片文本按 turn 合并成一条回答。
+又服务于聊天用户。后者只该看到少数"对人有意义"的内容：Agent 的过程反馈与回答、需要处理的
+提问/审批/计划、以及失败。本模块把原始事件流投影成可直接发给用户的聊天消息——过滤掉管道噪声；把工具
+前的过程叙述即时作为"进度"消息输出（长任务实时反馈），把最终答案（最后一个工具之后的分片）
+合并成一条干净消息；并把 markdown 降级成聊天平台易读的纯文本。
 
 这是项目对外提供的标准能力：Bot 适配器只需拉取本投影并原样转发，无需了解任何内部事件类型
 或自己实现过滤/合并/限频，从而保证不同平台的接入都干净一致、且不会因逐事件刷屏触发风控。
@@ -118,37 +119,50 @@ def chat_messages_from_events(
     # 事件解析到的 turn，保证回答与完成事件落在同一 key。
     deltas_by_turn: dict[str, list[tuple[int, str]]] = {}
     last_tool_seq: dict[str, int] = {}
-    resolved_turn_for_seq: dict[int, str] = {}
+    key_for_seq: dict[int, str] = {}
     current_turn = ""
     for event in ordered:
         if event.turn_id:
             current_turn = event.turn_id
         key = event.turn_id or current_turn
+        key_for_seq[event.seq] = key
         if event.type == "assistant.delta":
             piece = _payload_text(event)
             if piece:
                 deltas_by_turn.setdefault(key, []).append((event.seq, piece))
         elif event.type.startswith("tool."):
             last_tool_seq[key] = max(last_tool_seq.get(key, 0), event.seq)
-        elif event.type == "turn.completed" or event.type in FAIL_TYPES:
-            resolved_turn_for_seq[event.seq] = key
 
-    def answer_for(turn_key: str) -> str:
-        pieces = deltas_by_turn.get(turn_key, [])
-        if not pieces:
-            return ""
-        # 只取"最后一个工具事件之后"的分片，丢掉工具前的过程性叙述（"让我先看看…"）；
-        # 若工具之后没有内容（如全程无工具的回答），则退回全部分片。
+    def is_intermediate_delta(seq: int) -> bool:
+        # 该分片后面还有工具事件 → 属于"过程叙述"，即时作为进度输出；否则属于最终答案的尾段。
+        return seq <= last_tool_seq.get(key_for_seq.get(seq, ""), 0)
+
+    def final_answer_for(turn_key: str) -> str:
+        # 最终答案 = 最后一个工具事件之后的分片（过程叙述已作为进度即时发过）。
         cutoff = last_tool_seq.get(turn_key, 0)
-        final = [text for seq, text in pieces if seq > cutoff] or [
-            text for _seq, text in pieces
-        ]
+        final = [text for seq, text in deltas_by_turn.get(turn_key, []) if seq > cutoff]
         return _to_plain_text(_join_blocks(final))
 
+    # 尚未结束的 turn，其"最终答案尾段"（最后工具之后的分片）要等 turn 结束才合并发出；
+    # 在此之前游标不能越过这些分片，否则它们会被游标跳过、永远发不出来。
+    finished_turns = {
+        key_for_seq.get(event.seq, "")
+        for event in ordered
+        if event.type == "turn.completed" or event.type in FAIL_TYPES
+    }
+    held_min: int | None = None
+    for turn_key, pieces in deltas_by_turn.items():
+        if turn_key in finished_turns:
+            continue
+        cutoff = last_tool_seq.get(turn_key, 0)
+        for seq, _text in pieces:
+            if seq > cutoff:
+                held_min = seq if held_min is None else min(held_min, seq)
+
     messages: list[dict[str, object]] = []
-    cursor = after_seq
+    max_seq = after_seq
     for event in ordered:
-        cursor = max(cursor, event.seq)
+        max_seq = max(max_seq, event.seq)
         if event.seq <= after_seq:
             continue
         kind = ASK_KINDS.get(event.type)
@@ -161,8 +175,22 @@ def chat_messages_from_events(
                     "text": _format_ask(kind, event.payload),
                 }
             )
+        elif event.type == "assistant.delta":
+            # 工具前的过程叙述即时作为"进度"消息输出，让用户在长任务中也能持续看到反馈；
+            # 最终答案的尾段不在这里发，留到 turn.completed 合并成一条干净消息。
+            if is_intermediate_delta(event.seq):
+                piece = _to_plain_text(_payload_text(event)).strip()
+                if piece:
+                    messages.append(
+                        {
+                            "seq": event.seq,
+                            "kind": "progress",
+                            "turn_id": event.turn_id,
+                            "text": piece,
+                        }
+                    )
         elif event.type == "turn.completed":
-            text = answer_for(resolved_turn_for_seq.get(event.seq, "")).strip()
+            text = final_answer_for(key_for_seq.get(event.seq, "")).strip()
             messages.append(
                 {
                     "seq": event.seq,
@@ -184,4 +212,8 @@ def chat_messages_from_events(
             )
         # 其余事件（session/terminal/lease/queue/turn.queued/started/input…）一律忽略。
 
+    if held_min is not None:
+        cursor = max(after_seq, min(max_seq, held_min - 1))
+    else:
+        cursor = max(after_seq, max_seq)
     return messages, cursor
