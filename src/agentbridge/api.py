@@ -197,6 +197,27 @@ class SetRolePermissionsRequest(BaseModel):
     trace_id: str = "api"
 
 
+class SetIdentityRolesRequest(BaseModel):
+    """把某平台身份 (platform, user_id) 绑定到一组角色（服务端拥有身份→角色映射）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    platform: str
+    user_id: str
+    roles: list[str] = Field(default_factory=list)
+    trace_id: str = "api"
+
+
+class DeleteIdentityRolesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    platform: str
+    user_id: str
+    trace_id: str = "api"
+
+
 class ProvisionProjectRequest(BaseModel):
     """一步开通项目：建项目 + 在工作目录建工作区（按需 mkdir）。
 
@@ -2215,6 +2236,38 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         """删除自定义角色；内置角色则重置回默认权限。"""
         return control.delete_role_definition(
             actor=payload.to_actor(), name=name, trace_id="api"
+        )
+
+    @app.get("/api/v1/identity-roles")
+    def list_identity_roles(control: ControlPlane = Depends(get_control)):
+        """列出服务端保存的「平台身份 → 角色」绑定。"""
+        actor = Actor(id="api", roles={"admin"})
+        return {"bindings": control.list_identity_roles(actor)}
+
+    @app.put("/api/v1/identity-roles")
+    def set_identity_roles(
+        payload: SetIdentityRolesRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        """把某平台身份绑定到一组角色。之后该身份发来的入站事件直接由服务端解析角色，
+        bot 无需再在 ``default_roles`` 里传角色（也无需维护本地角色文件）。"""
+        return control.set_identity_roles(
+            actor=payload.actor.to_actor(),
+            actor_id=f"{payload.platform}:{payload.user_id}",
+            roles=payload.roles,
+            trace_id=payload.trace_id,
+        )
+
+    @app.post("/api/v1/identity-roles/delete")
+    def delete_identity_roles(
+        payload: DeleteIdentityRolesRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        """解除某平台身份的角色绑定（之后回退到 bot 传入的 default_roles）。"""
+        return control.delete_identity_roles(
+            actor=payload.actor.to_actor(),
+            actor_id=f"{payload.platform}:{payload.user_id}",
+            trace_id=payload.trace_id,
         )
 
     @app.get("/api/v1/device-identities")
@@ -4271,9 +4324,13 @@ def handle_bot_gateway_inbound_event(
         event_type=event_type,
         command_text=command_text,
     )
+    actor_id = f"{payload.platform}:{payload.user_id}"
+    # 服务端若为该平台身份绑定了角色 → 用绑定（bot 无需维护本地角色文件）；否则沿用 bot 传入的
+    # default_roles（兼容旧模式）。
+    bound_roles = control.resolve_identity_roles(actor_id)
     actor = Actor(
-        id=f"{payload.platform}:{payload.user_id}",
-        roles={role for role in payload.default_roles if role} or {"member"},
+        id=actor_id,
+        roles=bound_roles or ({role for role in payload.default_roles if role} or {"member"}),
     )
     event = control.emit_event(
         event_type=event_type,

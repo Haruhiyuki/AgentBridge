@@ -3872,6 +3872,60 @@ def test_agent_adapter_event_ingest_rejects_schema_and_agent_mismatch(tmp_path):
     }
 
 
+def test_identity_roles_binding_overrides_default_roles(tmp_path, monkeypatch):
+    """服务端「平台身份→角色」绑定：存在则覆盖 bot 传入的 default_roles，bot 无需维护本地角色文件。"""
+    monkeypatch.setenv("AGENTBRIDGE_IDENTITY_ROLES_FILE", str(tmp_path / "identity.json"))
+    client = TestClient(create_app())
+    admin = {"id": "u-admin", "roles": ["admin"]}
+
+    # 端点：绑定 / 列出 / 未知角色拒绝。
+    put = client.put(
+        "/api/v1/identity-roles",
+        json={"actor": admin, "platform": "discord", "user_id": "u9", "roles": ["maintainer"]},
+    )
+    assert put.status_code == 200, put.text
+    assert put.json() == {"actor_id": "discord:u9", "roles": ["maintainer"]}
+    assert {"actor_id": "discord:u9", "roles": ["maintainer"]} in client.get(
+        "/api/v1/identity-roles"
+    ).json()["bindings"]
+    assert (
+        client.put(
+            "/api/v1/identity-roles",
+            json={"actor": admin, "platform": "discord", "user_id": "u8", "roles": ["wizard"]},
+        ).status_code
+        == 400
+    )
+
+    def create_project_cmd(name: str, key: str):
+        return client.post(
+            "/api/v1/bot-gateway/inbound-events",
+            json={
+                "event_type": "bot.command.received", "platform": "discord",
+                "user_id": "u9", "channel_id": "c9", "default_roles": ["member"],
+                "command": (
+                    f"/agent project create --name {name} "
+                    f"--path {tmp_path}/{name} --root {tmp_path}"
+                ),
+                "idempotency_key": key,
+            },
+        )
+
+    # 入站只带 default_roles=[member]，但绑定(maintainer)生效 → 允许建项目。
+    allowed = create_project_cmd("idok", "k-allowed")
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["handled"] is True
+
+    # 解绑后回退到 bot 传入的 [member]（无 project.manage）→ 同样命令被拒。
+    removed = client.post(
+        "/api/v1/identity-roles/delete",
+        json={"actor": admin, "platform": "discord", "user_id": "u9"},
+    )
+    assert removed.json()["deleted"] is True
+    assert client.get("/api/v1/identity-roles").json()["bindings"] == []
+    denied = create_project_cmd("iddenied", "k-denied")
+    assert denied.status_code >= 400
+
+
 def test_chat_events_sse_stream_emits_messages_and_closes_on_completion(tmp_path):
     """SSE 出站流：把可直接发送的聊天消息逐条推出，并在本轮空闲后自动关流（emit done）。"""
     client = TestClient(create_app())

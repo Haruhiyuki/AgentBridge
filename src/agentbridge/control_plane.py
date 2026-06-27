@@ -85,7 +85,126 @@ class ControlPlane:
         )
         self._role_overrides: dict[str, set[Permission]] = self._load_role_overrides()
         self.policy.set_role_provider(self.effective_role_permissions)
+        # 可选的「平台身份(platform:user_id) → 角色」绑定：bot 可不再自己维护本地角色文件，把
+        # 身份→角色解析交给服务端。设 AGENTBRIDGE_IDENTITY_ROLES_FILE 时持久化。存在绑定即覆盖
+        # bot 传入的 default_roles；不存在则沿用 bot 传入值——两种模式并存，兼容旧 bot。
+        identity_path = os.environ.get("AGENTBRIDGE_IDENTITY_ROLES_FILE", "").strip()
+        self._identity_roles_path: Path | None = (
+            Path(identity_path).expanduser() if identity_path else None
+        )
+        self._identity_roles: dict[str, set[str]] = self._load_identity_roles()
         self.approval_policy = approval_policy or ApprovalPolicy.default()
+
+    def _load_identity_roles(self) -> dict[str, set[str]]:
+        if self._identity_roles_path is None or not self._identity_roles_path.exists():
+            return {}
+        try:
+            raw = json.loads(self._identity_roles_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return {
+            str(actor_id): {str(role) for role in (roles or []) if str(role).strip()}
+            for actor_id, roles in (raw or {}).items()
+        }
+
+    def _save_identity_roles(self) -> None:
+        if self._identity_roles_path is None:
+            return
+        self._identity_roles_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            actor_id: sorted(roles) for actor_id, roles in self._identity_roles.items()
+        }
+        self._identity_roles_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    def resolve_identity_roles(self, actor_id: str) -> set[str] | None:
+        """返回服务端为该平台身份绑定的角色集合；未绑定返回 None（调用方应回退到 bot 传入值）。"""
+        roles = self._identity_roles.get(actor_id)
+        return set(roles) if roles else None
+
+    def list_identity_roles(self, actor: Actor) -> list[dict[str, object]]:
+        self.require_collection_permission(
+            actor,
+            Permission.GROUP_ROLE_MANAGE,
+            resource_type="identity_role",
+            attributes={"operation": "list_identity_roles"},
+        )
+        return [
+            {"actor_id": actor_id, "roles": sorted(roles)}
+            for actor_id, roles in sorted(self._identity_roles.items())
+        ]
+
+    def set_identity_roles(
+        self,
+        *,
+        actor: Actor,
+        actor_id: str,
+        roles: list[str],
+        trace_id: str,
+    ) -> dict[str, object]:
+        self.require_collection_permission(
+            actor,
+            Permission.GROUP_ROLE_MANAGE,
+            resource_type="identity_role",
+            resource_id=actor_id,
+            attributes={"operation": "set_identity_roles"},
+        )
+        target = actor_id.strip()
+        if not target:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "身份标识不能为空。",
+                next_step="请提供 platform 与 user_id（如 discord 与 u-123）。",
+            )
+        known = set(self.effective_role_permissions())
+        cleaned = {role.strip() for role in roles if role.strip()}
+        unknown = cleaned - known
+        if unknown:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                f"未知角色：{', '.join(sorted(unknown))}",
+                next_step="可用角色见 GET /api/v1/roles。",
+                details={"unknown_roles": sorted(unknown)},
+            )
+        if not cleaned:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "至少需要一个角色。",
+                next_step="如解除绑定请用删除接口。",
+            )
+        self._identity_roles[target] = cleaned
+        self._save_identity_roles()
+        self.audit(
+            action="identity_role.set",
+            actor=actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            details={"actor_id": target, "roles": sorted(cleaned)},
+        )
+        return {"actor_id": target, "roles": sorted(cleaned)}
+
+    def delete_identity_roles(
+        self, *, actor: Actor, actor_id: str, trace_id: str
+    ) -> dict[str, object]:
+        self.require_collection_permission(
+            actor,
+            Permission.GROUP_ROLE_MANAGE,
+            resource_type="identity_role",
+            resource_id=actor_id,
+            attributes={"operation": "delete_identity_roles"},
+        )
+        existed = self._identity_roles.pop(actor_id.strip(), None) is not None
+        if existed:
+            self._save_identity_roles()
+            self.audit(
+                action="identity_role.deleted",
+                actor=actor,
+                outcome=AuditOutcome.ALLOWED,
+                trace_id=trace_id,
+                details={"actor_id": actor_id.strip()},
+            )
+        return {"actor_id": actor_id.strip(), "deleted": existed}
 
     def _load_role_overrides(self) -> dict[str, set[Permission]]:
         if self._role_overrides_path is None or not self._role_overrides_path.exists():
