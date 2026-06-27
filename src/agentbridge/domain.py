@@ -447,6 +447,8 @@ class AgentSession(BaseModel):
     created_by: str
     active_turn_id: str | None = None
     queue_paused: bool = False
+    # agent 在原生终端里设置的标题（如 Claude/Codex 的窗口标题），用于在列表里一眼识别会话。
+    terminal_title: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

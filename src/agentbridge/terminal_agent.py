@@ -1413,6 +1413,22 @@ class TmuxTerminalBackend:
         executable = shutil.which(self.executable) or self.executable
         return f"{shlex.quote(executable)} attach -t {shlex.quote(name)}"
 
+    def pane_title(self, *, session_id: str) -> str | None:
+        """读取该 tmux 会话当前窗格标题（即 agent 通过终端标题转义设置的内容）。"""
+        name = self._tmux_name(session_id)
+        if not self._has_session(name):
+            return None
+        result = subprocess.run(
+            [self.executable, "display-message", "-p", "-t", name, "#{pane_title}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return None
+        title = result.stdout.strip()
+        return title or None
+
     def _has_session(self, name: str) -> bool:
         result = subprocess.run(
             [self.executable, "has-session", "-t", name],
@@ -2469,6 +2485,17 @@ class TerminalAgentService:
             self._emit_terminal_lost_once(session=session, trace_id=trace_id)
         return status
 
+    def _capture_terminal_title(self, session_id: str) -> None:
+        """抓取 agent 在终端里设置的标题并写入会话（供列表/状态显示）。仅 tmux 等支持的后端有效。"""
+        getter = getattr(self.backend, "pane_title", None)
+        if getter is None:
+            return
+        try:
+            title = getter(session_id=session_id)
+        except Exception:
+            return
+        self.control.repository.set_terminal_title(session_id, title)
+
     def run_lifecycle_monitor_once(
         self,
         *,
@@ -2487,6 +2514,7 @@ class TerminalAgentService:
             try:
                 status = self.status(session_id=session_id, trace_id=trace_id)
                 observed[session_id] = status
+                self._capture_terminal_title(session_id)
                 if self._should_auto_restart_lost(
                     session_id=session_id,
                     status=status,

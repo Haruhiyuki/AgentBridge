@@ -391,13 +391,14 @@ def test_failed_command_execution_is_audited(tmp_path):
     failed_audits = [
         event for event in control.repository.audit_events if event.action == "command.failed"
     ]
-    assert exc_info.value.code == ErrorCode.TARGET_SESSION_REQUIRED
+    # 无活动项目时发任务无法进行（有项目时会自动新建会话），命令失败并被审计。
+    assert exc_info.value.code == ErrorCode.TARGET_PROJECT_REQUIRED
     assert len(failed_audits) == 1
     assert failed_audits[0].outcome == AuditOutcome.FAILED
     assert failed_audits[0].actor_id == maintainer.id
     assert failed_audits[0].trace_id == "missing-session-command"
     assert failed_audits[0].details["canonical_command"] == "turn.enqueue"
-    assert failed_audits[0].details["error_code"] == "TARGET_SESSION_REQUIRED"
+    assert failed_audits[0].details["error_code"] == "TARGET_PROJECT_REQUIRED"
     assert (
         control.repository.get_command_result("missing-session-command")
         is None
@@ -530,7 +531,7 @@ def test_select_commands_apply_numbered_project_and_session_choices(tmp_path):
     assert "/agent select project <编号>" in project_list.message
     assert f"1. [{first_session.short_code}] Alpha One" in session_list.message
     assert f"2. [{second_session.short_code}] Alpha Two" in session_list.message
-    assert "/agent select session <编号>" in session_list.message
+    assert "select session <编号>" in session_list.message
     assert project_result.canonical_command == "project.select"
     assert project_result.data["project_id"] == second_project.id
     assert project_result.data["selected_index"] == 2

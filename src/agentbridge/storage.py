@@ -1190,6 +1190,16 @@ class InMemoryRepository:
                 )
             return session
 
+    def set_terminal_title(self, session_id: str, title: str | None) -> None:
+        """更新会话的终端标题（瞬态运行状态，仅内存；不触发持久化，重启后由监控重抓）。"""
+        with self._lock:
+            session = self.sessions.get(session_id)
+            if session is None or session.terminal_title == title:
+                return
+            self.sessions[session_id] = session.model_copy(
+                update={"terminal_title": title}
+            )
+
     def resolve_session(self, token: str, project_id: str | None = None) -> AgentSession:
         lookup = normalize_lookup(token)
         with self._lock:

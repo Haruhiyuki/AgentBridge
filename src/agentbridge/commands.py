@@ -74,7 +74,9 @@ KNOWN_ROOTS = {
     "claude",
     "codex",
     "project",
+    "projects",
     "session",
+    "sessions",
     "use",
     "ask",
     "send",
@@ -276,7 +278,7 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
     ),
     command_spec(
         "project.list",
-        aliases=["project", "project list", "项目 列表"],
+        aliases=["project", "projects", "project list", "项目 列表"],
         summary="List projects visible to the current chat context.",
         usage="/agent project list [--all]",
         argument_schema=command_arguments_schema({"all": BOOLEAN_SCHEMA}),
@@ -383,7 +385,7 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
     ),
     command_spec(
         "session.list",
-        aliases=["session", "session list", "会话 列表"],
+        aliases=["session", "sessions", "session list", "会话 列表"],
         summary="List sessions for the active or specified project.",
         usage="/agent session list [--project <project>]",
         argument_schema=command_arguments_schema({"project": OPTIONAL_STRING_SCHEMA}),
@@ -956,6 +958,11 @@ class CommandService:
                     "mode": root,
                 },
             )
+        if root == "projects":
+            return "project.list", {"all": False}
+        if root == "sessions":
+            positional, options = parse_options(tokens)
+            return "session.list", {"project": options.get("project") or options.get("p")}
         if root == "project":
             return self._parse_project(tokens)
         if root == "session":
@@ -1527,11 +1534,15 @@ class CommandService:
                 project_id=project_id,
                 chat_context_id=invocation.chat_context_id,
             )
+            context = self.control.repository.get_chat_context(invocation.chat_context_id)
             return self._result(
                 invocation,
                 "Sessions",
-                format_session_list_message(sessions),
-                {"sessions": [session.model_dump(mode="json") for session in sessions]},
+                format_session_list_message(sessions, context.active_session_id),
+                {
+                    "active_session_id": context.active_session_id,
+                    "sessions": [session.model_dump(mode="json") for session in sessions],
+                },
             )
         if command == "session.select":
             return self._execute_session_select(invocation)
@@ -1586,7 +1597,7 @@ class CommandService:
                 },
             )
         if command == "turn.enqueue":
-            session = self._resolve_session_arg(invocation)
+            session, created = self._active_or_new_session(invocation)
             turn = self.control.enqueue_turn(
                 actor=invocation.actor,
                 session_id=session.id,
@@ -1594,7 +1605,13 @@ class CommandService:
                 trace_id=invocation.trace_id,
                 chat_context_id=invocation.chat_context_id,
             )
-            message = f"任务已进入 [{session.short_code}] 队列。"
+            agent_label = AGENT_TYPE_LABELS.get(
+                session.agent_type.value, session.agent_type.value
+            )
+            message = ""
+            if created:
+                message = f"已新建并绑定 {agent_label} 会话 [{session.short_code}]。\n"
+            message += f"任务已进入 [{session.short_code}] 队列。"
             if turn.queue_reason == "human_control":
                 message += " 本地控制中，任务会等待人工释放后继续。"
             elif turn.queue_reason == "terminal_agent_offline":
@@ -2357,9 +2374,12 @@ class CommandService:
 
         agent_label = AGENT_TYPE_LABELS.get(session.agent_type.value, session.agent_type.value)
         status_label = SESSION_STATUS_LABELS.get(session.status.value, session.status.value)
+        session_title = (session.terminal_title or session.name or "").strip()
         lines.append(
-            f"会话：[{session.short_code}] {session.name} · {agent_label} · {status_label}"
+            f"会话：[{session.short_code}] {session_title} · {agent_label} · {status_label}"
         )
+        if session.terminal_title and session.terminal_title.strip() != session.name:
+            lines.append(f"终端标题：{session.terminal_title.strip()}")
 
         lease = self.control.repository.current_lease(session.id)
         if lease is None:
@@ -2626,32 +2646,74 @@ class CommandService:
         return PolicyScope.CHAT_CONTEXT, invocation.chat_context_id
 
     def _resolve_session_arg(self, invocation: CommandInvocation) -> AgentSession:
+        # 黏性绑定：用显式 --session，否则用当前绑定的活动会话；不再在多个会话间自动猜选——
+        # 切会话必须显式（/agent session use 或 select）。
         token = invocation.args.get("session")
         context = self.control.repository.get_chat_context(invocation.chat_context_id)
         if token:
             return self.control.repository.resolve_session(str(token), context.active_project_id)
         if context.active_session_id:
             return self.control.repository.get_session(context.active_session_id)
-        if context.active_project_id:
-            candidates = [
-                session
-                for session in self.control.repository.list_sessions(context.active_project_id)
-                if session.status.value not in {"closed", "archived"}
-            ]
-            if len(candidates) == 1:
-                return candidates[0]
-            if len(candidates) > 1:
-                raise AgentBridgeError(
-                    ErrorCode.TARGET_SESSION_AMBIGUOUS,
-                    "当前项目存在多个活动会话，不能自动选择。",
-                    next_step="请执行 /agent session use <session> 或添加 --session <session>。",
-                    details={"candidates": [session.short_code for session in candidates]},
-                )
         raise AgentBridgeError(
             ErrorCode.TARGET_SESSION_REQUIRED,
-            "当前聊天上下文没有活动会话。",
-            next_step="请执行 /agent session new 或 /agent session use <session>。",
+            "当前没有绑定的活动会话。",
+            next_step="发任务会自动新建并绑定会话；或用 /agent session use <session> 显式切换。",
         )
+
+    def _active_or_new_session(
+        self, invocation: CommandInvocation
+    ) -> tuple[AgentSession, bool]:
+        """用于发消息：返回当前绑定会话；若未绑定（或绑定的会话不属于当前项目/不可用），
+        则在当前活动项目下新建一个会话并绑定。返回 (会话, 是否新建)。"""
+        token = invocation.args.get("session")
+        context = self.control.repository.get_chat_context(invocation.chat_context_id)
+        if token:
+            return (
+                self.control.repository.resolve_session(
+                    str(token), context.active_project_id
+                ),
+                False,
+            )
+        project_id = context.active_project_id
+        if not project_id:
+            raise AgentBridgeError(
+                ErrorCode.TARGET_PROJECT_REQUIRED,
+                "当前没有活动项目。",
+                next_step="请先执行 /agent project use <project>。",
+            )
+        if context.active_session_id:
+            try:
+                bound = self.control.repository.get_session(context.active_session_id)
+            except AgentBridgeError:
+                bound = None
+            # 黏性绑定：只要绑定的会话还属于当前项目且没被关闭/归档就保留——即使临时 recovering
+            # （终端离线保护中），任务也应在它上面排队等待，而不是另起新会话。
+            if (
+                bound is not None
+                and bound.project_id == project_id
+                and bound.status.value not in INACTIVE_SESSION_STATUSES
+            ):
+                return bound, False
+        project = self.control.repository.get_project(project_id)
+        session = self.control.create_session(
+            actor=invocation.actor,
+            project_id=project_id,
+            workspace_id=None,
+            name=AGENT_TYPE_LABELS.get(
+                project.default_agent.value, project.default_agent.value
+            ),
+            agent_type=project.default_agent,
+            visibility=Visibility.GROUP,
+            trace_id=invocation.trace_id,
+            chat_context_id=invocation.chat_context_id,
+        )
+        context = self.control.repository.get_chat_context(invocation.chat_context_id)
+        self.control.repository.update_active_session(
+            invocation.chat_context_id,
+            session.id,
+            expected_version=context.pointer_version,
+        )
+        return session, True
 
     def _resolve_interaction_arg(
         self,
@@ -2863,19 +2925,20 @@ def format_project_binding_list_message(
     return "\n".join(lines)
 
 
-def format_session_list_message(sessions: list[AgentSession]) -> str:
+def format_session_list_message(
+    sessions: list[AgentSession], active_session_id: str | None = None
+) -> str:
     if not sessions:
-        return "共 0 个会话。"
-    lines = [f"共 {len(sessions)} 个会话："]
+        return "当前项目还没有会话。发条任务会自动新建并绑定，或 /ab session new <名称>。"
+    lines = [f"会话（{len(sessions)}）："]
     for index, session in enumerate(sessions, start=1):
-        lines.append(
-            f"{index}. [{session.short_code}] {session.name} · "
-            f"{session.status.value} · project_id={session.project_id}"
-        )
-    lines.append(
-        "使用 /agent select session <编号> 切换活动会话；"
-        "跨项目时可加 --project <project>。"
-    )
+        # 终端标题（agent 设置的窗口标题）优先，便于一眼识别会话在做什么；没有则用会话名。
+        title = (session.terminal_title or session.name or "").strip()
+        agent = AGENT_TYPE_LABELS.get(session.agent_type.value, session.agent_type.value)
+        status = SESSION_STATUS_LABELS.get(session.status.value, session.status.value)
+        active = " ◀ 当前" if session.id == active_session_id else ""
+        lines.append(f"{index}. [{session.short_code}] {title} · {agent} · {status}{active}")
+    lines.append("切换：/ab select session <编号>，或 /ab session use <code>")
     return "\n".join(lines)
 
 
@@ -2902,8 +2965,9 @@ def format_agent_list_message(
             status_label = SESSION_STATUS_LABELS.get(
                 session.status.value, session.status.value
             )
+            title = (session.terminal_title or session.name or "").strip()
             lines.append(
-                f"{marker}{label} · [{session.short_code}] {session.name} · {status_label}"
+                f"{marker}{label} · [{session.short_code}] {title} · {status_label}"
             )
     lines.append("切换：/ab claude · /ab codex；查看状态：/ab status")
     return "\n".join(lines)

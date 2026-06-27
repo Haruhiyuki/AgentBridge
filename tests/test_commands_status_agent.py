@@ -137,6 +137,39 @@ def test_status_without_active_session(tmp_path):
     assert "Backend" in status.message
 
 
+def test_ask_auto_creates_and_binds_session_then_sticks(tmp_path):
+    control, commands, context, actor = bootstrap(tmp_path)
+    # 进项目后未指定会话；首次发消息默认新建并绑定。
+    first = run(commands, "/ab ask 第一条任务", actor, context.id, "ask-1")
+    assert first.canonical_command == "turn.enqueue"
+    assert "已新建并绑定" in first.message
+    session_id = first.data["session_id"]
+    assert control.repository.get_chat_context(context.id).active_session_id == session_id
+
+    # 再次发消息黏在同一会话，不再新建。
+    second = run(commands, "/ab ask 第二条任务", actor, context.id, "ask-2")
+    assert "已新建并绑定" not in second.message
+    assert second.data["session_id"] == session_id
+
+
+def test_session_list_shows_terminal_title_and_active_marker(tmp_path):
+    control, commands, context, actor = bootstrap(tmp_path)
+    run(commands, "/ab claude", actor, context.id, "c1")
+    active_id = control.repository.get_chat_context(context.id).active_session_id
+    control.repository.set_terminal_title(active_id, "修复登录 500")
+
+    listing = run(commands, "/ab sessions", actor, context.id, "ls")
+    assert listing.canonical_command == "session.list"
+    assert "修复登录 500" in listing.message  # 终端标题展示
+    assert "◀ 当前" in listing.message  # 当前会话标记
+
+
+def test_projects_and_sessions_quick_aliases(tmp_path):
+    control, commands, context, actor = bootstrap(tmp_path)
+    assert run(commands, "/ab projects", actor, context.id, "p").canonical_command == "project.list"
+    assert run(commands, "/ab sessions", actor, context.id, "s").canonical_command == "session.list"
+
+
 def test_help_is_grouped_and_comprehensive(tmp_path):
     control, commands, context, actor = bootstrap(tmp_path)
     helped = run(commands, "/ab help", actor, context.id, "help-1")
