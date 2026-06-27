@@ -1297,7 +1297,7 @@ def test_numbered_interaction_commands_use_type_filtered_pending_lists(tmp_path)
     )
     answer_result = execute(
         commands,
-        "/agent answer 1 staging",
+        "/agent answer staging",
         maintainer,
         context.id,
         "interaction-code-answer",
@@ -1322,7 +1322,7 @@ def test_numbered_interaction_commands_use_type_filtered_pending_lists(tmp_path)
     assert [item["id"] for item in plan_list.data["interactions"]] == [plan.id]
     assert "1. question · pending" in question_list.message
     assert "Which environment?" in question_list.message
-    assert "/agent answer <编号> <答案>" in question_list.message
+    assert "/agent answer <答案>" in question_list.message
     assert "1. approval · pending" in approval_list.message
     assert "Deploy now?" in approval_list.message
     assert "/agent approve <编号>" in approval_list.message
@@ -1335,6 +1335,45 @@ def test_numbered_interaction_commands_use_type_filtered_pending_lists(tmp_path)
     assert approval_result.data["interaction"]["status"] == "resolved"
     assert plan_result.data["interaction_id"] == plan.id
     assert plan_result.data["interaction"]["answer"] == "approved"
+
+
+def test_answer_auto_targets_current_pending_question(tmp_path):
+    """/ab answer 不写编号时自动认准当前待答提问，整串都当作答案。"""
+    control = ControlPlane()
+    commands = CommandService(control)
+    context = make_context(control)
+    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    execute(
+        commands,
+        f"/agent project create --name Backend --path {tmp_path} --root {tmp_path}",
+        maintainer,
+        context.id,
+        "auto-answer-project",
+    )
+    session_result = execute(
+        commands, "/agent session new Auto Answer", maintainer, context.id, "auto-answer-session"
+    )
+    question = control.create_interaction(
+        actor=maintainer,
+        session_id=str(session_result.data["session_id"]),
+        interaction_type=InteractionType.QUESTION,
+        prompt="选哪个环境?",
+        options=["staging", "prod"],
+        trace_id="auto-answer-question",
+        chat_context_id=context.id,
+    )
+
+    # 不带编号，整串就是答案（这里多题风格的作答串也应原样作为 answer 存下）。
+    result = execute(
+        commands, "/agent answer 1A 2B 3C", maintainer, context.id, "auto-answer-exec"
+    )
+    assert result.data["interaction_id"] == question.id
+    assert result.data["interaction"]["answer"] == "1A 2B 3C"
+
+    # 没有待答提问时给出清晰错误，而非把答案塞给不存在的目标。
+    with pytest.raises(AgentBridgeError) as exc_info:
+        execute(commands, "/agent answer A", maintainer, context.id, "auto-answer-none")
+    assert exc_info.value.code == ErrorCode.COMMAND_ARGUMENT_INVALID
 
 
 def test_numbered_interaction_selector_rejects_wrong_type(tmp_path):
@@ -1439,11 +1478,7 @@ def test_missing_argument_errors_include_recovery_commands():
         ),
         (
             "/agent answer",
-            ["/agent question list", "/agent answer <编号> <答案>"],
-        ),
-        (
-            "/agent answer 1",
-            ["/agent answer 1 staging"],
+            ["认准当前提问", "/agent answer 1A 2B 3C"],
         ),
         (
             "/agent approve",

@@ -774,11 +774,11 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
     command_spec(
         "interaction.answer",
         aliases=["answer", "回答"],
-        summary="Answer a free-text question interaction.",
-        usage="/agent answer <interaction-id|number> <answer>",
+        summary="Answer the current pending question (auto-targets it).",
+        usage="/agent answer [interaction-id] <answer>",
         argument_schema=command_arguments_schema(
-            {"interaction": STRING_SCHEMA, "answer": STRING_SCHEMA},
-            required=["interaction", "answer"],
+            {"interaction": OPTIONAL_STRING_SCHEMA, "answer": STRING_SCHEMA},
+            required=["answer"],
         ),
         required_permission="session.send",
         target_mode="interaction",
@@ -1393,13 +1393,19 @@ class CommandService:
         )
 
     def _parse_answer(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
+        # 一次 AskUserQuestion 就是一组（含多个子问题）的单次交互，新提问是独立另一条，故默认
+        # 「认准当前待答提问」：整串都当作答案，无需先写提问序号。仅当显式给了 int_ 开头的交互 ID
+        # 时才把它当目标、其余当答案，保留精确指定能力。
         positional, options = parse_options(tokens)
-        if not positional:
-            raise missing_argument("answer", "<interaction-id>")
-        answer = str(options.get("text") or " ".join(positional[1:])).strip()
+        if positional and positional[0].startswith("int_"):
+            interaction = positional[0]
+            answer = str(options.get("text") or " ".join(positional[1:])).strip()
+        else:
+            interaction = ""  # 空 = 自动认准当前待答提问
+            answer = str(options.get("text") or " ".join(positional)).strip()
         if not answer:
             raise missing_argument("answer", "<answer>")
-        return "interaction.answer", {"interaction": positional[0], "answer": answer}
+        return "interaction.answer", {"interaction": interaction, "answer": answer}
 
     def _parse_approve(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
         positional, _ = parse_options(tokens)
@@ -3022,7 +3028,32 @@ class CommandService:
         *,
         expected_type: InteractionType | None = None,
     ) -> Interaction:
-        token = str(invocation.args["interaction"])
+        token = str(invocation.args.get("interaction") or "").strip()
+        if not token:
+            # 未指定目标 → 自动认准「当前待答提问」：取最新一条 pending 交互（按类型过滤）。
+            # 同一会话一次只阻塞一个 AskUserQuestion，故"最新"即用户正看着的那条。
+            interactions = self.control.list_interactions(
+                actor=invocation.actor,
+                chat_context_id=invocation.chat_context_id,
+                session_id=None,
+                status=None,
+            )
+            pending = [
+                interaction
+                for interaction in interactions
+                if interaction.status
+                in {InteractionStatus.PENDING, InteractionStatus.PARTIALLY_APPROVED}
+                and (expected_type is None or interaction.type == expected_type)
+            ]
+            if not pending:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    f"当前没有待处理的{interaction_type_label(expected_type)}。",
+                    next_step="等收到提问/审批消息后再回复，或用 "
+                    f"{interaction_list_command(expected_type)} 查看列表。",
+                )
+            pending.sort(key=lambda interaction: interaction.created_at)
+            return pending[-1]
         if token.isdecimal():
             index = parse_selection_index("interaction", token)
             interactions = self.control.list_interactions(
@@ -3302,7 +3333,7 @@ def build_help_message() -> str:
             "  /ab control release --epoch <n>  释放写入权",
             "",
             "▸ 交互 / 审批",
-            "  /ab answer <编号> <内容>          回答 Agent 的提问",
+            "  /ab answer <作答>                 回答当前提问（如 A / 1A 2B 3C）",
             "  /ab approve <编号> · /ab deny <编号>   通过 / 拒绝审批",
             "  /ab approvals · /ab plan list      查看待办交互",
             "",
@@ -3354,7 +3385,7 @@ def interaction_action_hint(interaction_type: InteractionType | None) -> str:
     if interaction_type == InteractionType.APPROVAL:
         return "使用 /agent approve <编号> 或 /agent deny <编号> 处理审批。"
     if interaction_type == InteractionType.QUESTION:
-        return "使用 /agent answer <编号> <答案> 回答问题。"
+        return "使用 /agent answer <答案> 回答当前提问（默认认准当前提问，无需写编号）。"
     if interaction_type == InteractionType.PLAN:
         return (
             "使用 /agent plan approve <编号>、/agent plan revise <编号> <意见> "
@@ -3470,12 +3501,9 @@ def missing_argument_next_step(command: str, argument: str) -> str:
             "请执行 /agent queue list 查看 queue_version，再执行 "
             "/agent queue resume --version <queue_version>。"
         ),
-        ("answer", "<interaction-id>"): (
-            "请执行 /agent question list 查看问题编号，再执行 "
-            "/agent answer <编号> <答案>；在支持引用回复的平台也可直接回复问题消息。"
-        ),
         ("answer", "<answer>"): (
-            "请在问题编号后追加答案，例如 /agent answer 1 staging。"
+            "请直接给出答案（默认认准当前提问），例如 /agent answer A 或多题 "
+            "/agent answer 1A 2B 3C；在支持引用回复的平台也可直接回复问题消息。"
         ),
         ("approve", "<interaction-id>"): (
             "请执行 /agent approvals 查看审批编号，再执行 /agent approve <编号>。"

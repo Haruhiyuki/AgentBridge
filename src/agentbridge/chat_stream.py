@@ -31,8 +31,8 @@ _ASK_LABELS = {
     "plan": "📋 计划待确认",
 }
 _ASK_REPLY_HINTS = {
-    # 单题：/ab answer <提问编号> <选项字母>（多选连写如 AC）；多题：作答串里逐题写「题号+字母」。
-    "question": "回复 /ab answer <提问编号> <选项字母>（多选连写如 AC；多题逐题写 1A 2B 3C）",
+    # 默认认准当前提问，无需写提问序号：单题直接选项字母（多选连写 AC），多题逐题写 1A 2B 3C。
+    "question": "回复 /ab answer <作答>（单题直接字母如 A/AC；多题逐题写 1A 2B 3C）",
     "approval": "回复 /ab approve <编号> 或 /ab deny <编号>",
     "plan": "回复 /ab plan approve <编号> 或 /ab plan revise <编号> <意见>",
 }
