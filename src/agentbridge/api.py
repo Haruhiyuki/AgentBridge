@@ -2456,13 +2456,26 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         """面向聊天用户的事件投影：已过滤管道噪声、合并 assistant 回答的聊天消息。
 
         Bot 适配器只需轮询本端点并原样转发 ``messages[*].text``，无需自己做任何过滤/合并/限频；
-        当某条消息 ``kind`` 为 ``answer``/``error`` 时表示该轮结束。
         下次以 ``after_seq=cursor`` 继续轮询。
+
+        ``active`` 是本端点给出的**权威「本轮是否仍在进行」标志**：只要会话还有活动 turn
+        或队列里还有待跑的排队 turn，``active`` 即为 ``True``。Bot 应当一直流式拉取直到
+        ``active`` 变为 ``False`` 且已追上游标，而**不要**用「看到某条 ``answer``/``error``
+        就结束」的脆弱判据——否则多轮排队时，第一轮答案一出现就会过早收尾、丢掉后续排队轮的答案。
         """
-        control.repository.get_session(session_id)
+        session = control.repository.get_session(session_id)
         events = control.repository.list_events(session_id=session_id, limit=1_000_000)
         messages, cursor = chat_messages_from_events(events, after_seq=after_seq or 0)
-        return {"messages": messages, "cursor": cursor}
+        queued_turns, _, queue_paused = control.repository.queue_snapshot(session_id)
+        active = bool(session.active_turn_id) or bool(queued_turns)
+        return {
+            "messages": messages,
+            "cursor": cursor,
+            "active": active,
+            "active_turn_id": session.active_turn_id,
+            "queued_turns": len(queued_turns),
+            "queue_paused": queue_paused,
+        }
 
     @app.websocket("/api/v1/sessions/{session_id}/events/ws")
     async def stream_events(
