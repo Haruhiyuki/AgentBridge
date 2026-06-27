@@ -8433,7 +8433,8 @@ def test_terminal_websocket_claim_next_can_submit_prompt(monkeypatch, tmp_path):
         )
         snapshot = websocket.receive_json()
 
-    assert snapshot["data"]["snapshot"] == "run queued task\n"
+    # 提交现在是「文本 + 单独 Enter 键」，Enter 落到 PTY/Fake 是 CR(\r)。
+    assert snapshot["data"]["snapshot"] == "run queued task\r"
     assert control.repository.get_turn(queued_turn["id"]).status == TurnStatus.RUNNING
 
 
