@@ -265,7 +265,464 @@ function stub(title, note) {
       当前可在 <a href="/admin" target="_blank">旧版 /admin</a> 操作；本页将在后续增量上线。</div></div></div>`,
   };
 }
-const GovernanceView = stub("治理", "访问策略 / 角色 / 审批策略 / 设备证书");
+const RISK_LEVELS = ["low", "medium", "high", "critical"];
+
+const GovernanceView = {
+  setup() {
+    const tab = ref("policy");
+    const TABS = [
+      { id: "policy", label: "访问策略" },
+      { id: "roles", label: "角色" },
+      { id: "approval", label: "审批策略" },
+      { id: "devices", label: "设备证书" },
+    ];
+
+    // ---- access policy ----
+    const rules = ref([]);
+    const blank = () => ({
+      rule_id: "",
+      effect: "allow",
+      action: "*",
+      resource_type: "*",
+      resource_id: "",
+      actor_ids: "",
+      roles: "",
+      priority: 100,
+      enabled: true,
+      description: "",
+      chat_context_id: "",
+    });
+    const form = reactive(blank());
+    const sim = reactive({
+      target_actor_id: "",
+      roles: "",
+      action: "session.send",
+      resource_type: "*",
+      resource_id: "",
+      result: null,
+    });
+    async function loadRules() {
+      try {
+        rules.value = await api("/access-policy/rules");
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    function editRule(r) {
+      Object.assign(form, {
+        rule_id: r.id,
+        effect: r.effect,
+        action: r.action,
+        resource_type: r.resource_type,
+        resource_id: r.resource_id || "",
+        actor_ids: (r.actor_ids || []).join(","),
+        roles: (r.roles || []).join(","),
+        priority: r.priority,
+        enabled: r.enabled,
+        description: r.description || "",
+        chat_context_id: r.chat_context_id || "",
+      });
+    }
+    function resetForm() {
+      Object.assign(form, blank());
+    }
+    const csv = (s) =>
+      s.split(",").map((x) => x.trim()).filter(Boolean);
+    async function saveRule() {
+      try {
+        const body = {
+          actor: ADMIN_ACTOR,
+          rule_id: form.rule_id || null,
+          effect: form.effect,
+          action: form.action,
+          resource_type: form.resource_type || "*",
+          resource_id: form.resource_id || null,
+          actor_ids: csv(form.actor_ids),
+          roles: csv(form.roles),
+          priority: Number(form.priority) || 100,
+          enabled: form.enabled,
+          description: form.description || null,
+          chat_context_id: form.chat_context_id || null,
+        };
+        if (form.rule_id) {
+          await api("/access-policy/rules/" + form.rule_id, { method: "PUT", body });
+        } else {
+          await api("/access-policy/rules", { method: "POST", body });
+        }
+        toast("规则已保存");
+        resetForm();
+        await loadRules();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    async function deleteRule(r) {
+      try {
+        await api("/access-policy/rules/" + r.id + "/delete", {
+          method: "POST",
+          body: { actor: ADMIN_ACTOR },
+        });
+        toast("规则已删除");
+        await loadRules();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    async function simulate() {
+      try {
+        sim.result = await api("/access-policy/simulate", {
+          method: "POST",
+          body: {
+            actor: ADMIN_ACTOR,
+            target_actor: { id: sim.target_actor_id, roles: csv(sim.roles) },
+            action: sim.action,
+            resource_type: sim.resource_type || "*",
+            resource_id: sim.resource_id || null,
+          },
+        });
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+
+    // ---- roles ----
+    const roleCtx = ref("");
+    const roleBindings = ref([]);
+    const grant = reactive({ target_actor_id: "", roles: "" });
+    async function loadRoles() {
+      if (!roleCtx.value) return;
+      try {
+        roleBindings.value = await api(
+          "/chat-contexts/" + roleCtx.value + "/roles"
+        );
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    async function grantRoles() {
+      try {
+        await api("/chat-contexts/" + roleCtx.value + "/roles/grant", {
+          method: "POST",
+          body: {
+            actor: ADMIN_ACTOR,
+            target_actor_id: grant.target_actor_id,
+            roles: csv(grant.roles),
+          },
+        });
+        toast("已授予角色");
+        grant.target_actor_id = "";
+        grant.roles = "";
+        await loadRoles();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    async function revokeRoles(b) {
+      try {
+        await api("/chat-contexts/" + roleCtx.value + "/roles/revoke", {
+          method: "POST",
+          body: { actor: ADMIN_ACTOR, target_actor_id: b.actor_id, roles: b.roles },
+        });
+        toast("已撤销角色");
+        await loadRoles();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+
+    // ---- approval policy ----
+    const apProjects = ref([]);
+    const apProject = ref("");
+    const quorum = reactive({ low: 1, medium: 1, high: 1, critical: 2 });
+    async function loadApProjects() {
+      try {
+        apProjects.value = await api("/projects");
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    async function loadApproval() {
+      if (!apProject.value) return;
+      try {
+        const p = await api("/projects/" + apProject.value + "/approval-policy");
+        const q = (p && p.quorum_by_risk) || {};
+        RISK_LEVELS.forEach((r) => {
+          quorum[r] = q[r] != null ? q[r] : quorum[r];
+        });
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    async function saveApproval() {
+      try {
+        await api("/projects/" + apProject.value + "/approval-policy", {
+          method: "PUT",
+          body: {
+            actor: ADMIN_ACTOR,
+            quorum_by_risk: {
+              low: Number(quorum.low),
+              medium: Number(quorum.medium),
+              high: Number(quorum.high),
+              critical: Number(quorum.critical),
+            },
+          },
+        });
+        toast("审批策略已保存");
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+
+    // ---- devices ----
+    const devices = ref([]);
+    const includeRevoked = ref(false);
+    const dev = reactive({ device_id: "", display_name: "", scopes: "", newKey: "" });
+    async function loadDevices() {
+      try {
+        devices.value = await api("/device-identities", {
+          params: { include_revoked: includeRevoked.value },
+        });
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    async function createDevice() {
+      try {
+        const res = await api("/device-identities", {
+          method: "POST",
+          body: {
+            actor: ADMIN_ACTOR,
+            device_id: dev.device_id,
+            display_name: dev.display_name || null,
+            allowed_scopes: csv(dev.scopes),
+          },
+        });
+        dev.newKey = res.device_key || "（未生成新密钥）";
+        toast("设备已保存");
+        await loadDevices();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    async function revokeDevice(d) {
+      try {
+        await api("/device-identities/" + d.device_id + "/revoke", {
+          method: "POST",
+          body: { actor: ADMIN_ACTOR },
+        });
+        toast("设备已撤销");
+        await loadDevices();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    async function scanCerts() {
+      try {
+        const r = await api("/device-identities/certificates/scan", {
+          method: "POST",
+          body: { actor: ADMIN_ACTOR },
+        });
+        toast(
+          "证书扫描：过期 " +
+            (r.expired_count ?? 0) +
+            " · 临期 " +
+            (r.expiring_count ?? 0)
+        );
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+
+    function onTab(t) {
+      tab.value = t;
+      if (t === "policy") loadRules();
+      else if (t === "approval") loadApProjects();
+      else if (t === "devices") loadDevices();
+    }
+    onMounted(loadRules);
+
+    return {
+      tab,
+      TABS,
+      onTab,
+      rules,
+      form,
+      sim,
+      loadRules,
+      editRule,
+      resetForm,
+      saveRule,
+      deleteRule,
+      simulate,
+      roleCtx,
+      roleBindings,
+      grant,
+      loadRoles,
+      grantRoles,
+      revokeRoles,
+      apProjects,
+      apProject,
+      quorum,
+      loadApproval,
+      saveApproval,
+      RISK_LEVELS,
+      devices,
+      includeRevoked,
+      dev,
+      loadDevices,
+      createDevice,
+      revokeDevice,
+      scanCerts,
+    };
+  },
+  template: `
+  <div>
+    <div class="page-head"><h1>治理</h1><span class="sub">权限 / 角色 / 审批 / 设备</span></div>
+    <div class="nav" style="margin-bottom:16px;flex:none">
+      <a v-for="t in TABS" :key="t.id" href="javascript:void 0"
+         :class="{active: tab===t.id}" @click="onTab(t.id)">{{ t.label }}</a>
+    </div>
+
+    <!-- 访问策略 -->
+    <div v-if="tab==='policy'" class="grid" style="grid-template-columns:1.4fr 1fr">
+      <div class="panel">
+        <h2>策略规则（{{ rules.length }}）</h2>
+        <table v-if="rules.length">
+          <thead><tr><th>效果</th><th>动作</th><th>资源</th><th>角色/Actor</th><th>优先级</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="r in rules" :key="r.id" @click="editRule(r)" style="cursor:pointer">
+              <td><span :class="r.effect==='deny'?'badge red':'badge green'">{{ r.effect }}</span></td>
+              <td><code>{{ r.action }}</code></td>
+              <td><code>{{ r.resource_type }}{{ r.resource_id?(':'+r.resource_id):'' }}</code></td>
+              <td class="muted" style="font-size:12px">{{ (r.roles||[]).join(',') }} {{ (r.actor_ids||[]).join(',') }}</td>
+              <td>{{ r.priority }}<span v-if="!r.enabled" class="badge" style="margin-left:6px">停用</span></td>
+              <td><button class="danger" @click.stop="deleteRule(r)">删</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty">还没有规则。deny 优先；无规则时回退 RBAC。</div>
+      </div>
+      <div>
+        <div class="panel" style="margin-bottom:14px">
+          <h2>{{ form.rule_id ? '编辑规则' : '新建规则' }}</h2>
+          <select v-model="form.effect"><option value="allow">allow（允许）</option><option value="deny">deny（拒绝）</option></select>
+          <input type="text" v-model="form.action" placeholder="动作 如 session.send 或 *" />
+          <input type="text" v-model="form.resource_type" placeholder="资源类型 如 session 或 *" />
+          <input type="text" v-model="form.resource_id" placeholder="资源 ID（可空）" />
+          <input type="text" v-model="form.roles" placeholder="角色（逗号分隔，可空）" />
+          <input type="text" v-model="form.actor_ids" placeholder="Actor IDs（逗号分隔，可空）" />
+          <input type="text" v-model="form.priority" placeholder="优先级（小=优先）" />
+          <input type="text" v-model="form.description" placeholder="说明（可空）" />
+          <label class="muted" style="display:block;margin-bottom:10px">
+            <input type="checkbox" v-model="form.enabled" style="width:auto;margin:0 6px 0 0" />启用
+          </label>
+          <div class="btn-row">
+            <button class="primary" @click="saveRule">保存</button>
+            <button @click="resetForm" v-if="form.rule_id">新建</button>
+          </div>
+        </div>
+        <div class="panel">
+          <h2>模拟器</h2>
+          <input type="text" v-model="sim.target_actor_id" placeholder="目标 Actor ID" />
+          <input type="text" v-model="sim.roles" placeholder="目标角色（逗号分隔）" />
+          <input type="text" v-model="sim.action" placeholder="动作" />
+          <input type="text" v-model="sim.resource_type" placeholder="资源类型" />
+          <button class="primary" @click="simulate">模拟</button>
+          <div v-if="sim.result" style="margin-top:12px">
+            <span :class="sim.result.decision && sim.result.decision.allowed ? 'badge green':'badge red'">
+              {{ sim.result.decision && sim.result.decision.allowed ? '允许' : '拒绝' }}
+            </span>
+            <pre style="white-space:pre-wrap;font-size:12px;color:var(--text-dim);margin-top:8px">{{ JSON.stringify(sim.result.decision, null, 2) }}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 角色 -->
+    <div v-if="tab==='roles'" class="panel">
+      <h2>聊天级角色绑定</h2>
+      <div class="btn-row" style="margin-bottom:12px">
+        <input type="text" v-model="roleCtx" placeholder="Chat Context ID" style="margin:0;max-width:340px" />
+        <button @click="loadRoles">加载</button>
+      </div>
+      <table v-if="roleBindings.length">
+        <thead><tr><th>Actor</th><th>角色</th><th></th></tr></thead>
+        <tbody>
+          <tr v-for="b in roleBindings" :key="b.actor_id">
+            <td><code>{{ b.actor_id }}</code></td>
+            <td>{{ (b.roles||[]).join(', ') }}</td>
+            <td><button class="danger" @click="revokeRoles(b)">撤销全部</button></td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else class="empty">输入 Chat Context ID 加载，或下方授予。</div>
+      <h2 style="margin-top:18px">授予角色</h2>
+      <div class="btn-row">
+        <input type="text" v-model="grant.target_actor_id" placeholder="目标 Actor ID" style="margin:0" />
+        <input type="text" v-model="grant.roles" placeholder="角色（逗号分隔）" style="margin:0" />
+        <button class="primary" @click="grantRoles" :disabled="!roleCtx">授予</button>
+      </div>
+    </div>
+
+    <!-- 审批策略 -->
+    <div v-if="tab==='approval'" class="panel">
+      <h2>项目审批 Quorum</h2>
+      <div class="btn-row" style="margin-bottom:14px">
+        <select v-model="apProject" @change="loadApproval" style="margin:0;max-width:340px">
+          <option value="">选择项目…</option>
+          <option v-for="p in apProjects" :key="p.id" :value="p.id">{{ p.name }}</option>
+        </select>
+      </div>
+      <div v-if="apProject" style="max-width:360px">
+        <div v-for="r in RISK_LEVELS" :key="r" style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <span style="width:90px" class="muted">{{ r }}</span>
+          <input type="text" v-model="quorum[r]" style="margin:0;width:90px" />
+          <span class="muted" style="font-size:12px" v-if="r==='high'||r==='critical'">需高危审批人</span>
+        </div>
+        <button class="primary" @click="saveApproval" style="margin-top:8px">保存</button>
+      </div>
+    </div>
+
+    <!-- 设备 -->
+    <div v-if="tab==='devices'" class="grid" style="grid-template-columns:1.4fr 1fr">
+      <div class="panel">
+        <h2 style="display:flex;align-items:center">设备身份（{{ devices.length }}）
+          <span style="flex:1"></span>
+          <label class="muted" style="font-size:12px;text-transform:none;font-weight:400">
+            <input type="checkbox" v-model="includeRevoked" @change="loadDevices" style="width:auto;margin:0 4px 0 0" />含已撤销</label>
+        </h2>
+        <table v-if="devices.length">
+          <thead><tr><th>Device</th><th>状态</th><th>Scopes</th><th>证书</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="d in devices" :key="d.id">
+              <td><code>{{ d.device_id }}</code><div class="muted" style="font-size:11px">{{ d.display_name }}</div></td>
+              <td><span :class="d.status==='active'?'badge green':'badge red'">{{ d.status }}</span></td>
+              <td class="muted" style="font-size:11px">{{ (d.allowed_scopes||[]).length }} 项</td>
+              <td>{{ (d.certificate_fingerprints||[]).length }}</td>
+              <td><button class="danger" @click="revokeDevice(d)" v-if="d.status==='active'">撤销</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty">还没有设备身份。</div>
+      </div>
+      <div class="panel">
+        <h2>新建设备</h2>
+        <input type="text" v-model="dev.device_id" placeholder="Device ID" />
+        <input type="text" v-model="dev.display_name" placeholder="显示名（可空）" />
+        <input type="text" v-model="dev.scopes" placeholder="scopes（逗号分隔，如 session_read,terminal_read）" />
+        <div class="btn-row">
+          <button class="primary" @click="createDevice">创建/更新</button>
+          <button @click="scanCerts">扫描证书健康</button>
+        </div>
+        <div v-if="dev.newKey" style="margin-top:12px">
+          <div class="muted" style="font-size:12px">生成的 device key（仅显示一次）：</div>
+          <code style="word-break:break-all;font-size:12px">{{ dev.newKey }}</code>
+        </div>
+      </div>
+    </div>
+  </div>`,
+};
+
 const AuditView = stub("审计", "审计链 / 语义事件检索");
 const SystemView = stub("系统", "健康 / 就绪 / 终端生命周期 / Bot 投递");
 
@@ -346,5 +803,4 @@ const App = {
 
 const app = createApp(App);
 app.component("login-view", LoginView);
-ROUTES.forEach((r) => app.component(r.comp.name || r.path, r.comp));
 app.mount("#app");
