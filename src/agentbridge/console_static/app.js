@@ -1082,7 +1082,138 @@ const AuditView = {
     </div>
   </div>`,
 };
-const SystemView = stub("系统", "健康 / 就绪 / 终端生命周期 / Bot 投递");
+const STATUS_BADGE = {
+  pass: "badge green", ok: "badge green", healthy: "badge green", running: "badge green",
+  warn: "badge amber", degraded: "badge amber",
+  fail: "badge red", error: "badge red", unhealthy: "badge red",
+};
+function sbadge(s) {
+  return STATUS_BADGE[s] || "badge";
+}
+
+const SystemView = {
+  setup() {
+    const health = ref(null);
+    const readiness = ref(null);
+    const lifecycle = ref(null);
+    const retry = ref(null);
+    const deliveries = ref([]);
+    const loading = ref(false);
+    const onlyIssues = ref(true);
+
+    async function loadAll() {
+      loading.value = true;
+      try {
+        health.value = await api("/health").catch(() => null);
+        readiness.value = await api("/readiness").catch(() => null);
+        lifecycle.value = await api("/terminal/lifecycle-monitor").catch(() => null);
+        retry.value = await api("/bot-gateway/retry-worker").catch(() => null);
+        deliveries.value = (await api("/bot-gateway/deliveries").catch(() => [])) || [];
+      } finally {
+        loading.value = false;
+      }
+    }
+    const counts = computed(
+      () => (readiness.value && readiness.value.summary && readiness.value.summary.counts) || {}
+    );
+    const checks = computed(() => {
+      const all = (readiness.value && readiness.value.checks) || [];
+      return onlyIssues.value ? all.filter((c) => c.status !== "pass") : all;
+    });
+
+    onMounted(loadAll);
+
+    return {
+      health,
+      readiness,
+      lifecycle,
+      retry,
+      deliveries,
+      loading,
+      onlyIssues,
+      counts,
+      checks,
+      loadAll,
+      sbadge,
+      fmtTs,
+    };
+  },
+  template: `
+  <div>
+    <div class="page-head">
+      <h1>系统</h1>
+      <span class="sub">健康 / 就绪 / 终端生命周期 / Bot 投递</span>
+      <span class="spacer" style="flex:1"></span>
+      <button @click="loadAll" :disabled="loading">
+        <span v-if="loading" class="spin"></span><span v-else>刷新</span>
+      </button>
+    </div>
+
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));margin-bottom:16px">
+      <div class="panel" v-if="health">
+        <h2>健康 <span :class="sbadge(health.status)">{{ health.status }}</span></h2>
+        <div class="kv-grid">
+          <div><span class="k">存储</span>{{ health.storage }}</div>
+          <div><span class="k">项目</span>{{ health.projects }}</div>
+          <div><span class="k">会话</span>{{ health.sessions }}</div>
+        </div>
+      </div>
+
+      <div class="panel" v-if="readiness">
+        <h2>就绪 <span :class="sbadge(readiness.status)">{{ readiness.status }}</span></h2>
+        <div class="kv-grid">
+          <div><span class="k">通过</span><span class="badge green">{{ counts.pass||0 }}</span></div>
+          <div><span class="k">告警</span><span class="badge amber">{{ counts.warn||0 }}</span></div>
+          <div><span class="k">失败</span><span class="badge red">{{ counts.fail||0 }}</span></div>
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:8px">检查于 {{ fmtTs(readiness.checked_at) }}</div>
+      </div>
+
+      <div class="panel" v-if="lifecycle">
+        <h2>终端生命周期 <span :class="lifecycle.running?'badge green':'badge red'">{{ lifecycle.running?'监控中':'已停' }}</span></h2>
+        <div class="kv-grid">
+          <div><span class="k">跟踪会话</span>{{ lifecycle.tracked_sessions }}</div>
+          <div><span class="k">轮询次数</span>{{ lifecycle.run_count }}</div>
+          <div><span class="k">退出/丢失</span>{{ lifecycle.reported_exit_count }} / {{ lifecycle.reported_lost_count }}</div>
+          <div><span class="k">自动重启</span>{{ lifecycle.auto_restart_on_lost?'开':'关' }}（{{ lifecycle.auto_restart_attempt_count }} 次）</div>
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:8px" v-if="lifecycle.last_error">最近错误：{{ lifecycle.last_error }}</div>
+      </div>
+
+      <div class="panel" v-if="retry">
+        <h2>Bot 投递 <span :class="retry.running?'badge green':(retry.enabled?'badge amber':'badge')">{{ retry.running?'重试中':(retry.enabled?'已启用':'未启用') }}</span></h2>
+        <div class="kv-grid">
+          <div><span class="k">投递记录</span>{{ deliveries.length }}</div>
+          <div><span class="k">重试间隔</span>{{ retry.interval_seconds }}s</div>
+          <div><span class="k">上次处理</span>{{ retry.last_record_count!=null?retry.last_record_count:'—' }}</div>
+          <div><span class="k">上次运行</span>{{ retry.last_run_at?fmtTs(retry.last_run_at):'—' }}</div>
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:8px" v-if="retry.last_error">最近错误：{{ retry.last_error }}</div>
+      </div>
+    </div>
+
+    <div class="panel" v-if="readiness">
+      <h2 style="display:flex;align-items:center;gap:10px">就绪检查明细
+        <span class="spacer" style="flex:1"></span>
+        <label class="muted" style="font-size:12px;text-transform:none;font-weight:400">
+          <input type="checkbox" v-model="onlyIssues" style="width:auto;margin:0 4px 0 0" />仅看告警/失败
+        </label>
+      </h2>
+      <table v-if="checks.length">
+        <thead><tr><th>检查项</th><th>分类</th><th>状态</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr v-for="c in checks" :key="c.id">
+            <td><code>{{ c.id }}</code></td>
+            <td class="muted">{{ c.category }}</td>
+            <td><span :class="sbadge(c.status)">{{ c.status }}</span></td>
+            <td class="muted" style="font-size:12px">{{ c.summary }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else class="empty">{{ onlyIssues ? '没有告警或失败项 🎉' : '暂无检查项。' }}</div>
+    </div>
+  </div>`,
+};
 
 const ROUTES = [
   { path: "/ops", label: "运维", comp: OperationsView },
