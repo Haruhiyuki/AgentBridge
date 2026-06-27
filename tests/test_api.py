@@ -9331,3 +9331,74 @@ def test_filesystem_directories_browse_is_bounded(tmp_path, monkeypatch):
     # 越界保护：传根外路径回落到根。
     d2 = client.get("/api/v1/filesystem/directories", params={"path": "/etc"}).json()
     assert d2["path"] == str(tmp_path.resolve())
+
+
+def _start_terminal(client, session_id, actor):
+    r = client.post(
+        f"/api/v1/sessions/{session_id}/terminal/start",
+        json={"actor": actor, "trace_id": "t-start"},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_terminal_stop_endpoint_stops_backend(tmp_path):
+    client = TestClient(create_app())
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    sid = _create_session_with_project(
+        client, tmp_path, chat_space_id="g-stop", prefix="stop", name="S"
+    )
+    _start_terminal(client, sid, actor)
+    assert client.get(f"/api/v1/sessions/{sid}/terminal/status").json()["running"] is True
+    r = client.post(f"/api/v1/sessions/{sid}/terminal/stop", json={"id": "usr_1", "roles": ["maintainer"]})
+    assert r.status_code == 200, r.text
+    # 停掉后端后状态立刻反映「未运行」。
+    assert client.get(f"/api/v1/sessions/{sid}/terminal/status").json()["running"] is False
+
+
+def test_close_session_also_stops_terminal(tmp_path):
+    client = TestClient(create_app())
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    sid = _create_session_with_project(
+        client, tmp_path, chat_space_id="g-close", prefix="close", name="S"
+    )
+    _start_terminal(client, sid, actor)
+    assert client.get(f"/api/v1/sessions/{sid}/terminal/status").json()["running"] is True
+    r = client.post(f"/api/v1/sessions/{sid}/close", json={"id": "usr_1", "roles": ["maintainer"]})
+    assert r.status_code == 200, r.text
+    # 关闭会话同时杀掉终端后端。
+    assert client.get(f"/api/v1/sessions/{sid}/terminal/status").json()["running"] is False
+
+
+def test_terminal_open_resumes_after_stop(tmp_path):
+    client = TestClient(create_app())
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    sid = _create_session_with_project(
+        client, tmp_path, chat_space_id="g-open", prefix="open", name="S"
+    )
+    _start_terminal(client, sid, actor)  # 首次启动用基础命令
+    client.post(f"/api/v1/sessions/{sid}/terminal/stop", json={"id": "usr_1", "roles": ["maintainer"]})
+    # 打开终端：已停 → 带 resume 命令重新拉起。
+    r = client.post(f"/api/v1/sessions/{sid}/terminal/open", json={"id": "usr_1", "roles": ["maintainer"]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["action"] == "started"
+    assert body["command"].endswith("--continue")  # claude resume
+    assert client.get(f"/api/v1/sessions/{sid}/terminal/status").json()["running"] is True
+
+
+def test_terminal_restart_resume_flag_relaunches_with_continue(tmp_path):
+    client = TestClient(create_app())
+    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    sid = _create_session_with_project(
+        client, tmp_path, chat_space_id="g-restart", prefix="restart2", name="S"
+    )
+    _start_terminal(client, sid, actor)
+    r = client.post(
+        f"/api/v1/sessions/{sid}/terminal/restart",
+        json={"actor": actor, "resume": True, "trace_id": "t"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["action"] == "restarted"
+    assert body["command"].endswith("--continue")
+    assert client.get(f"/api/v1/sessions/{sid}/terminal/status").json()["running"] is True

@@ -312,6 +312,22 @@ AGENT_ADAPTER_HANDSHAKE_COMMAND_ENV_BY_TYPE: dict[AgentType, str] = {
 DEFAULT_VERSION_PROBE_AGENT_TYPES = {AgentType.CLAUDE, AgentType.CODEX}
 STRUCTURED_ADAPTER_AGENT_TYPES = {AgentType.CLAUDE, AgentType.CODEX}
 
+# 各 agent 的「续上次对话」命令后缀：重启/重开终端时用它续接，而非另起新对话。
+# Claude: `--continue` 续 cwd 内最近一次对话；Codex: `resume --last` 续最近一次会话。
+AGENT_RESUME_SUFFIX_BY_TYPE: dict[AgentType, str] = {
+    AgentType.CLAUDE: "--continue",
+    AgentType.CODEX: "resume --last",
+}
+
+
+def resume_command_for(agent_type: AgentType, base_command: str) -> str:
+    """在基础启动命令后拼接该 agent 的 resume 后缀；不支持 resume 的 agent 原样返回。"""
+    suffix = AGENT_RESUME_SUFFIX_BY_TYPE.get(agent_type)
+    base = base_command.strip()
+    if not suffix or not base:
+        return base_command
+    return f"{base} {suffix}"
+
 AGENT_ADAPTER_KIND_BY_TYPE: dict[AgentType, str] = {
     AgentType.CLAUDE: "claude_hooks",
     AgentType.CODEX: "codex_app_server",
@@ -1315,6 +1331,9 @@ class FakeTerminalBackend:
             output_retained_chars=len(snapshot),
         )
 
+    def stop(self, *, session_id: str) -> None:
+        self.started.pop(session_id, None)
+
     def _require_started(self, session_id: str) -> None:
         if session_id not in self.started:
             raise AgentBridgeError(
@@ -1406,6 +1425,14 @@ class TmuxTerminalBackend:
             output_cursor=cursor,
             output_retained_chars=len(snapshot),
         )
+
+    def stop(self, *, session_id: str) -> None:
+        """杀掉该会话的 tmux 会话（连同里面的 agent 进程）。会话不存在则静默返回。"""
+        name = self._tmux_name(session_id)
+        if not self._has_session(name):
+            return
+        with suppress(AgentBridgeError):
+            self._run(["kill-session", "-t", name])
 
     def attach_command(self, *, session_id: str) -> str:
         """返回一条可在桌面终端里执行、用于 attach 到该会话 tmux 的命令（供可见窗口接管）。
@@ -1880,6 +1907,7 @@ class TerminalAgentService:
         trace_id: str,
         restart_of_generation: int | None = None,
         restart_reason: str | None = None,
+        open_window: bool | None = None,
     ) -> int:
         session = self.control.repository.get_session(session_id)
         launch_profile = self._resolve_start_profile(session, command)
@@ -1926,20 +1954,35 @@ class TerminalAgentService:
             session_id=session_id,
             trace_id=f"{trace_id}:offline-protection",
         )
-        self._maybe_open_visible_terminal(session_id)
+        # open_window: None=自动（受 auto_open 与每会话一次限制）；True=强制开窗；False=不开窗。
+        if open_window is True:
+            self.open_terminal_window(session_id, force=True)
+        elif open_window is None:
+            self._maybe_open_visible_terminal(session_id)
         return generation
 
     def _maybe_open_visible_terminal(self, session_id: str) -> None:
-        """会话启动后打开可见桌面终端 attach（仅当后端支持 attach，如 tmux）。每会话只开一次。"""
-        if not self.auto_open_terminal or session_id in self._opened_visible_terminals:
+        """会话启动后自动打开可见桌面终端（仅当 auto_open 开启且该会话尚未开过窗）。"""
+        if not self.auto_open_terminal:
             return
+        self.open_terminal_window(session_id, force=False)
+
+    def open_terminal_window(self, session_id: str, *, force: bool = True) -> bool:
+        """打开（或重开）一个 attach 到该会话 tmux 的可见桌面窗口。
+
+        force=False 时每会话只开一次（供 auto_open 自动开窗）；force=True 时无视一次性限制，
+        用于控制台「打开/重开终端」这类显式动作——重新 attach 到仍存活的 tmux 即等于 resume。
+        返回是否成功打开。后端不支持 attach（如 PTY/fake）或开窗失败则返回 False。
+        """
+        if not force and session_id in self._opened_visible_terminals:
+            return False
         attach_command = getattr(self.backend, "attach_command", None)
         if attach_command is None:
             self._terminal_open_last_error = "backend_attach_unsupported"
-            return
+            return False
         command = attach_command(session_id=session_id)
         if not command:
-            return
+            return False
         try:
             if self._terminal_opener is not None:
                 self._terminal_opener(command)
@@ -1951,8 +1994,94 @@ class TerminalAgentService:
                 )
             self._opened_visible_terminals.add(session_id)
             self._terminal_open_last_error = None
+            return True
         except Exception as exc:  # 打开窗口失败不应阻断会话启动。
             self._terminal_open_last_error = str(exc)
+            return False
+
+    def stop_session(
+        self,
+        *,
+        session_id: str,
+        trace_id: str,
+        reason: str = "manual_stop",
+    ) -> dict[str, object]:
+        """停止会话终端：杀掉后端（tmux/PTY）进程并清理可见窗口标记。
+
+        状态由后端直接反映（tmux 会话不在 = 未运行），故无需额外发事件；生命周期监控下一拍
+        会补 ``terminal.exited``。返回操作摘要。
+        """
+        self.control.repository.get_session(session_id)
+        stopper = getattr(self.backend, "stop", None) or getattr(
+            self.backend, "terminate", None
+        )
+        stopped = False
+        if stopper is not None:
+            try:
+                try:
+                    stopper(session_id=session_id)
+                except TypeError:
+                    stopper(session_id)
+                stopped = True
+            except Exception as exc:
+                self._terminal_open_last_error = str(exc)
+        self._opened_visible_terminals.discard(session_id)
+        self._terminal_started_monotonic.pop(session_id, None)
+        return {"stopped": stopped, "reason": reason}
+
+    def _resume_start_command(self, session_id: str) -> str:
+        """重启/重开时的启动命令：会话此前真正启动过则用 resume 命令续上次对话，否则用基础命令。"""
+        session = self.control.repository.get_session(session_id)
+        base = self.agent_launch_config.profile_for(session.agent_type).command
+        started_before = any(
+            event.type == "terminal.started"
+            for event in self.control.repository.list_events(
+                session_id=session_id, limit=1_000_000
+            )
+        )
+        if not started_before:
+            return base
+        return resume_command_for(session.agent_type, base)
+
+    def open_or_resume_terminal(
+        self, *, session_id: str, trace_id: str
+    ) -> dict[str, object]:
+        """控制台「打开终端」：tmux 仍在则重新 attach 开窗（= resume）；已停则带 resume 命令拉起 agent 再开窗。"""
+        status = self.status(session_id=session_id, trace_id=trace_id)
+        if status.started and status.running:
+            opened = self.open_terminal_window(session_id, force=True)
+            return {"action": "reattached", "opened": opened, "running": True}
+        command = self._resume_start_command(session_id)
+        generation = self.start_session(
+            session_id=session_id,
+            command=command,
+            trace_id=trace_id,
+            restart_reason="console_open",
+            open_window=True,
+        )
+        return {
+            "action": "started",
+            "running": True,
+            "generation": generation,
+            "command": command,
+        }
+
+    def restart_terminal_with_resume(
+        self, *, session_id: str, trace_id: str
+    ) -> dict[str, object]:
+        """控制台「重启终端」：先杀掉现有 tmux+agent，再带 resume 命令重新拉起并强制开窗。"""
+        self.stop_session(
+            session_id=session_id, trace_id=trace_id, reason="console_restart"
+        )
+        command = self._resume_start_command(session_id)
+        generation = self.start_session(
+            session_id=session_id,
+            command=command,
+            trace_id=trace_id,
+            restart_reason="console_restart",
+            open_window=True,
+        )
+        return {"action": "restarted", "generation": generation, "command": command}
 
     def resolve_start_command(
         self,

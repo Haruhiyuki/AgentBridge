@@ -1854,3 +1854,13 @@ def test_pty_backend_resets_when_cursor_falls_behind_retained_output(tmp_path):
         assert fresh_chunk.data == ""
     finally:
         backend.terminate(session_id)
+
+
+def test_resume_command_for_per_agent():
+    from agentbridge.domain import AgentType
+    from agentbridge.terminal_agent import resume_command_for
+
+    assert resume_command_for(AgentType.CLAUDE, "claude") == "claude --continue"
+    assert resume_command_for(AgentType.CODEX, "/bin/codex") == "/bin/codex resume --last"
+    # 不支持 resume 的 agent 原样返回。
+    assert resume_command_for(AgentType.GENERIC_TUI, "sh") == "sh"

@@ -10,7 +10,7 @@ import json
 import os
 import shlex
 import subprocess
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -386,6 +386,9 @@ class RestartTerminalRequest(BaseModel):
 
     actor: ActorPayload = Field(default_factory=ActorPayload)
     command: str | None = None
+    # resume=True：杀掉重开并带 agent 的 resume 命令续上次对话 + 强制开窗（控制台「重启」用）。
+    # 默认 False 时沿用旧契约：复用/按给定命令重启，不注入 resume、不强制开窗。
+    resume: bool = False
     trace_id: str = "api"
 
 
@@ -2465,12 +2468,19 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         session_id: str,
         payload: ActorPayload,
         control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
     ):
+        # 先标记会话关闭（生命周期监控随即跳过它），再杀掉终端后端（tmux+agent），
+        # 这样控制台/状态会立刻反映「已停」，而不是后端仍在跑、状态没变化。
         session = control.close_session(
             actor=payload.to_actor(),
             session_id=session_id,
             trace_id="api",
         )
+        with suppress(Exception):
+            terminal_service.stop_session(
+                session_id=session_id, trace_id="api", reason="session_closed"
+            )
         return session.model_dump(mode="json")
 
     @app.post("/api/v1/sessions/{session_id}/lease/acquire")
@@ -2905,24 +2915,63 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
         terminal_service: TerminalAgentService = Depends(get_terminal),
     ):
         actor = payload.actor.to_actor()
-        command = terminal_service.resolve_restart_command(
-            session_id=session_id,
-            command=payload.command,
-        )
         control.require_terminal_control(
             actor,
             session_id=session_id,
             attributes={
                 "operation": "terminal_restart",
-                "command": command,
                 "uses_previous_command": payload.command is None,
+                "resume": payload.resume,
             },
+        )
+        # resume=True：控制台「重启」——杀掉重开、带 resume 续上次对话、强制开窗。
+        if payload.resume:
+            return terminal_service.restart_terminal_with_resume(
+                session_id=session_id,
+                trace_id=payload.trace_id,
+            )
+        # 默认沿用旧契约：复用上次/按给定命令重启（恢复场景），不注入 resume。
+        command = terminal_service.resolve_restart_command(
+            session_id=session_id,
+            command=payload.command,
         )
         return terminal_service.restart_session(
             session_id=session_id,
             command=command,
             trace_id=payload.trace_id,
         ).to_payload()
+
+    @app.post("/api/v1/sessions/{session_id}/terminal/open")
+    def open_terminal(
+        session_id: str,
+        payload: ActorPayload,
+        control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
+    ):
+        """打开/重开该会话的可见终端窗口：tmux 仍在则重新 attach（=resume），已停则带 resume 拉起 agent。"""
+        control.require_terminal_control(
+            payload.to_actor(),
+            session_id=session_id,
+            attributes={"operation": "terminal_open"},
+        )
+        return terminal_service.open_or_resume_terminal(
+            session_id=session_id, trace_id="api"
+        )
+
+    @app.post("/api/v1/sessions/{session_id}/terminal/stop")
+    def stop_terminal(
+        session_id: str,
+        payload: ActorPayload,
+        control: ControlPlane = Depends(get_control),
+        terminal_service: TerminalAgentService = Depends(get_terminal),
+    ):
+        """停止该会话的终端后端（杀 tmux+agent），但不关闭会话本身。"""
+        control.require_terminal_control(
+            payload.to_actor(),
+            session_id=session_id,
+            attributes={"operation": "terminal_stop"},
+        )
+        return terminal_service.stop_session(session_id=session_id, trace_id="api")
 
     @app.post("/api/v1/sessions/{session_id}/terminal/offline-protection")
     def set_terminal_offline_protection(
