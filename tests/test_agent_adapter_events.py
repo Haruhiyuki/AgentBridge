@@ -314,6 +314,9 @@ def test_claude_ask_user_question_extracts_prompt_and_options():
     prompt2, options2 = claude_ask_user_question(multi)
     assert "1) [A] 问题一?（可多选）" in prompt2
     assert "甲" in prompt2 and "2) [B] 问题二?" in prompt2 and "乙" in prompt2
+    # 选项用字母编号，便于「题号+字母」分题作答；末行给出作答示例与多选提示。
+    assert "A. 甲" in prompt2 and "A. 乙" in prompt2
+    assert "1A 2A" in prompt2 and "1AC" in prompt2
     assert options2 == []
 
     # 非 AskUserQuestion（无 questions）→ 不干预。

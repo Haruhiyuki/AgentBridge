@@ -1856,6 +1856,7 @@ class TerminalAgentService:
         idle_min_active_seconds: float | None = None,
         stuck_turn_reconcile: bool | None = None,
         stuck_turn_reconcile_seconds: float | None = None,
+        stuck_turn_idle_seconds: float | None = None,
         submit_warmup_seconds: float | None = None,
         claude_hook_deploy: ClaudeHookDeploymentConfig | None = None,
         auto_open_terminal: bool | None = None,
@@ -1922,6 +1923,17 @@ class TerminalAgentService:
                 or hook_wait_estimate + 120.0
             )
         )
+        # 第二类僵尸：交互答完后 Claude 继续、但 Stop hook 没把 turn.completed 发回（此时已无
+        # pending 交互，上面的阈值兜不住）。用"PTY 输出游标静默 N 秒"判定 Claude 已回到空闲提示符
+        # ——Claude Code 只要在动（思考/跑工具/流式输出）就一直刷新动画光标，唯有真正空闲在 ❯
+        # 提示符时游标才静止，故静默是"该轮已结束"的可靠信号。仅在无 pending 交互时启用，避免
+        # 与"正在合法等待人类作答"的阻塞窗口冲突。
+        self.stuck_turn_idle_seconds = (
+            stuck_turn_idle_seconds
+            if stuck_turn_idle_seconds is not None
+            else float(os.environ.get("AGENTBRIDGE_STUCK_TURN_IDLE_SECONDS", "90") or 90)
+        )
+        self._turn_stuck_watch: dict[str, dict[str, object]] = {}
         # 终端刚启动时原生 TUI 还在初始化，过早写入会丢键/不被当作回车；推进器在终端
         # 启动后先等待这段预热时间再提交任务（默认 0，生产经环境变量设为数秒）。
         self.submit_warmup_seconds = (
@@ -2599,11 +2611,12 @@ class TerminalAgentService:
         now: object | None = None,
         trace_id: str = "turn-stuck",
     ) -> list[dict[str, object]]:
-        """对"挂着 active_turn 且交互早已超时"的 Claude 会话补发收尾，解开僵尸卡死。
+        """对挂着 active_turn 但实际已结束的 Claude 会话补发收尾，解开僵尸卡死。
 
-        见 ``__init__`` 中 ``stuck_turn_reconcile`` 的说明：当 Claude 的交互式提问 hook
-        等超时被判 declined、回到空闲提示符，但 Stop hook 没把 turn.completed 发回时，
-        active_turn 永远挂着、堵死队列。本方法兜底：取消过期 pending 交互 + 落 turn.completed。"""
+        覆盖两类 Stop hook 没回传 turn.completed 的僵尸（见 ``__init__`` 说明）：
+        ① 交互早已超过 hook 等待上限仍 pending（提问超时被判 declined、回到空闲）；
+        ② 交互已答完、无 pending，但 Claude 续写后 Stop 仍没回传——用 PTY 输出游标静默判定。
+        两者都补发 turn.completed（必要时先取消过期交互），让会话回 IDLE、队列前进。"""
         if not self.stuck_turn_reconcile:
             return []
         current = utc_now() if now is None else now
@@ -2629,12 +2642,15 @@ class TerminalAgentService:
         session = self.control.repository.get_session(session_id)
         # 仅处理依赖 Stop hook 收尾的 Claude；Codex/通用终端有空闲启发式，不在此列。
         if session.agent_type != AgentType.CLAUDE:
+            self._turn_stuck_watch.pop(session_id, None)
             return None
         turn_id = session.active_turn_id
         if turn_id is None:
+            self._turn_stuck_watch.pop(session_id, None)
             return None
         turn = self.control.repository.get_turn(turn_id)
         if turn.status != TurnStatus.RUNNING:
+            self._turn_stuck_watch.pop(session_id, None)
             return None
         pendings = [
             interaction
@@ -2643,25 +2659,76 @@ class TerminalAgentService:
             )
             if interaction.turn_id in (None, turn_id)
         ]
-        if not pendings:
+        if pendings:
+            # 存在 pending 交互：可能是 hook 仍在合法阻塞等待人类作答，不能用游标静默去收尾
+            # （阻塞期间终端也可能静止）；只在交互已超过 hook 等待上限时才判定为超时僵尸。
+            self._turn_stuck_watch.pop(session_id, None)
+            oldest = min(pendings, key=lambda interaction: interaction.created_at)
+            age = (now - oldest.created_at).total_seconds()
+            if age < self.stuck_turn_reconcile_seconds:
+                return None
+            runner_actor = Actor(id="system:turn-runner", roles={"maintainer"})
+            cancelled: list[str] = []
+            for interaction in pendings:
+                with suppress(AgentBridgeError):
+                    self.control.cancel_interaction(
+                        actor=runner_actor,
+                        interaction_id=interaction.id,
+                        trace_id=f"{trace_id}:cancel-stale",
+                        reason="adapter_wait_timeout_reconcile",
+                    )
+                    cancelled.append(interaction.id)
+            return self._reconcile_stuck_turn(
+                session_id=session_id,
+                turn_id=turn_id,
+                trace_id=trace_id,
+                reason="stuck_interaction_reconcile",
+                extra={
+                    "interaction_age_seconds": round(age, 3),
+                    "cancelled_interactions": cancelled,
+                },
+            )
+        # 无 pending 交互：用 PTY 输出游标静默 N 秒判定"Claude 已回到空闲提示符、该轮已结束"。
+        status = self.backend.status(session_id=session_id)
+        if not status.started or not status.running:
+            # 终端已死/未起：交由 advance_queue 的"终端已死"自愈处理，这里不动。
+            self._turn_stuck_watch.pop(session_id, None)
             return None
-        oldest = min(pendings, key=lambda interaction: interaction.created_at)
-        age = (now - oldest.created_at).total_seconds()
-        if age < self.stuck_turn_reconcile_seconds:
+        cursor = status.output_cursor
+        watch = self._turn_stuck_watch.get(session_id)
+        if watch is None or watch.get("turn_id") != turn_id:
+            self._turn_stuck_watch[session_id] = {
+                "turn_id": turn_id,
+                "cursor": cursor,
+                "idle_since": now,
+            }
             return None
-        # 阈值已超过 hook 等待上限 → 该提问的 emit_and_wait 必然早已超时返回、agent 回到空闲：
-        # 取消这些再也无人接管的 pending 交互，并补发 turn.completed 让队列前进。
-        runner_actor = Actor(id="system:turn-runner", roles={"maintainer"})
-        cancelled: list[str] = []
-        for interaction in pendings:
-            with suppress(AgentBridgeError):
-                self.control.cancel_interaction(
-                    actor=runner_actor,
-                    interaction_id=interaction.id,
-                    trace_id=f"{trace_id}:cancel-stale",
-                    reason="adapter_wait_timeout_reconcile",
-                )
-                cancelled.append(interaction.id)
+        if cursor != watch.get("cursor"):
+            watch["cursor"] = cursor
+            watch["idle_since"] = now
+            return None
+        idle_for = (now - watch["idle_since"]).total_seconds()
+        if idle_for < self.stuck_turn_idle_seconds:
+            return None
+        self._turn_stuck_watch.pop(session_id, None)
+        return self._reconcile_stuck_turn(
+            session_id=session_id,
+            turn_id=turn_id,
+            trace_id=trace_id,
+            reason="stuck_idle_reconcile",
+            extra={"idle_seconds": round(idle_for, 3)},
+        )
+
+    def _reconcile_stuck_turn(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        trace_id: str,
+        reason: str,
+        extra: dict[str, object],
+    ) -> dict[str, object]:
+        """补发 turn.completed 收尾一个僵尸 turn，让会话回 IDLE、队列得以前进。"""
         self.control.ingest_session_event(
             session_id=session_id,
             event_type="turn.completed",
@@ -2669,18 +2736,9 @@ class TerminalAgentService:
             trace_id=f"{trace_id}:reconcile",
             turn_id=turn_id,
             idempotency_key=f"turn-stuck-reconcile:{turn_id}",
-            payload={
-                "completion": "stuck_interaction_reconcile",
-                "interaction_age_seconds": round(age, 3),
-                "cancelled_interactions": cancelled,
-            },
+            payload={"completion": reason, **extra},
         )
-        return {
-            "session_id": session_id,
-            "turn_id": turn_id,
-            "interaction_age_seconds": age,
-            "cancelled_interactions": cancelled,
-        }
+        return {"session_id": session_id, "turn_id": turn_id, "reason": reason, **extra}
 
     def _extract_terminal_answer(self, session_id: str, agent_type: AgentType) -> str:
         """从原生 TUI 抽取最后一段回答（目前支持 Codex）。失败返回空串。"""

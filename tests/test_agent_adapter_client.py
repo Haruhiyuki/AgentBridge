@@ -782,6 +782,75 @@ def test_formats_claude_question_answer_as_pre_tool_use_updated_input():
     }
 
 
+def _ask_question_payload(answer: str, questions: list[dict]) -> dict:
+    return {
+        "decision": "answered",
+        "answer": answer,
+        "adapter_event_type": "AskUserQuestion",
+        "request_payload": {"raw_event": {"tool_input": {"questions": questions}}},
+    }
+
+
+def test_multi_question_answer_maps_each_letter_to_its_own_option_label():
+    """『1A 2B 3C』应按题分别映射到各题真实选项标签，而非把同一答案套给所有问题。"""
+    questions = [
+        {
+            "question": "要补充什么?",
+            "options": [{"label": "逐小时预报"}, {"label": "生活指数"}, {"label": "不用补充"}],
+            "multiSelect": True,
+        },
+        {
+            "question": "什么格式?",
+            "options": [{"label": "保持Markdown"}, {"label": "纯文本TXT"}],
+        },
+        {
+            "question": "要定期更新吗?",
+            "options": [{"label": "不用"}, {"label": "每天早上"}, {"label": "出行前提醒"}],
+        },
+    ]
+    formatted = format_adapter_response_for_agent(
+        AgentType.CLAUDE, _ask_question_payload("1A 2B 3C", questions)
+    )
+    answers = formatted["stdout_json"]["hookSpecificOutput"]["updatedInput"]["answers"]
+    assert answers == {
+        "要补充什么?": "逐小时预报",
+        "什么格式?": "纯文本TXT",
+        "要定期更新吗?": "出行前提醒",
+    }
+
+
+def test_multi_select_question_joins_multiple_chosen_labels():
+    """同题多选『1AC』应解析成该题的两个选项标签，用「, 」连接。"""
+    questions = [
+        {
+            "question": "要补充什么?",
+            "options": [{"label": "逐小时预报"}, {"label": "生活指数"}, {"label": "空气质量"}],
+            "multiSelect": True,
+        },
+        {"question": "什么格式?", "options": [{"label": "Markdown"}, {"label": "TXT"}]},
+    ]
+    formatted = format_adapter_response_for_agent(
+        AgentType.CLAUDE, _ask_question_payload("1AC 2B", questions)
+    )
+    answers = formatted["stdout_json"]["hookSpecificOutput"]["updatedInput"]["answers"]
+    assert answers == {"要补充什么?": "逐小时预报, 空气质量", "什么格式?": "TXT"}
+
+
+def test_single_question_accepts_bare_letter_and_option_text():
+    questions = [
+        {"question": "选哪个环境?", "options": [{"label": "staging"}, {"label": "prod"}]}
+    ]
+    bare_letter = format_adapter_response_for_agent(
+        AgentType.CLAUDE, _ask_question_payload("B", questions)
+    )["stdout_json"]["hookSpecificOutput"]["updatedInput"]["answers"]
+    assert bare_letter == {"选哪个环境?": "prod"}
+
+    by_text = format_adapter_response_for_agent(
+        AgentType.CLAUDE, _ask_question_payload("staging", questions)
+    )["stdout_json"]["hookSpecificOutput"]["updatedInput"]["answers"]
+    assert by_text == {"选哪个环境?": "staging"}
+
+
 def test_formats_codex_response_as_agentbridge_action_envelope():
     formatted = format_adapter_response_for_agent(
         AgentType.CODEX,

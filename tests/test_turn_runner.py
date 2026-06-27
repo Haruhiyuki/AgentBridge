@@ -476,6 +476,30 @@ def test_stuck_interaction_turn_is_reconciled(tmp_path):
     )
 
 
+def test_stuck_idle_turn_reconciled_without_pending_interaction(tmp_path):
+    """答完交互后 Claude 续写、但 Stop 没回传、且已无 pending 交互的僵尸：靠输出游标静默兜底收尾。"""
+    control, terminal, actor, session = bootstrap(tmp_path, stuck_turn_idle_seconds=30)
+    terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start")
+    turn = control.enqueue_turn(actor=actor, session_id=session.id, prompt="任务", trace_id="t1")
+    terminal.advance_queue(session_id=session.id)
+    assert control.repository.get_turn(turn.id).status == TurnStatus.RUNNING
+
+    t0 = utc_now()
+    # 第一拍：建立游标基线，不收尾。
+    assert terminal.check_stuck_interaction_turns(now=t0) == []
+    # 输出有变化（游标推进）→ 刷新静默起点，不收尾。
+    terminal.backend.write(
+        session_id=session.id, data="still working", kind=TerminalInputKind.TEXT
+    )
+    assert terminal.check_stuck_interaction_turns(now=t0 + timedelta(seconds=40)) == []
+    assert control.repository.get_turn(turn.id).status == TurnStatus.RUNNING
+    # 此后输出静默超过阈值 → 判定已回到空闲提示符，补发收尾。
+    out = terminal.check_stuck_interaction_turns(now=t0 + timedelta(seconds=80))
+    assert len(out) == 1 and out[0]["turn_id"] == turn.id and out[0]["reason"] == "stuck_idle_reconcile"
+    assert control.repository.get_turn(turn.id).status == TurnStatus.COMPLETED
+    assert control.repository.get_session(session.id).status == SessionStatus.IDLE
+
+
 def test_stuck_reconcile_skips_codex_and_disabled(tmp_path):
     """兜底仅针对依赖 Stop hook 的 Claude；Codex 走空闲启发式，且开关关闭时完全不动。"""
     # 关闭开关：即便有超期交互也不收尾。

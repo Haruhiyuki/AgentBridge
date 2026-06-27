@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -1974,16 +1975,103 @@ def claude_updated_input_from_response(response: Mapping[str, object]) -> dict[s
         updated_input = {str(key): value for key, value in raw_event.items()}
     questions = updated_input.get("questions")
     if isinstance(questions, list) and questions:
-        answers: dict[str, str] = {}
-        for question in questions:
-            question_text = question_text_from_item(question)
-            if question_text:
-                answers[question_text] = answer
+        answers = ask_user_question_answers(answer, questions)
         if answers:
             updated_input["answers"] = answers
             return updated_input
     updated_input["answer"] = answer
     return updated_input
+
+
+def ask_user_question_answers(answer: str, questions: list[object]) -> dict[str, str]:
+    """把用户的作答串按题映射到各题选中的「选项标签」，回注给 AskUserQuestion。
+
+    之前的实现把同一条作答串原样塞给每个问题（三题都得到同一个答案），且不把「2」之类
+    的编号映射到真实选项，导致 Claude 收到无效答案、行为异常。这里按题解析：
+    - ``1A 2B 3C``：题号 + 选项字母，分别作答；
+    - ``1AC``：同一题多选连写（用于 multiSelect）；
+    - 单题时可裸写 ``A`` / ``AC`` / 直接选项文字；
+    每个选择都解析成该题 ``options[*].label`` 真实标签（多选用「, 」连接）。解析不到的题
+    回退用原始作答串，避免空答。返回 ``{问题文本: 选中标签}``，键与 AskUserQuestion 一致。
+    """
+    valid = [q for q in questions if isinstance(q, dict)]
+    per_question_labels: list[list[str]] = []
+    for question in valid:
+        labels: list[str] = []
+        for option in question.get("options") or []:
+            if isinstance(option, dict):
+                labels.append(str(option.get("label") or "").strip())
+            else:
+                labels.append(str(option).strip())
+        per_question_labels.append(labels)
+
+    selections = _parse_question_selections(answer, per_question_labels)
+
+    answers: dict[str, str] = {}
+    for index, question in enumerate(valid):
+        question_text = question_text_from_item(question)
+        if not question_text:
+            continue
+        chosen = selections.get(index)
+        answers[question_text] = ", ".join(chosen) if chosen else answer
+    return answers
+
+
+def _parse_question_selections(
+    answer: str, per_question_labels: list[list[str]]
+) -> dict[int, list[str]]:
+    """解析作答串 → ``{题号(0基): [选中标签…]}``。无法定位的 token 忽略。"""
+    num_questions = len(per_question_labels)
+    selections: dict[int, list[str]] = {}
+    if num_questions == 0:
+        return selections
+    tokens = answer.replace(",", " ").replace("，", " ").split()
+    for token in tokens:
+        match = re.match(r"^(\d+)([A-Za-z0-9]+)$", token)
+        if match:
+            question_number = int(match.group(1))
+            if 1 <= question_number <= num_questions:
+                labels = _resolve_option_selectors(
+                    match.group(2), per_question_labels[question_number - 1]
+                )
+                if labels:
+                    bucket = selections.setdefault(question_number - 1, [])
+                    for label in labels:
+                        if label not in bucket:
+                            bucket.append(label)
+                    continue
+        # 单题：允许裸写选项字母/编号/文字，无需题号前缀。
+        if num_questions == 1:
+            labels = _resolve_option_selectors(token, per_question_labels[0])
+            if labels:
+                bucket = selections.setdefault(0, [])
+                for label in labels:
+                    if label not in bucket:
+                        bucket.append(label)
+    return selections
+
+
+def _resolve_option_selectors(selector: str, labels: list[str]) -> list[str]:
+    """把 ``A`` / ``AC`` / ``2`` / 选项文字解析成该题真实选项标签列表。"""
+    selector = selector.strip()
+    if not selector or not labels:
+        return []
+    # 整体直接当作选项文字匹配（用户直接打了选项标签）。
+    for label in labels:
+        if label and label == selector:
+            return [label]
+    resolved: list[str] = []
+    for char in selector:
+        index: int | None = None
+        if char.isalpha():
+            index = ord(char.upper()) - ord("A")
+        elif char.isdigit():
+            index = int(char) - 1
+        if index is not None and 0 <= index < len(labels) and labels[index]:
+            label = labels[index]
+            if label not in resolved:
+                resolved.append(label)
+    return resolved
 
 
 def question_text_from_item(value: object) -> str | None:

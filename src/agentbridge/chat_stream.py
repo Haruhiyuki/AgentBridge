@@ -31,7 +31,8 @@ _ASK_LABELS = {
     "plan": "📋 计划待确认",
 }
 _ASK_REPLY_HINTS = {
-    "question": "回复 /ab answer <编号> <内容>",
+    # 单题：/ab answer <提问编号> <选项字母>（多选连写如 AC）；多题：作答串里逐题写「题号+字母」。
+    "question": "回复 /ab answer <提问编号> <选项字母>（多选连写如 AC；多题逐题写 1A 2B 3C）",
     "approval": "回复 /ab approve <编号> 或 /ab deny <编号>",
     "plan": "回复 /ab plan approve <编号> 或 /ab plan revise <编号> <意见>",
 }
@@ -172,8 +173,9 @@ def _format_ask(kind: str, payload: dict[str, object]) -> str:
         lines.append(prompt[:_MAX_PROMPT_CHARS])
     options = (payload or {}).get("options")
     if isinstance(options, list) and options:
-        for index, option in enumerate(options, 1):
-            lines.append(f"  {index}. {option}")
+        for index, option in enumerate(options):
+            letter = chr(ord("A") + index) if index < 26 else str(index + 1)
+            lines.append(f"  {letter}. {option}")
     lines.append(_ASK_REPLY_HINTS.get(kind, ""))
     return "\n".join(line for line in lines if line)
 

@@ -780,19 +780,28 @@ def claude_ask_user_question(
         ]
         return prompt or None, options
 
-    # 多问题：铺成富文本，每个问题下列出带字母的选项。
+    # 多问题：铺成富文本，每题下用字母列出选项，便于「题号+选项字母」分题作答。
     lines: list[str] = []
+    any_multi = False
     for qi, q in enumerate(valid, 1):
         header = str(q.get("header") or "").strip()
         qtext = str(q.get("question") or "").strip()
         title = f"{qi}) " + (f"[{header}] " if header else "") + qtext
-        if q.get("multiSelect") and "多选" not in title:
-            title += "（可多选）"
+        if q.get("multiSelect"):
+            any_multi = True
+            if "多选" not in title:
+                title += "（可多选）"
         lines.append(title)
-        for oi, opt in enumerate(q.get("options") or [], 1):
+        for oi, opt in enumerate(q.get("options") or []):
             label, desc = _opt_label_desc(opt)
             if label:
-                lines.append(f"   {oi}. {label}" + (f" — {desc}" if desc else ""))
+                letter = chr(ord("A") + oi) if oi < 26 else str(oi + 1)
+                lines.append(f"   {letter}. {label}" + (f" — {desc}" if desc else ""))
+    example = " ".join(f"{i}A" for i in range(1, len(valid) + 1))
+    hint = f"逐题作答：题号+选项字母，如 {example}"
+    if any_multi:
+        hint += "；可多选的题字母连写，如 1AC"
+    lines.append(hint)
     return ("\n".join(lines) or None), []
 
 

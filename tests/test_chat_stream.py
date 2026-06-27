@@ -65,7 +65,9 @@ def test_question_and_approval_emit_immediately():
     q = messages[0]
     assert q["interaction_id"] == "int_1"
     assert "用哪种迁移方式？" in q["text"]
-    assert "1. 兼容迁移" in q["text"]
+    # 选项用字母编号，与「/ab answer 选项字母」的作答方式一致。
+    assert "A. 兼容迁移" in q["text"]
+    assert "B. 重建" in q["text"]
     assert "/ab answer" in q["text"]
     assert "/ab approve" in messages[1]["text"]
 
