@@ -381,3 +381,48 @@ def test_lifecycle_monitor_auto_advances_when_enabled(tmp_path):
     terminal.run_lifecycle_monitor_once()
 
     assert control.repository.get_session(session.id).active_turn_id == turn.id
+
+
+def test_advance_releases_bot_lease_when_queue_drains(tmp_path):
+    """队列跑空后，advance 应释放自动获取的 bot 写租约，否则空闲会话会一直占着工作区写槽。"""
+    control, terminal, actor, session = bootstrap(tmp_path)
+    terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start")
+    turn = control.enqueue_turn(
+        actor=actor, session_id=session.id, prompt="任务", trace_id="t1"
+    )
+    terminal.advance_queue(session_id=session.id)
+    lease = control.repository.current_lease(session.id)
+    assert lease is not None and lease.owner_type == LeaseOwnerType.BOT
+
+    complete_turn(control, session.id, turn.id, "done")
+    drained = terminal.advance_queue(session_id=session.id)
+    assert drained["reason"] == "queue_empty"
+    # 队列空 → bot 写租约已释放。
+    assert control.repository.current_lease(session.id) is None
+
+
+def test_idle_session_lease_does_not_block_sibling_in_shared_workspace(tmp_path):
+    """同一工作区（max_write_sessions=1）下，A 跑完后空闲不应再占着写槽堵住 B —— 用户实测场景。"""
+    control, terminal, actor, session_a = bootstrap(tmp_path)
+    session_b = control.create_session(
+        actor=actor,
+        project_id=session_a.project_id,
+        workspace_id=session_a.workspace_id,
+        name="B",
+        agent_type=session_a.agent_type,
+        visibility=Visibility.GROUP,
+        trace_id="sb",
+    )
+    terminal.start_session(session_id=session_a.id, command="fake-cli", trace_id="sa")
+    terminal.start_session(session_id=session_b.id, command="fake-cli", trace_id="sb")
+
+    ta = control.enqueue_turn(actor=actor, session_id=session_a.id, prompt="A", trace_id="ta")
+    terminal.advance_queue(session_id=session_a.id)
+    complete_turn(control, session_a.id, ta.id, "a-done")
+    # A 队列空 → 释放 A 的写租约。
+    terminal.advance_queue(session_id=session_a.id)
+
+    tb = control.enqueue_turn(actor=actor, session_id=session_b.id, prompt="B", trace_id="tb")
+    res = terminal.advance_queue(session_id=session_b.id)
+    assert res["action"] == "submitted"
+    assert res["turn_id"] == tb.id

@@ -2574,6 +2574,27 @@ class TerminalAgentService:
             "request_id": None,
         }
 
+    def _release_idle_bot_lease(self, session_id: str, *, trace_id: str) -> None:
+        """会话空闲且队列空时，释放 advance 自动获取的 bot:terminal-agent 写租约。
+
+        否则空闲会话会一直占着工作区唯一写槽（max_write_sessions），把同工作区其它会话
+        的排队任务堵死。只释放 bot 自动租约，绝不碰人工接管（HUMAN）租约。
+        """
+        lease = self.control.repository.current_lease(session_id)
+        if (
+            lease is None
+            or lease.owner_type != LeaseOwnerType.BOT
+            or lease.owner_id != "terminal-agent"
+        ):
+            return
+        with suppress(AgentBridgeError):
+            self.control.release_lease(
+                actor=Actor(id="system:turn-runner", roles={"maintainer"}),
+                session_id=session_id,
+                epoch=lease.epoch,
+                trace_id=f"{trace_id}:release-idle-lease",
+            )
+
     def advance_queue(
         self,
         *,
@@ -2627,6 +2648,9 @@ class TerminalAgentService:
             session_id=session_id,
         )
         if not turns:
+            # 队列空了（会话本轮跑完）：释放 advance 自动获取的 bot 写租约，否则它会一直占着
+            # 该工作区唯一的写槽（max_write_sessions），把同工作区的其它会话任务堵在排队里。
+            self._release_idle_bot_lease(session_id, trace_id=trace_id)
             return self._advance_skip(session_id, "queue_empty")
         started_terminal = False
         status = self.status(session_id=session_id, trace_id=f"{trace_id}:status")
