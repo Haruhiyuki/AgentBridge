@@ -445,3 +445,30 @@ tr.selected td {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ---- 审计：过滤行 + 等宽载荷单元 ---- */
+.filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.filter-row input[type="text"],
+.filter-row input:not([type]) {
+  flex: 1 1 160px;
+  min-width: 120px;
+  margin: 0;
+  width: auto;
+}
+.filter-row button {
+  flex: 0 0 auto;
+}
+.mono-cell {
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 11px;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

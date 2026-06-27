@@ -923,7 +923,165 @@ const GovernanceView = {
   </div>`,
 };
 
-const AuditView = stub("审计", "审计链 / 语义事件检索");
+const OUTCOME_LABELS = { success: "成功", denied: "拒绝", failed: "失败" };
+function outcomeBadge(o) {
+  return o === "success" ? "badge green" : o === "denied" ? "badge amber" : "badge red";
+}
+function fmtTs(ts) {
+  return (ts || "").replace("T", " ").slice(0, 19);
+}
+function jsonPreview(obj, n = 90) {
+  let s;
+  try {
+    s = typeof obj === "string" ? obj : JSON.stringify(obj || {});
+  } catch (e) {
+    s = String(obj);
+  }
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+const AuditView = {
+  setup() {
+    const tab = ref("audit");
+
+    // —— 审计链 ——
+    const aFilters = reactive({ action: "", actor_id: "", session_id: "", q: "", limit: 100 });
+    const audits = ref([]);
+    const aLoading = ref(false);
+    async function loadAudit() {
+      aLoading.value = true;
+      try {
+        const params = { limit: aFilters.limit };
+        for (const k of ["action", "actor_id", "session_id", "q"])
+          if (aFilters[k]) params[k] = aFilters[k];
+        audits.value = await api("/audit", { params });
+      } catch (e) {
+        toast(e.message, true);
+      } finally {
+        aLoading.value = false;
+      }
+    }
+    function resetAudit() {
+      aFilters.action = aFilters.actor_id = aFilters.session_id = aFilters.q = "";
+      loadAudit();
+    }
+
+    // —— 语义事件 ——
+    const eFilters = reactive({ session_id: "", event_type: "", source: "", q: "", limit: 100 });
+    const events = ref([]);
+    const eLoading = ref(false);
+    async function loadEvents() {
+      eLoading.value = true;
+      try {
+        const params = { limit: eFilters.limit };
+        for (const k of ["session_id", "event_type", "source", "q"])
+          if (eFilters[k]) params[k] = eFilters[k];
+        events.value = await api("/events", { params });
+      } catch (e) {
+        toast(e.message, true);
+      } finally {
+        eLoading.value = false;
+      }
+    }
+    function resetEvents() {
+      eFilters.session_id = eFilters.event_type = eFilters.source = eFilters.q = "";
+      loadEvents();
+    }
+
+    function onTab(t) {
+      tab.value = t;
+      if (t === "events" && !events.value.length) loadEvents();
+    }
+
+    onMounted(loadAudit);
+
+    return {
+      tab,
+      onTab,
+      aFilters,
+      audits,
+      aLoading,
+      loadAudit,
+      resetAudit,
+      eFilters,
+      events,
+      eLoading,
+      loadEvents,
+      resetEvents,
+      OUTCOME_LABELS,
+      outcomeBadge,
+      fmtTs,
+      jsonPreview,
+    };
+  },
+  template: `
+  <div>
+    <div class="page-head">
+      <h1>审计</h1>
+      <span class="sub">审计链 / 语义事件检索</span>
+    </div>
+    <div class="nav" style="margin-bottom:16px;flex:none">
+      <a href="javascript:void 0" :class="{active: tab==='audit'}" @click="onTab('audit')">审计链</a>
+      <a href="javascript:void 0" :class="{active: tab==='events'}" @click="onTab('events')">语义事件</a>
+    </div>
+
+    <div v-show="tab==='audit'" class="panel">
+      <div class="filter-row">
+        <input type="text" v-model="aFilters.action" placeholder="动作 如 command.executed" />
+        <input type="text" v-model="aFilters.actor_id" placeholder="操作者 如 onebot:138…" />
+        <input type="text" v-model="aFilters.session_id" placeholder="会话 ID" />
+        <input type="text" v-model="aFilters.q" placeholder="全文检索" @keyup.enter="loadAudit" />
+        <button class="primary" @click="loadAudit" :disabled="aLoading">
+          <span v-if="aLoading" class="spin"></span><span v-else>查询</span>
+        </button>
+        <button @click="resetAudit">重置</button>
+      </div>
+      <table v-if="audits.length">
+        <thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>结果</th><th>会话</th><th>详情</th></tr></thead>
+        <tbody>
+          <tr v-for="a in audits" :key="a.id">
+            <td style="white-space:nowrap">{{ fmtTs(a.created_at) }}</td>
+            <td><code>{{ a.actor_id }}</code></td>
+            <td>{{ a.action }}</td>
+            <td><span :class="outcomeBadge(a.outcome)">{{ OUTCOME_LABELS[a.outcome]||a.outcome }}</span></td>
+            <td><code v-if="a.session_id">{{ a.session_id.slice(-6) }}</code><span v-else class="muted">—</span></td>
+            <td class="mono-cell muted">{{ jsonPreview(a.details) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else class="empty">无匹配审计记录。</div>
+      <div class="muted" style="font-size:12px;margin-top:10px">共 {{ audits.length }} 条（最新在前，受 limit 限制）。</div>
+    </div>
+
+    <div v-show="tab==='events'" class="panel">
+      <div class="filter-row">
+        <input type="text" v-model="eFilters.session_id" placeholder="会话 ID" />
+        <input type="text" v-model="eFilters.event_type" placeholder="事件类型 如 turn.completed" />
+        <input type="text" v-model="eFilters.source" placeholder="来源 如 agent_adapter" />
+        <input type="text" v-model="eFilters.q" placeholder="全文检索" @keyup.enter="loadEvents" />
+        <button class="primary" @click="loadEvents" :disabled="eLoading">
+          <span v-if="eLoading" class="spin"></span><span v-else>查询</span>
+        </button>
+        <button @click="resetEvents">重置</button>
+      </div>
+      <table v-if="events.length">
+        <thead><tr><th>时间</th><th>seq</th><th>类型</th><th>来源</th><th>会话/轮</th><th>载荷</th></tr></thead>
+        <tbody>
+          <tr v-for="e in events" :key="e.id">
+            <td style="white-space:nowrap">{{ fmtTs(e.created_at) }}</td>
+            <td>{{ e.seq }}</td>
+            <td><span class="badge accent">{{ e.type }}</span></td>
+            <td class="muted">{{ e.source }}</td>
+            <td><code v-if="e.session_id">{{ e.session_id.slice(-6) }}</code><span v-if="e.turn_id" class="muted"> · {{ e.turn_id.slice(-6) }}</span></td>
+            <td class="mono-cell muted">{{ jsonPreview(e.payload) }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else class="empty">无匹配事件。</div>
+      <div class="muted" style="font-size:12px;margin-top:10px">共 {{ events.length }} 条（最新在前，受 limit 限制）。</div>
+    </div>
+  </div>`,
+};
 const SystemView = stub("系统", "健康 / 就绪 / 终端生命周期 / Bot 投递");
 
 const ROUTES = [
