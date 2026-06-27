@@ -99,6 +99,21 @@ class TerminalInputKind(StrEnum):
     RESIZE = "resize"
 
 
+# KEY 输入的键名 → PTY 字节序列（tmux 后端用键名直接交给 send-keys；PTY 需自行翻译）。
+PTY_KEY_SEQUENCES: dict[str, str] = {
+    "Enter": "\r",
+    "Return": "\r",
+    "Tab": "\t",
+    "Escape": "\x1b",
+    "Space": " ",
+    "BSpace": "\x7f",
+    "Up": "\x1b[A",
+    "Down": "\x1b[B",
+    "Right": "\x1b[C",
+    "Left": "\x1b[D",
+}
+
+
 @dataclass(frozen=True)
 class TerminalOutputChunk:
     cursor: int
@@ -1290,6 +1305,8 @@ class FakeTerminalBackend:
 
     def write(self, *, session_id: str, data: str, kind: TerminalInputKind) -> None:
         self._require_started(session_id)
+        if kind == TerminalInputKind.KEY:
+            data = PTY_KEY_SEQUENCES.get(data, data)
         self.buffers.setdefault(session_id, []).append(data)
 
     def signal(self, *, session_id: str, name: str) -> None:
@@ -1610,6 +1627,9 @@ class PtyTerminalBackend:
                 f"PTY write 不支持输入类型：{kind.value}",
                 next_step="请使用 text、paste 或 key 输入类型。",
             )
+        if kind == TerminalInputKind.KEY:
+            # 把常见键名翻译成 PTY 字节序列（Enter→CR 才能真正提交，而非写出字面 "Enter"）。
+            data = PTY_KEY_SEQUENCES.get(data, data)
         self._write_bytes(session, data.encode("utf-8"))
 
     def signal(self, *, session_id: str, name: str) -> None:
@@ -2338,6 +2358,48 @@ class TerminalAgentService:
         )
         return request_id
 
+    def _submit_text_and_enter(
+        self,
+        *,
+        session_id: str,
+        epoch: int,
+        owner_type: LeaseOwnerType,
+        owner_id: str,
+        text: str,
+        trace_id: str,
+        request_id: str,
+        send_enter: bool = True,
+    ) -> str:
+        """把 prompt 文本写入终端，再**单独发一个 Enter 键**提交。
+
+        关键：不要把回车拼进文本一次性发——tmux 用 ``send-keys -l`` 字面发，``\\r`` 会被
+        Codex 的 ratatui TUI 当成输入框换行而**不提交**（用户实测「打了字但没发出去，多了一行」）。
+        分开发：文本走 TEXT（多行 prompt 的内部换行保留），最后一个 Enter 键走 KEY（tmux
+        ``send-keys Enter`` / PTY 写 ``\\r``）才可靠触发提交。
+        """
+        submitted = self.submit_input(
+            session_id=session_id,
+            epoch=epoch,
+            owner_type=owner_type,
+            owner_id=owner_id,
+            kind=TerminalInputKind.TEXT,
+            data=text,
+            trace_id=trace_id,
+            request_id=request_id,
+        )
+        if send_enter:
+            self.submit_input(
+                session_id=session_id,
+                epoch=epoch,
+                owner_type=owner_type,
+                owner_id=owner_id,
+                kind=TerminalInputKind.KEY,
+                data="Enter",
+                trace_id=f"{trace_id}:enter",
+                request_id=f"{request_id}:enter",
+            )
+        return submitted
+
     def claim_next_turn(
         self,
         *,
@@ -2387,18 +2449,15 @@ class TerminalAgentService:
         )
         submitted_request_id = None
         if submit_prompt and turn is not None and lease is not None:
-            prompt = turn.prompt
-            if append_newline and not prompt.endswith(submit_newline):
-                prompt += submit_newline
-            submitted_request_id = self.submit_input(
+            submitted_request_id = self._submit_text_and_enter(
                 session_id=session_id,
                 epoch=lease.epoch,
                 owner_type=lease.owner_type,
                 owner_id=lease.owner_id,
-                kind=TerminalInputKind.TEXT,
-                data=prompt,
+                text=turn.prompt,
                 trace_id=f"{trace_id}:input",
                 request_id=request_id or f"turn-input:{turn.id}",
+                send_enter=append_newline,
             )
         return {
             "queue_version": queue_version,
@@ -2699,17 +2758,17 @@ class TerminalAgentService:
             )
         submitted: list[str] = []
         for text in inputs:
-            data = text if text.endswith("\r") else text + "\r"
+            stripped = text[:-1] if text.endswith("\r") else text
             try:
-                request_id = self.submit_input(
+                request_id = self._submit_text_and_enter(
                     session_id=session_id,
                     epoch=lease.epoch,
                     owner_type=lease.owner_type,
                     owner_id=lease.owner_id,
-                    kind=TerminalInputKind.TEXT,
-                    data=data,
+                    text=stripped,
                     trace_id=f"{trace_id}:input",
                     request_id=f"inject:{uuid4().hex}",
+                    send_enter=True,
                 )
                 submitted.append(request_id)
             except AgentBridgeError:

@@ -325,7 +325,8 @@ def test_local_terminal_daemon_claim_next_can_submit_prompt(tmp_path):
             assert claimed["data"]["turn"]["status"] == "running"
             assert claimed["data"]["lease"]["owner_type"] == "bot"
             assert claimed["data"]["request_id"] == "daemon-claim-submit-input"
-            assert snapshot["data"]["snapshot"] == "daemon queued task\n"
+            # 提交现在是「文本 + 单独 Enter 键」，Enter 落到 PTY 是 CR(\r)，而非旧的 \n。
+            assert snapshot["data"]["snapshot"] == "daemon queued task\r"
             assert control.repository.get_turn(queued_turn.id).status == TurnStatus.RUNNING
         finally:
             await server.stop()
