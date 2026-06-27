@@ -83,6 +83,7 @@ KNOWN_ROOTS = {
     "sessions",
     "new",
     "clear",
+    "now",
     "use",
     "ask",
     "send",
@@ -534,14 +535,15 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
     ),
     command_spec(
         "turn.enqueue",
-        aliases=["ask", "send", "continue", "发送", "继续"],
-        summary="Queue work for the target Agent session.",
-        usage="/agent ask <prompt> [--session <session>]",
+        aliases=["ask", "send", "continue", "now", "发送", "继续"],
+        summary="Queue work for the session (default), or inject it now with --now.",
+        usage="/agent ask <prompt> [--session <session>] [--now]   ·   /agent now <prompt>",
         argument_schema=command_arguments_schema(
             {
                 "prompt": STRING_SCHEMA,
                 "session": OPTIONAL_STRING_SCHEMA,
                 "mode": {"type": "string", "enum": ["ask", "send", "continue"]},
+                "now": BOOLEAN_SCHEMA,
             },
             required=["prompt"],
         ),
@@ -1020,7 +1022,7 @@ class CommandService:
                 "agent": root,
                 "prompt": " ".join(positional).strip() or None,
             }
-        if root in {"ask", "send", "continue"}:
+        if root in {"ask", "send", "continue", "now"}:
             positional, options = parse_options(tokens)
             prompt = " ".join(positional).strip()
             return (
@@ -1028,7 +1030,9 @@ class CommandService:
                 {
                     "prompt": prompt,
                     "session": options.get("session") or options.get("s"),
-                    "mode": root,
+                    "mode": "continue" if root == "now" else root,
+                    # 默认排队；--now/--inject 或 /ab now 立刻追加进运行中的终端。
+                    "now": root == "now" or bool(options.get("now") or options.get("inject")),
                 },
             )
         if root == "projects":
@@ -1720,6 +1724,26 @@ class CommandService:
                 },
             )
         if command == "turn.enqueue":
+            prompt_text = str(args.get("prompt") or "")
+            if args.get("now"):
+                # 立刻追加：把文本打进当前运行中的会话终端（需要已绑定会话）。
+                context = self.control.repository.get_chat_context(invocation.chat_context_id)
+                if context.active_session_id and prompt_text.strip():
+                    session = self.control.repository.get_session(context.active_session_id)
+                    self.control.queue_terminal_input(
+                        actor=invocation.actor,
+                        session_id=session.id,
+                        text=prompt_text,
+                        trace_id=invocation.trace_id,
+                        chat_context_id=invocation.chat_context_id,
+                    )
+                    return self._result(
+                        invocation,
+                        "Input Injected",
+                        f"已追加到当前会话 [{session.short_code}] 终端，agent 处理完当前步后读取。",
+                        {"project_id": session.project_id, "session_id": session.id},
+                    )
+                # 没有可追加的运行中会话 → 退回排队（顺带新建绑定）。
             session, created = self._active_or_new_session(invocation)
             turn = self.control.enqueue_turn(
                 actor=invocation.actor,

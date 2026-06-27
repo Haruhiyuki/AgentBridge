@@ -261,6 +261,28 @@ def test_sessions_all_shows_everything(tmp_path):
     assert dead.data["session_id"] in [s["id"] for s in listed.data["sessions"]]
 
 
+def test_ask_default_queues_but_now_injects(tmp_path):
+    control, commands, context, actor = bootstrap(tmp_path)
+    switched = run(commands, "/ab claude", actor, context.id, "c")
+    sid = switched.data["session_id"]
+
+    # 默认：排队（进 Turn 队列）。
+    queued = run(commands, "/ab ask 普通任务", actor, context.id, "q")
+    assert queued.canonical_command == "turn.enqueue"
+    assert "队列" in queued.message
+    assert control.repository.drain_terminal_inputs(sid) == []
+
+    # --now：立刻追加进运行中的终端（登记为待发输入，不进 Turn 队列）。
+    injected = run(commands, "/ab ask 追加内容 --now", actor, context.id, "i")
+    assert injected.canonical_command == "turn.enqueue"
+    assert "已追加" in injected.message
+    assert control.repository.drain_terminal_inputs(sid) == ["追加内容"]
+
+    # /ab now 是同义快捷。
+    run(commands, "/ab now 第二条追加", actor, context.id, "i2")
+    assert control.repository.drain_terminal_inputs(sid) == ["第二条追加"]
+
+
 def test_help_is_grouped_and_comprehensive(tmp_path):
     control, commands, context, actor = bootstrap(tmp_path)
     helped = run(commands, "/ab help", actor, context.id, "help-1")

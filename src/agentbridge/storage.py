@@ -195,6 +195,8 @@ class InMemoryRepository:
         self.command_results: dict[str, CommandResult] = {}
         self.event_idempotency: dict[str, SemanticEvent] = {}
         self.event_stream_seq: dict[str, int] = {}
+        # 待"立刻追加"到运行中终端的输入（瞬态，由终端服务每拍冲刷，不持久化）。
+        self.pending_terminal_inputs: dict[str, list[str]] = {}
         self._short_codes: set[str] = set()
         self._chat_context_index: dict[tuple[str, str, str, str | None, str | None], str] = {}
 
@@ -1201,6 +1203,16 @@ class InMemoryRepository:
                     status_code=404,
                 )
             return session
+
+    def queue_terminal_input(self, session_id: str, text: str) -> None:
+        """登记一条"立刻追加"到运行中终端的输入（仅内存，由终端服务冲刷）。"""
+        with self._lock:
+            self.pending_terminal_inputs.setdefault(session_id, []).append(text)
+
+    def drain_terminal_inputs(self, session_id: str) -> list[str]:
+        """取出并清空某会话待追加的输入（FIFO）。"""
+        with self._lock:
+            return self.pending_terminal_inputs.pop(session_id, [])
 
     def set_terminal_title(self, session_id: str, title: str | None) -> None:
         """更新会话的终端标题（瞬态运行状态，仅内存；不触发持久化，重启后由监控重抓）。"""

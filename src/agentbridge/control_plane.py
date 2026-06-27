@@ -558,6 +558,37 @@ class ControlPlane:
         )
         return turn
 
+    def queue_terminal_input(
+        self,
+        *,
+        actor: Actor,
+        session_id: str,
+        text: str,
+        trace_id: str,
+        chat_context_id: str | None = None,
+    ) -> AgentSession:
+        """"立刻追加"：把文本登记为待发输入，由终端服务冲刷到运行中的终端（不进 Turn 队列）。"""
+        effective_actor = self.effective_actor(actor, chat_context_id)
+        session = self.require_session_permission(
+            effective_actor,
+            Permission.SESSION_SEND,
+            session_id=session_id,
+            chat_context_id=chat_context_id,
+            attributes={"operation": "inject_terminal_input", "text_length": len(text)},
+        )
+        self.repository.queue_terminal_input(session_id, text)
+        self.audit(
+            action="terminal.input.queued",
+            actor=effective_actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            chat_context_id=chat_context_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            details={"text_length": len(text)},
+        )
+        return session
+
     def list_turn_queue(
         self,
         *,

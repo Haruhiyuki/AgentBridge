@@ -2509,6 +2509,53 @@ class TerminalAgentService:
             self._emit_terminal_lost_once(session=session, trace_id=trace_id)
         return status
 
+    def flush_pending_terminal_inputs(
+        self, session_id: str, *, actor: Actor | None = None, trace_id: str = "terminal-inject"
+    ) -> list[str]:
+        """把"立刻追加"的待发输入打进运行中的终端（agent 下一步读取）。人工接管或终端未运行时
+        回退重排、等下一拍。供生命周期监控每拍调用。"""
+        inputs = self.control.repository.drain_terminal_inputs(session_id)
+        if not inputs:
+            return []
+        lease = self.control.repository.current_lease(session_id)
+        status = self.backend.status(session_id=session_id)
+        if (
+            (lease is not None and lease.owner_type == LeaseOwnerType.HUMAN)
+            or not status.started
+            or not status.running
+        ):
+            for text in inputs:
+                self.control.repository.queue_terminal_input(session_id, text)
+            return []
+        runner_actor = actor or Actor(id="system:turn-runner", roles={"maintainer"})
+        if lease is None or lease.owner_type != LeaseOwnerType.BOT:
+            lease = self.control.acquire_lease(
+                actor=runner_actor,
+                session_id=session_id,
+                owner_type=LeaseOwnerType.BOT,
+                owner_id="terminal-agent",
+                ttl_seconds=600,
+                trace_id=f"{trace_id}:lease",
+            )
+        submitted: list[str] = []
+        for text in inputs:
+            data = text if text.endswith("\r") else text + "\r"
+            try:
+                request_id = self.submit_input(
+                    session_id=session_id,
+                    epoch=lease.epoch,
+                    owner_type=lease.owner_type,
+                    owner_id=lease.owner_id,
+                    kind=TerminalInputKind.TEXT,
+                    data=data,
+                    trace_id=f"{trace_id}:input",
+                    request_id=f"inject:{uuid4().hex}",
+                )
+                submitted.append(request_id)
+            except AgentBridgeError:
+                self.control.repository.queue_terminal_input(session_id, text)
+        return submitted
+
     def _capture_terminal_title(self, session_id: str) -> None:
         """抓取 agent 在终端里设置的标题并写入会话（供列表/状态显示）。仅 tmux 等支持的后端有效。"""
         getter = getattr(self.backend, "pane_title", None)
@@ -2539,6 +2586,7 @@ class TerminalAgentService:
                 status = self.status(session_id=session_id, trace_id=trace_id)
                 observed[session_id] = status
                 self._capture_terminal_title(session_id)
+                self.flush_pending_terminal_inputs(session_id, trace_id=f"{trace_id}:inject")
                 if self._should_auto_restart_lost(
                     session_id=session_id,
                     status=status,

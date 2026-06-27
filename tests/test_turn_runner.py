@@ -187,6 +187,35 @@ def test_tmux_backend_attach_command_and_cursor():
     assert "agentbridge_ses_abc" in cmd
 
 
+def test_flush_pending_terminal_inputs_submits(tmp_path):
+    control, terminal, actor, session = bootstrap(tmp_path)
+    terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start")
+    control.repository.queue_terminal_input(session.id, "立刻追加")
+
+    submitted = terminal.flush_pending_terminal_inputs(session.id)
+    assert len(submitted) == 1
+    assert "立刻追加\r" in terminal.backend.snapshot(session_id=session.id)
+    assert control.repository.drain_terminal_inputs(session.id) == []
+
+
+def test_flush_yields_to_human_control(tmp_path):
+    control, terminal, actor, session = bootstrap(tmp_path)
+    terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start")
+    control.acquire_lease(
+        actor=actor,
+        session_id=session.id,
+        owner_type=LeaseOwnerType.HUMAN,
+        owner_id="local",
+        ttl_seconds=300,
+        trace_id="h",
+    )
+    control.repository.queue_terminal_input(session.id, "x")
+
+    # 人工接管时不抢输入，回退重排等下一拍。
+    assert terminal.flush_pending_terminal_inputs(session.id) == []
+    assert control.repository.drain_terminal_inputs(session.id) == ["x"]
+
+
 def test_advance_yields_to_human_takeover(tmp_path):
     control, terminal, actor, session = bootstrap(tmp_path)
     terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start")
