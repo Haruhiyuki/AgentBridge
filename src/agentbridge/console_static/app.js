@@ -295,6 +295,68 @@ const OperationsView = {
       return p.length > 64 ? p.slice(0, 64) + "…" : p || "(空)";
     }
 
+    // —— 新建项目：目录浏览 + provision ——
+    const create = reactive({
+      open: false,
+      name: "",
+      agent: "claude",
+      createDir: true,
+      submitting: false,
+      browser: { root: "", path: "", parent: null, dirs: [], loading: false },
+    });
+    async function toggleCreate() {
+      create.open = !create.open;
+      if (create.open && !create.browser.path) await browseDir(null);
+    }
+    async function browseDir(path) {
+      create.browser.loading = true;
+      try {
+        const data = await api("/filesystem/directories", {
+          params: path ? { path } : undefined,
+        });
+        create.browser.root = data.root;
+        create.browser.path = data.path;
+        create.browser.parent = data.parent;
+        create.browser.dirs = data.directories || [];
+      } catch (e) {
+        toast(e.message, true);
+      } finally {
+        create.browser.loading = false;
+      }
+    }
+    const createTargetDir = computed(() => {
+      const base = create.browser.path || "~";
+      const folder = (create.name || "").trim() || "项目名";
+      return base.replace(/\/$/, "") + "/" + folder;
+    });
+    async function submitCreate() {
+      if (!create.name.trim()) {
+        toast("请填写项目名", true);
+        return;
+      }
+      create.submitting = true;
+      try {
+        const res = await api("/projects/provision", {
+          method: "POST",
+          body: {
+            actor: ADMIN_ACTOR,
+            name: create.name.trim(),
+            working_dir: createTargetDir.value,
+            default_agent: create.agent,
+            create_dir: create.createDir,
+          },
+        });
+        toast("已创建项目，工作目录 " + (res.working_dir || ""));
+        create.open = false;
+        create.name = "";
+        await loadProjects();
+      } catch (e) {
+        toast(e.message, true);
+      } finally {
+        create.submitting = false;
+      }
+    }
+
     onMounted(loadProjects);
 
     return {
@@ -323,6 +385,11 @@ const OperationsView = {
       restartTerminal,
       leaseLabel,
       turnPreview,
+      create,
+      toggleCreate,
+      browseDir,
+      createTargetDir,
+      submitCreate,
       AGENT_LABELS,
       STATUS_LABELS,
       statusBadgeClass,
@@ -340,7 +407,43 @@ const OperationsView = {
     </div>
 
     <div class="panel" style="margin-bottom:16px">
-      <h2>项目（{{ projects.length }}）</h2>
+      <h2 style="display:flex;align-items:center;gap:10px">项目（{{ projects.length }}）
+        <span class="spacer" style="flex:1"></span>
+        <button class="primary" @click="toggleCreate">{{ create.open ? '收起' : '+ 新建项目' }}</button>
+      </h2>
+
+      <div v-if="create.open" class="create-box">
+        <div class="filter-row" style="margin-bottom:10px">
+          <input type="text" v-model="create.name" placeholder="项目名（必填，将作为文件夹名）" style="flex:2 1 220px" />
+          <select v-model="create.agent" style="flex:0 0 140px;margin:0">
+            <option value="claude">默认 Claude</option>
+            <option value="codex">默认 Codex</option>
+          </select>
+          <label class="muted" style="font-size:12px;text-transform:none;font-weight:400;flex:0 0 auto">
+            <input type="checkbox" v-model="create.createDir" style="width:auto;margin:0 4px 0 0" />目录不存在则创建
+          </label>
+        </div>
+        <div class="dir-browser">
+          <div class="dir-bar">
+            <button :disabled="!create.browser.parent" @click="browseDir(create.browser.parent)" title="上级">↑ 上级</button>
+            <code class="dir-path">{{ create.browser.path || '…' }}</code>
+            <span v-if="create.browser.loading" class="spin"></span>
+            <span class="muted" style="font-size:11px;margin-left:auto">浏览根 {{ create.browser.root }}</span>
+          </div>
+          <div class="dir-list">
+            <div v-for="d in create.browser.dirs" :key="d.path" class="dir-item" @click="browseDir(d.path)">📁 {{ d.name }}</div>
+            <div v-if="!create.browser.dirs.length && !create.browser.loading" class="muted" style="padding:8px 10px;font-size:12px">该目录下没有子目录。</div>
+          </div>
+        </div>
+        <div class="create-foot">
+          <span class="muted" style="font-size:12px">将创建工作目录：<code>{{ createTargetDir }}</code></span>
+          <span class="spacer" style="flex:1"></span>
+          <button class="primary" @click="submitCreate" :disabled="create.submitting || !create.name.trim()">
+            <span v-if="create.submitting" class="spin"></span><span v-else>创建项目</span>
+          </button>
+        </div>
+      </div>
+
       <div class="card-row" v-if="projects.length">
         <div v-for="p in projects" :key="p.id"
              class="card" :class="{selected: selected && selected.id===p.id}"
