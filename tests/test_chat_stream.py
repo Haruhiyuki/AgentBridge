@@ -258,6 +258,33 @@ def test_orphan_tail_not_reduplicated_by_late_completion():
     assert all("到点了" not in m["text"] and "群聊驱动" not in m["text"] for m in later)
 
 
+def test_zombie_unfinished_turn_does_not_respam_later_answer():
+    """僵尸 turn（永不 completed）扣住 held_min 时，其后正常 turn 的答案不得被反复重投（刷屏）。
+
+    turn_z 在最后一个工具之后产出一段最终尾段（held_min 被钉在低位），却永远等不到 completion；
+    与此同时 turn_ok 正常完成。游标必须越过 turn_ok 的答案，下一轮以该游标续拉时不再重发。
+    """
+    events = [
+        ev(1, "turn.started", turn_id="turn_z"),
+        ev(2, "tool.started", turn_id="turn_z"),
+        ev(3, "tool.completed", turn_id="turn_z"),
+        # turn_z 的最终尾段：在最后一个工具之后、且该 turn 没有 completion → 钉住 held_min=4。
+        ev(4, "assistant.delta", turn_id="turn_z", payload={"text": "僵尸尾段，永不收尾。"}),
+        # 之后另一个 turn 正常完成，答案 seq 远大于 held_min。
+        ev(10, "turn.started", turn_id="turn_ok"),
+        ev(11, "assistant.delta", turn_id="turn_ok", payload={"text": "这是新一轮的答案。"}),
+        ev(12, "turn.completed", turn_id="turn_ok"),
+    ]
+    messages, cursor = chat_messages_from_events(events)
+    texts = [m["text"] for m in messages]
+    assert texts.count("这是新一轮的答案。") == 1
+    # 关键：游标必须越过已投递的答案（seq 12），而不是被 held_min 钉在 3。
+    assert cursor >= 12
+    # 增量轮询：bot 以该游标续拉，turn_ok 的答案不得再次出现。
+    later, _ = chat_messages_from_events(events, after_seq=cursor)
+    assert all("这是新一轮的答案" not in m["text"] for m in later)
+
+
 def test_progress_only_turn_has_no_redundant_done_marker():
     """只产出工具前进度叙述、最终段为空的 turn：完成时不应再补「✅ 本轮已完成。」刷屏。"""
     events = [

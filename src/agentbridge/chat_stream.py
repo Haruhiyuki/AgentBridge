@@ -339,8 +339,14 @@ def chat_messages_from_events(
             )
         # 其余事件（session/terminal/lease/queue/turn.queued/started/input…）一律忽略。
 
+    # 铁律：游标永远不能退到"本轮已投递消息"的前面——否则下一轮会把刚发出的消息重复投递（刷屏）。
+    # held_min 的本意是 turn 未结束时别让游标跳过其最终尾段；但尾段分片始终保留在全量历史里、会在
+    # turn.completed 时重算合并（调用方传入完整事件，见上文），故扣住游标并非"防丢失"。一旦出现僵尸
+    # turn（永不 completed）把 held_min 钉在低位，而其后的正常 turn 仍照常产出答案，被钉住的游标就会
+    # 每轮重发这些答案 → 同一条消息刷屏。因此即便 held_min 存在，也必须越过本轮已投递的最大 seq。
+    delivered_max = max((int(message["seq"]) for message in messages), default=after_seq)
     if held_min is not None:
-        cursor = max(after_seq, min(max_seq, held_min - 1))
+        cursor = max(after_seq, delivered_max, min(max_seq, held_min - 1))
     else:
         cursor = max(after_seq, max_seq)
     return messages, cursor
