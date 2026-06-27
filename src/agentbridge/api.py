@@ -1568,6 +1568,15 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             return http_api_auth_error_response()
         return await call_next(request)
 
+    @app.get("/console", response_class=HTMLResponse)
+    def console_home(request: Request):
+        # 新版 SPA 控制台；复用 admin 令牌/cookie 鉴权（?admin_token=… 解锁）。
+        return admin_html_response(request, console_index_html())
+
+    @app.get("/console/static/{path:path}")
+    def console_static(path: str):
+        return console_static_response(path)
+
     @app.get("/admin", response_class=HTMLResponse)
     def admin_home_ui(request: Request):
         return admin_html_response(request, ADMIN_HOME_HTML)
@@ -4831,6 +4840,29 @@ def terminal_error_frame(request_id: object, exc: AgentBridgeError) -> dict[str,
 
 ADMIN_AUTH_COOKIE_NAME = "agentbridge_admin_token"
 ADMIN_AUTH_QUERY_PARAM = "admin_token"
+
+
+CONSOLE_STATIC_DIR = Path(__file__).parent / "console_static"
+_CONSOLE_MEDIA_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+}
+
+
+def console_index_html() -> str:
+    return (CONSOLE_STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+
+def console_static_response(path: str) -> Response:
+    base = CONSOLE_STATIC_DIR.resolve()
+    target = (CONSOLE_STATIC_DIR / path).resolve()
+    if base != target and base not in target.parents:
+        return Response(status_code=404)
+    if not target.is_file():
+        return Response(status_code=404)
+    media_type = _CONSOLE_MEDIA_TYPES.get(target.suffix, "application/octet-stream")
+    return Response(target.read_bytes(), media_type=media_type)
 
 
 def admin_html_response(request: Request, html: str):
