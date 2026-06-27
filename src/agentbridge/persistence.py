@@ -331,6 +331,7 @@ class SQLAlchemyRepository(InMemoryRepository):
         "bind_project",
         "update_active_project",
         "update_active_session",
+        "set_preferred_agent",
         "create_session",
         "close_session",
         "enqueue_turn",

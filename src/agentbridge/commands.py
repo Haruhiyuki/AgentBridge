@@ -52,6 +52,8 @@ COMMAND_ALIASES = {
     "概览": "status",
     "切换": "agent",
     "智能体": "agent",
+    "锁定": "lock",
+    "解锁": "unlock",
     "接管": "takeover",
     "释放": "release",
     "角色": "role",
@@ -252,6 +254,15 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
         private_result_allowed=True,
     ),
     command_spec(
+        "agent.show",
+        aliases=["agent", "智能体"],
+        summary="Show the current and locked agent for this chat.",
+        usage="/agent agent",
+        required_permission="session.view",
+        target_mode="none",
+        private_result_allowed=True,
+    ),
+    command_spec(
         "agent.list",
         aliases=["agents", "agent list", "智能体 列表"],
         summary="List Agent sessions grouped by agent type and mark the active one.",
@@ -261,10 +272,10 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
     ),
     command_spec(
         "agent.switch",
-        aliases=["agent", "claude", "codex", "切换", "智能体"],
+        aliases=["claude", "codex"],
         summary=(
             "Switch the active session to a Claude/Codex agent (creating one if "
-            "needed); trailing text is queued as a task."
+            "needed) and lock that agent; trailing text is queued as a task."
         ),
         usage="/agent claude|codex [task]  ·  /agent agent <claude|codex|generic_tui> [task]",
         argument_schema=command_arguments_schema(
@@ -274,6 +285,28 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
         required_permission="session.create",
         target_mode="session",
         risk=RiskLevel.MEDIUM.value,
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "agent.lock",
+        aliases=["agent lock", "锁定"],
+        summary="Lock the agent used for new sessions in this chat (current or given).",
+        usage="/agent agent lock [claude|codex]",
+        argument_schema=command_arguments_schema(
+            {"agent": OPTIONAL_STRING_SCHEMA, "prompt": OPTIONAL_STRING_SCHEMA}
+        ),
+        required_permission="session.create",
+        target_mode="session",
+        risk=RiskLevel.MEDIUM.value,
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "agent.unlock",
+        aliases=["agent unlock", "解锁"],
+        summary="Unlock the agent so new sessions use the project default.",
+        usage="/agent agent unlock",
+        required_permission="session.view",
+        target_mode="none",
         private_result_allowed=True,
     ),
     command_spec(
@@ -1101,11 +1134,21 @@ class CommandService:
         )
 
     def _parse_agent(self, root: str, tokens: list[str]) -> tuple[str, dict[str, object]]:
-        if not tokens:
+        if root == "agents":
             return "agent.list", {}
+        if not tokens:
+            return "agent.show", {}
         action = self._canonical_token(tokens[0])
         if action in {"list", "ls"}:
             return "agent.list", {}
+        if action == "show":
+            return "agent.show", {}
+        if action == "unlock":
+            return "agent.unlock", {}
+        if action == "lock":
+            positional, _ = parse_options(tokens[1:])
+            agent = self._canonical_token(positional[0]) if positional else None
+            return "agent.lock", {"agent": agent}
         if action in {"claude", "codex", "generic_tui"}:
             positional, _ = parse_options(tokens[1:])
             return "agent.switch", {
@@ -1115,7 +1158,7 @@ class CommandService:
         raise AgentBridgeError(
             ErrorCode.COMMAND_UNKNOWN,
             f"未知 agent 子命令：{tokens[0]}",
-            next_step="可用：/agent agents、/agent claude、/agent codex、generic_tui。",
+            next_step="可用：/agent agent（显示）、/agent claude|codex（切换锁定）、lock、unlock。",
         )
 
     def _parse_session_use_alias(self, tokens: list[str]) -> tuple[str, dict[str, object]]:
@@ -1443,6 +1486,12 @@ class CommandService:
             return self._execute_agent_list(invocation)
         if command == "agent.switch":
             return self._execute_agent_switch(invocation)
+        if command == "agent.show":
+            return self._execute_agent_show(invocation)
+        if command == "agent.lock":
+            return self._execute_agent_lock(invocation)
+        if command == "agent.unlock":
+            return self._execute_agent_unlock(invocation)
         if command == "health":
             return self._result(invocation, "Health", "Control Plane 正常。", self.control.health())
         if command == "context.show":
@@ -2275,14 +2324,16 @@ class CommandService:
                 expected_version=context.pointer_version,
                 trace_id=invocation.trace_id,
             )
+        # 切换即锁定：后续在本聊天里默认新建会话都用这个 agent，直到 /ab agent unlock。
+        self.control.repository.set_preferred_agent(invocation.chat_context_id, agent_type)
         label = AGENT_TYPE_LABELS.get(agent_type.value, agent_type.value)
         status_label = SESSION_STATUS_LABELS.get(session.status.value, session.status.value)
         lines: list[str] = []
         if created:
-            lines.append(f"已新建并切换到 {label} 会话 [{session.short_code}]。")
+            lines.append(f"已新建并切换到 {label} 会话 [{session.short_code}]，已锁定 {label}。")
         else:
             lines.append(
-                f"已切换到 {label} 会话 [{session.short_code}] · {status_label}。"
+                f"已切换到 {label} 会话 [{session.short_code}] · {status_label}，已锁定 {label}。"
             )
         data: dict[str, object] = {
             "project_id": session.project_id,
@@ -2311,6 +2362,79 @@ class CommandService:
         else:
             lines.append("发送 /ab ask <任务> 开始，或 /ab status 查看状态。")
         return self._result(invocation, f"{label} Session", "\n".join(lines), data)
+
+    def _execute_agent_show(self, invocation: CommandInvocation) -> CommandResult:
+        context = self.control.repository.get_chat_context(invocation.chat_context_id)
+        lines = ["🤖 Agent"]
+        if context.active_session_id:
+            try:
+                session = self.control.repository.get_session(context.active_session_id)
+                agent_label = AGENT_TYPE_LABELS.get(
+                    session.agent_type.value, session.agent_type.value
+                )
+                lines.append(f"当前会话：{agent_label} · [{session.short_code}]")
+            except AgentBridgeError:
+                pass
+        if context.preferred_agent is not None:
+            locked = AGENT_TYPE_LABELS.get(
+                context.preferred_agent.value, context.preferred_agent.value
+            )
+            lines.append(f"锁定 agent：{locked} 🔒（本聊天新建会话默认用它）")
+        else:
+            default_label = ""
+            if context.active_project_id:
+                try:
+                    project = self.control.repository.get_project(context.active_project_id)
+                    default_label = "：" + AGENT_TYPE_LABELS.get(
+                        project.default_agent.value, project.default_agent.value
+                    )
+                except AgentBridgeError:
+                    default_label = ""
+            lines.append(f"锁定 agent：未锁定（新建会话用项目默认{default_label}）")
+        lines.append("切换并锁定：/ab claude · /ab codex；解锁：/ab agent unlock")
+        return self._result(
+            invocation,
+            "Agent",
+            "\n".join(lines),
+            {
+                "preferred_agent": context.preferred_agent.value
+                if context.preferred_agent
+                else None,
+                "active_session_id": context.active_session_id,
+            },
+        )
+
+    def _execute_agent_lock(self, invocation: CommandInvocation) -> CommandResult:
+        # 指定 agent 时等同于"切换并锁定"。
+        if invocation.args.get("agent"):
+            return self._execute_agent_switch(invocation)
+        context = self.control.repository.get_chat_context(invocation.chat_context_id)
+        if not context.active_session_id:
+            raise AgentBridgeError(
+                ErrorCode.TARGET_SESSION_REQUIRED,
+                "当前没有活动会话可锁定。",
+                next_step="先用 /agent claude 或 /agent codex 选一个 agent。",
+            )
+        session = self.control.repository.get_session(context.active_session_id)
+        self.control.repository.set_preferred_agent(
+            invocation.chat_context_id, session.agent_type
+        )
+        label = AGENT_TYPE_LABELS.get(session.agent_type.value, session.agent_type.value)
+        return self._result(
+            invocation,
+            "Agent Locked",
+            f"已锁定 agent：{label} 🔒（本聊天新建会话默认用它）。",
+            {"preferred_agent": session.agent_type.value},
+        )
+
+    def _execute_agent_unlock(self, invocation: CommandInvocation) -> CommandResult:
+        self.control.repository.set_preferred_agent(invocation.chat_context_id, None)
+        return self._result(
+            invocation,
+            "Agent Unlocked",
+            "已解锁 agent，新建会话将改用项目默认。",
+            {"preferred_agent": None},
+        )
 
     def _execute_agent_list(self, invocation: CommandInvocation) -> CommandResult:
         project_id = self._required_project_id(invocation)
@@ -2380,6 +2504,13 @@ class CommandService:
         )
         if session.terminal_title and session.terminal_title.strip() != session.name:
             lines.append(f"终端标题：{session.terminal_title.strip()}")
+        if context.preferred_agent is not None:
+            locked = AGENT_TYPE_LABELS.get(
+                context.preferred_agent.value, context.preferred_agent.value
+            )
+            lines.append(f"Agent：{agent_label}（已锁定 {locked} 🔒）")
+        else:
+            lines.append(f"Agent：{agent_label}（未锁定，新建用项目默认）")
 
         lease = self.control.repository.current_lease(session.id)
         if lease is None:
@@ -2695,14 +2826,14 @@ class CommandService:
             ):
                 return bound, False
         project = self.control.repository.get_project(project_id)
+        # 锁定的 agent 优先（覆盖项目默认）。
+        agent_type = context.preferred_agent or project.default_agent
         session = self.control.create_session(
             actor=invocation.actor,
             project_id=project_id,
             workspace_id=None,
-            name=AGENT_TYPE_LABELS.get(
-                project.default_agent.value, project.default_agent.value
-            ),
-            agent_type=project.default_agent,
+            name=AGENT_TYPE_LABELS.get(agent_type.value, agent_type.value),
+            agent_type=agent_type,
             visibility=Visibility.GROUP,
             trace_id=invocation.trace_id,
             chat_context_id=invocation.chat_context_id,

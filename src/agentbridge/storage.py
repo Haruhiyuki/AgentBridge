@@ -975,6 +975,18 @@ class InMemoryRepository:
             self.chat_contexts[chat_context_id] = updated
             return updated
 
+    def set_preferred_agent(
+        self, chat_context_id: str, agent_type: AgentType | None
+    ) -> ChatContext:
+        """设置/清除该聊天上下文锁定的 agent（不动会话指针，不改 pointer_version）。"""
+        with self._lock:
+            context = self.get_chat_context(chat_context_id)
+            if context.preferred_agent == agent_type:
+                return context
+            updated = context.model_copy(update={"preferred_agent": agent_type})
+            self.chat_contexts[chat_context_id] = updated
+            return updated
+
     def create_session(
         self,
         *,

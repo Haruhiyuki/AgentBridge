@@ -170,6 +170,44 @@ def test_projects_and_sessions_quick_aliases(tmp_path):
     assert run(commands, "/ab sessions", actor, context.id, "s").canonical_command == "session.list"
 
 
+def test_switch_locks_agent(tmp_path):
+    control, commands, context, actor = bootstrap(tmp_path)
+    res = run(commands, "/ab claude", actor, context.id, "lock-claude")
+    assert "已锁定 Claude" in res.message
+    assert control.repository.get_chat_context(context.id).preferred_agent.value == "claude"
+
+
+def test_locked_agent_overrides_project_default_on_auto_create(tmp_path):
+    control, commands, context, actor = bootstrap(tmp_path)
+    # 项目默认是 claude；锁定 codex 后首次发消息自动新建的会话应为 codex。
+    control.repository.set_preferred_agent(context.id, AgentType.CODEX)
+    asked = run(commands, "/ab ask 干活", actor, context.id, "ask")
+    new_session = control.repository.get_session(asked.data["session_id"])
+    assert new_session.agent_type.value == "codex"
+
+
+def test_agent_show_and_unlock(tmp_path):
+    control, commands, context, actor = bootstrap(tmp_path)
+    run(commands, "/ab codex", actor, context.id, "lock-codex")
+
+    shown = run(commands, "/ab agent", actor, context.id, "show")
+    assert shown.canonical_command == "agent.show"
+    assert "Codex" in shown.message
+    assert "🔒" in shown.message
+
+    unlocked = run(commands, "/ab agent unlock", actor, context.id, "unlock")
+    assert unlocked.canonical_command == "agent.unlock"
+    assert control.repository.get_chat_context(context.id).preferred_agent is None
+
+
+def test_status_shows_agent_lock_line(tmp_path):
+    control, commands, context, actor = bootstrap(tmp_path)
+    run(commands, "/ab claude 你好", actor, context.id, "c")
+    status = run(commands, "/ab status", actor, context.id, "st")
+    assert "Agent：" in status.message
+    assert "已锁定 Claude" in status.message
+
+
 def test_help_is_grouped_and_comprehensive(tmp_path):
     control, commands, context, actor = bootstrap(tmp_path)
     helped = run(commands, "/ab help", actor, context.id, "help-1")

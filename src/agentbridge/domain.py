@@ -332,6 +332,8 @@ class ChatContext(BaseModel):
     user_id: str | None = None
     active_project_id: str | None = None
     active_session_id: str | None = None
+    # 锁定的 agent：设定后，该聊天里发消息默认新建会话用它（覆盖项目默认）；为空则用项目默认。
+    preferred_agent: AgentType | None = None
     pointer_version: int = 0
 
 
