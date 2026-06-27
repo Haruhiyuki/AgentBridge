@@ -173,6 +173,128 @@ const OperationsView = {
       await loadSessions();
     }
 
+    // —— 会话详情：队列 / 终端 / 写者租约 ——
+    const detail = reactive({
+      session: null,
+      queue: null,
+      lease: null,
+      term: null,
+      snapshot: "",
+      loading: false,
+    });
+    function closeDetail() {
+      detail.session = null;
+    }
+    async function openDetail(s) {
+      detail.session = s;
+      await loadDetail();
+    }
+    async function loadDetail() {
+      if (!detail.session) return;
+      const id = detail.session.id;
+      detail.loading = true;
+      try {
+        // 各子资源独立容错：某项失败不影响其余展示。
+        detail.queue = await api("/sessions/" + id + "/queue").catch(() => null);
+        detail.lease = await api("/sessions/" + id + "/lease").catch(() => null);
+        detail.term = await api("/sessions/" + id + "/terminal/status").catch(() => null);
+        const snap = await api("/sessions/" + id + "/terminal/snapshot").catch(() => null);
+        detail.snapshot = (snap && snap.snapshot) || "";
+        // 同步会话最新状态（active_turn 等）。
+        const fresh = sessions.value.find((x) => x.id === id);
+        if (fresh) detail.session = fresh;
+      } finally {
+        detail.loading = false;
+      }
+    }
+    async function refreshDetail() {
+      await loadSessions();
+      await loadDetail();
+    }
+    function qver() {
+      return detail.queue && detail.queue.queue_version;
+    }
+    async function setPaused(paused) {
+      try {
+        await api(
+          "/sessions/" + detail.session.id + "/queue/" + (paused ? "pause" : "resume"),
+          { method: "POST", body: { actor: ADMIN_ACTOR, expected_queue_version: qver() } }
+        );
+        toast(paused ? "队列已暂停" : "队列已恢复");
+        await loadDetail();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    async function clearQueue() {
+      const n = (detail.queue && detail.queue.turns.length) || 0;
+      if (!n) return;
+      if (!confirm("确认清空队列中的 " + n + " 个排队任务？")) return;
+      try {
+        await api("/sessions/" + detail.session.id + "/queue/clear", {
+          method: "POST",
+          body: { actor: ADMIN_ACTOR, expected_queue_version: qver(), confirm_count: n },
+        });
+        toast("已清空 " + n + " 个排队任务");
+        await loadDetail();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    async function moveUp(idx) {
+      const turns = detail.queue.turns;
+      if (idx <= 0) return;
+      try {
+        await api("/sessions/" + detail.session.id + "/queue/reorder", {
+          method: "POST",
+          body: {
+            actor: ADMIN_ACTOR,
+            turn_id: turns[idx].id,
+            before_turn_id: turns[idx - 1].id,
+            expected_queue_version: qver(),
+          },
+        });
+        await loadDetail();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    async function releaseLease() {
+      if (!detail.lease) return;
+      if (!confirm("释放当前写者租约（" + leaseLabel(detail.lease) + "）？")) return;
+      try {
+        await api("/sessions/" + detail.session.id + "/lease/release", {
+          method: "POST",
+          body: { actor: ADMIN_ACTOR, epoch: detail.lease.epoch },
+        });
+        toast("租约已释放");
+        await loadDetail();
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    async function restartTerminal() {
+      if (!confirm("重启该会话的终端？将沿用上次启动命令。")) return;
+      try {
+        await api("/sessions/" + detail.session.id + "/terminal/restart", {
+          method: "POST",
+          body: { actor: ADMIN_ACTOR },
+        });
+        toast("已请求重启终端");
+        setTimeout(loadDetail, 800);
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    function leaseLabel(l) {
+      if (!l) return "无";
+      return (l.owner_type || "?") + ":" + (l.owner_id || "?") + " · epoch " + l.epoch;
+    }
+    function turnPreview(t) {
+      const p = (t.prompt || "").replace(/\s+/g, " ").trim();
+      return p.length > 64 ? p.slice(0, 64) + "…" : p || "(空)";
+    }
+
     onMounted(loadProjects);
 
     return {
@@ -189,6 +311,18 @@ const OperationsView = {
       newSession,
       closeSession,
       pruneDead,
+      detail,
+      openDetail,
+      closeDetail,
+      loadDetail,
+      refreshDetail,
+      setPaused,
+      clearQueue,
+      moveUp,
+      releaseLease,
+      restartTerminal,
+      leaseLabel,
+      turnPreview,
       AGENT_LABELS,
       STATUS_LABELS,
       statusBadgeClass,
@@ -237,12 +371,14 @@ const OperationsView = {
           <tr><th>会话</th><th>终端标题</th><th>Agent</th><th>状态</th><th>操作</th></tr>
         </thead>
         <tbody>
-          <tr v-for="s in visibleSessions" :key="s.id">
+          <tr v-for="s in visibleSessions" :key="s.id"
+              :class="{selected: detail.session && detail.session.id===s.id}">
             <td><code>{{ s.short_code }}</code></td>
             <td>{{ s.terminal_title || s.name }}</td>
             <td><span class="badge accent">{{ AGENT_LABELS[s.agent_type]||s.agent_type }}</span></td>
             <td><span :class="statusBadgeClass(s.status)">{{ STATUS_LABELS[s.status]||s.status }}</span></td>
-            <td>
+            <td style="white-space:nowrap">
+              <button @click="openDetail(s)">详情</button>
               <button class="danger" @click="closeSession(s)"
                       v-if="!['closed','archived'].includes(s.status)">关闭</button>
             </td>
@@ -253,6 +389,70 @@ const OperationsView = {
       <div class="muted" style="font-size:12px;margin-top:10px" v-if="hiddenCount>0 && !showClosed">
         另有 {{ hiddenCount }} 个已关闭/恢复中会话已隐藏。
       </div>
+    </div>
+
+    <div class="panel" v-if="detail.session" style="margin-top:16px">
+      <h2 style="display:flex;align-items:center;gap:10px">
+        会话详情 · <code>{{ detail.session.short_code }}</code>
+        <span :class="statusBadgeClass(detail.session.status)">{{ STATUS_LABELS[detail.session.status]||detail.session.status }}</span>
+        <span class="spacer" style="flex:1"></span>
+        <button @click="refreshDetail" :disabled="detail.loading">
+          <span v-if="detail.loading" class="spin"></span><span v-else>刷新</span>
+        </button>
+        <button @click="closeDetail">收起</button>
+      </h2>
+
+      <div class="kv-grid">
+        <div><span class="k">Agent</span><span class="badge accent">{{ AGENT_LABELS[detail.session.agent_type]||detail.session.agent_type }}</span></div>
+        <div><span class="k">终端标题</span>{{ detail.session.terminal_title || detail.session.name || '—' }}</div>
+        <div><span class="k">活动轮</span>{{ detail.session.active_turn_id ? '运行中 · '+detail.session.active_turn_id.slice(-6) : '空闲' }}</div>
+        <div><span class="k">写者租约</span>
+          <template v-if="detail.lease">{{ leaseLabel(detail.lease) }}
+            <button class="danger" style="margin-left:8px;padding:2px 8px" @click="releaseLease">释放</button>
+          </template>
+          <span v-else class="muted">无（无人持有）</span>
+        </div>
+      </div>
+
+      <h3 style="margin:18px 0 8px">队列
+        <span v-if="detail.queue && detail.queue.queue_paused" class="badge amber">已暂停</span>
+        <span class="muted" style="font-weight:400;font-size:12px" v-if="detail.queue">
+          · 共 {{ detail.queue.turns.length }} 个排队 · 版本 {{ (detail.queue.queue_version||'').slice(0,8) }}</span>
+      </h3>
+      <div class="btn-row" style="margin-bottom:10px" v-if="detail.queue">
+        <button v-if="!detail.queue.queue_paused" @click="setPaused(true)">暂停队列</button>
+        <button class="primary" v-else @click="setPaused(false)">恢复队列</button>
+        <button class="danger" @click="clearQueue" :disabled="!detail.queue.turns.length">清空队列</button>
+      </div>
+      <table v-if="detail.queue && detail.queue.turns.length">
+        <thead><tr><th style="width:48px">#</th><th>排队任务</th><th>原因</th><th style="width:64px">操作</th></tr></thead>
+        <tbody>
+          <tr v-for="(t,idx) in detail.queue.turns" :key="t.id">
+            <td>{{ idx+1 }}</td>
+            <td>{{ turnPreview(t) }}</td>
+            <td><span class="muted" style="font-size:12px">{{ t.queue_reason || '正常排队' }}</span></td>
+            <td><button :disabled="idx===0" @click="moveUp(idx)" title="上移">↑</button></td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-else class="empty" style="padding:14px">队列为空。</div>
+
+      <h3 style="margin:18px 0 8px">终端
+        <template v-if="detail.term">
+          <span :class="detail.term.running ? 'badge green' : 'badge red'">{{ detail.term.running ? '运行中' : (detail.term.started ? '已退出' : '未启动') }}</span>
+          <span class="muted" style="font-weight:400;font-size:12px">
+            <template v-if="detail.term.pid"> · pid {{ detail.term.pid }}</template>
+            <template v-if="detail.term.exit_code!==null && detail.term.exit_code!==undefined"> · 退出码 {{ detail.term.exit_code }}</template>
+            <template v-if="detail.term.output_cursor"> · 游标 {{ detail.term.output_cursor }}</template>
+          </span>
+        </template>
+      </h3>
+      <div class="btn-row" style="margin-bottom:10px">
+        <button @click="loadDetail">刷新快照</button>
+        <button class="danger" @click="restartTerminal">重启终端</button>
+      </div>
+      <pre class="term-snap" v-if="detail.snapshot">{{ detail.snapshot }}</pre>
+      <div v-else class="empty" style="padding:14px">暂无终端输出快照。</div>
     </div>
   </div>`,
 };

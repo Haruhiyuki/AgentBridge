@@ -397,3 +397,51 @@ textarea {
     transform: rotate(360deg);
   }
 }
+
+/* ---- 运维加深：会话详情 ---- */
+.panel h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg, #e6e6e6);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+tr.selected td {
+  background: rgba(110, 168, 254, 0.10);
+}
+.kv-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 24px;
+  margin-top: 4px;
+}
+.kv-grid > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  min-height: 26px;
+}
+.kv-grid .k {
+  color: #8a93a6;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  min-width: 64px;
+}
+.term-snap {
+  background: #0b0d12;
+  border: 1px solid #20242e;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 0;
+  max-height: 360px;
+  overflow: auto;
+  font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #c8cdd6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
