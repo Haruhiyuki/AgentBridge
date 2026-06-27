@@ -109,9 +109,11 @@ def normalize_agent_adapter_event(
         normalized_payload["text"] = text
     prompt = adapter_prompt(payload)
     if event_type in {"approval.requested", "question.requested", "plan.requested"}:
-        normalized_payload["prompt"] = prompt or text or adapter_event_type
+        # Claude AskUserQuestion 的真实问题+选项藏在 tool_input.questions 里，优先提取。
+        aq_prompt, aq_options = claude_ask_user_question(payload)
+        normalized_payload["prompt"] = aq_prompt or prompt or text or adapter_event_type
         normalized_payload["risk_level"] = adapter_risk_level(payload)
-        options = adapter_options(payload)
+        options = aq_options or adapter_options(payload)
         if options:
             normalized_payload["options"] = options
     tool_name = adapter_tool_name(payload)
@@ -739,6 +741,59 @@ def adapter_options(payload: dict[str, object]) -> list[str]:
             if isinstance(label, str) and label.strip():
                 options.append(label.strip())
     return options
+
+
+def claude_ask_user_question(
+    payload: dict[str, object],
+) -> tuple[str | None, list[str]]:
+    """从 Claude ``AskUserQuestion`` 工具的 ``tool_input.questions`` 提取问题文本与选项。
+
+    AskUserQuestion 的真实内容嵌在 ``tool_input.questions[*].{question,header,options[*].label}``，
+    顶层没有 prompt/options 字段，故通用提取拿不到（曾只显示占位符 "AskUserQuestion requires approval"）。
+    返回 ``(prompt, options)``：单问题时 prompt 为问题文本、options 为选项标签（可被「/ab answer 编号」用）；
+    多问题时把所有问题+选项铺成一段富文本作 prompt、options 留空（让用户自由作答）。
+    """
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None, []
+    questions = tool_input.get("questions")
+    if not isinstance(questions, list) or not questions:
+        return None, []
+
+    def _opt_label_desc(opt: object) -> tuple[str, str]:
+        if isinstance(opt, dict):
+            return str(opt.get("label") or "").strip(), str(opt.get("description") or "").strip()
+        if isinstance(opt, str):
+            return opt.strip(), ""
+        return "", ""
+
+    valid = [q for q in questions if isinstance(q, dict)]
+    if len(valid) == 1:
+        q = valid[0]
+        header = str(q.get("header") or "").strip()
+        qtext = str(q.get("question") or "").strip()
+        prompt = (f"[{header}] " if header else "") + qtext
+        if q.get("multiSelect") and "多选" not in prompt:
+            prompt += "（可多选）"
+        options = [
+            label for label, _ in (_opt_label_desc(o) for o in (q.get("options") or [])) if label
+        ]
+        return prompt or None, options
+
+    # 多问题：铺成富文本，每个问题下列出带字母的选项。
+    lines: list[str] = []
+    for qi, q in enumerate(valid, 1):
+        header = str(q.get("header") or "").strip()
+        qtext = str(q.get("question") or "").strip()
+        title = f"{qi}) " + (f"[{header}] " if header else "") + qtext
+        if q.get("multiSelect") and "多选" not in title:
+            title += "（可多选）"
+        lines.append(title)
+        for oi, opt in enumerate(q.get("options") or [], 1):
+            label, desc = _opt_label_desc(opt)
+            if label:
+                lines.append(f"   {oi}. {label}" + (f" — {desc}" if desc else ""))
+    return ("\n".join(lines) or None), []
 
 
 def adapter_risk_level(payload: dict[str, object]) -> str:

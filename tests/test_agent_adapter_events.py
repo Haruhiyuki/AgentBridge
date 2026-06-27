@@ -275,3 +275,46 @@ def test_filters_adapter_response_frames_to_adapter_originated_interactions():
     assert frames[0]["answer"] == "staging"
     assert frames[0]["adapter"] == "codex_app_server"
     assert frames[0]["adapter_item_id"] == "question-1"
+
+
+def test_claude_ask_user_question_extracts_prompt_and_options():
+    from agentbridge.agent_adapter_events import claude_ask_user_question
+
+    # 单问题：prompt 为问题文本、options 为选项标签（可被 /ab answer 编号用）。
+    single = {
+        "tool_name": "AskUserQuestion",
+        "tool_input": {
+            "questions": [
+                {
+                    "header": "格式",
+                    "question": "想要什么格式?",
+                    "options": [
+                        {"label": "Markdown", "description": "保持 .md"},
+                        {"label": "纯文本", "description": "转 .txt"},
+                    ],
+                    "multiSelect": False,
+                }
+            ]
+        },
+    }
+    prompt, options = claude_ask_user_question(single)
+    assert prompt == "[格式] 想要什么格式?"
+    assert options == ["Markdown", "纯文本"]
+
+    # 多问题：铺成富文本含全部问题+选项，options 留空。
+    multi = {
+        "tool_name": "AskUserQuestion",
+        "tool_input": {
+            "questions": [
+                {"header": "A", "question": "问题一?", "options": [{"label": "甲"}], "multiSelect": True},
+                {"header": "B", "question": "问题二?", "options": [{"label": "乙"}]},
+            ]
+        },
+    }
+    prompt2, options2 = claude_ask_user_question(multi)
+    assert "1) [A] 问题一?（可多选）" in prompt2
+    assert "甲" in prompt2 and "2) [B] 问题二?" in prompt2 and "乙" in prompt2
+    assert options2 == []
+
+    # 非 AskUserQuestion（无 questions）→ 不干预。
+    assert claude_ask_user_question({"tool_input": {}}) == (None, [])
