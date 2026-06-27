@@ -1,5 +1,7 @@
 # AgentBridge
 
+English README (this file) ｜ [中文说明](./README.zh-CN.md)
+
 AgentBridge is a local programming-agent collaboration platform for bot-driven group chat workflows. It keeps native CLI agents such as Claude Code and Codex running in a visible local terminal while a control plane exposes structured project, session, command, lease, interaction, and audit APIs.
 
 The initial implementation follows the product design in `AgentBridge_项目总设计文档_v0.2_多项目多会话指令版.md`.
@@ -554,6 +556,12 @@ Request frames are JSON objects with `id`, `type`, and `payload`. The server rep
 Supported actions are `health`, `replay_events`, `ack_events`, `flush_event_outbox`, `start_session`, `restart_session`, `acquire_lease`, `release_lease`, `claim_next_turn`, `submit_input`, `snapshot`, and `status`. `start_session` accepts an optional `command` override; when omitted, it uses the Session agent launch profile. `flush_event_outbox` triggers the same Terminal Agent lifecycle event outbox flush exposed through REST/Admin/daemon controls. `submit_input` uses the same writer lease `epoch`, owner type, owner ID, and request-idempotency checks as the REST terminal input endpoint. `status` reports whether the terminal backend has started, whether it is still running, process exit metadata when available, and the current output cursor.
 
 ## Bot Gateway Delivery
+
+> **Integrating a new platform?** Start with [`docs/BOT_INTEGRATION.md`](docs/BOT_INTEGRATION.md)
+> and the minimal reference [`examples/minimal_bot.py`](examples/minimal_bot.py). The server already
+> encapsulates identity/routing/authz/idempotency/command execution/answer-merging, so an adapter is
+> just three steps — forward the envelope, post `result`, stream the session — typically ~100–150
+> lines of platform glue.
 
 Rendered session events can be delivered through the MVP Bot Gateway service:
 
