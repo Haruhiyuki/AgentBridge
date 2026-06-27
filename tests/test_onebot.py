@@ -1137,7 +1137,7 @@ def test_onebot_events_api_uses_group_role_bindings_for_permissions(tmp_path):
         "platform": "onebot.v11",
         "chat_space_id": "10009",
     }
-    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["admin"]}
     context = client.post("/api/v1/chat-contexts", json=chat).json()
 
     project_response = client.post(
@@ -1171,7 +1171,7 @@ def test_onebot_events_api_uses_group_role_bindings_for_permissions(tmp_path):
                 "group_id": 10009,
                 "user_id": 20002,
                 "message_id": 31001,
-                "raw_message": "/agent ask before grant",
+                "raw_message": "/agent session new Before Grant",
             },
         },
     )

@@ -156,7 +156,7 @@ def test_event_query_column_migrations_backfill_payload(tmp_path):
 
 def test_sqlalchemy_repository_recovers_control_plane_state(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'agentbridge.db'}"
-    maintainer = Actor(id="usr_1", roles={"maintainer"})
+    maintainer = Actor(id="usr_1", roles={"admin"})
 
     first_repo = SQLAlchemyRepository(database_url, create_schema=True)
     first_control = ControlPlane(repository=first_repo)
@@ -1274,7 +1274,7 @@ def test_semantic_event_lookup_by_id_survives_repository_restart(tmp_path):
 
 def test_approval_policy_overrides_survive_repository_restart(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'approval-policy.db'}"
-    maintainer = Actor(id="usr_1", roles={"maintainer"})
+    maintainer = Actor(id="usr_1", roles={"admin"})
 
     first_repo = SQLAlchemyRepository(database_url, create_schema=True)
     first_control = ControlPlane(repository=first_repo)
@@ -1331,7 +1331,7 @@ def test_approval_policy_overrides_survive_repository_restart(tmp_path):
 
 def test_access_policy_rules_survive_repository_restart(tmp_path):
     database_url = f"sqlite:///{tmp_path / 'access-policy.db'}"
-    maintainer = Actor(id="usr_1", roles={"maintainer"})
+    maintainer = Actor(id="usr_1", roles={"admin"})
     operator = Actor(id="usr_operator", roles={"operator"})
 
     first_repo = SQLAlchemyRepository(database_url, create_schema=True)

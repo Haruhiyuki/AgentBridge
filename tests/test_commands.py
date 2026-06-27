@@ -905,7 +905,7 @@ def test_group_role_binding_grants_context_permissions(tmp_path):
     control = ControlPlane()
     commands = CommandService(control)
     context = make_context(control)
-    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    maintainer = Actor(id="usr_maintainer", roles={"admin"})
     member = Actor(id="usr_member", roles={"member"})
 
     execute(
@@ -967,7 +967,7 @@ def test_group_role_binding_grants_context_permissions(tmp_path):
     with pytest.raises(AgentBridgeError) as denied_after_revoke:
         execute(
             commands,
-            "/agent ask after revoke",
+            "/agent session new After Revoke",
             member,
             context.id,
             "role-denied-turn",
@@ -1791,7 +1791,7 @@ def test_policy_commands_manage_chat_context_approval_quorum(tmp_path):
     control = ControlPlane()
     commands = CommandService(control)
     context = make_context(control)
-    maintainer = Actor(id="usr_1", roles={"maintainer"})
+    maintainer = Actor(id="usr_1", roles={"admin"})
 
     execute(
         commands,

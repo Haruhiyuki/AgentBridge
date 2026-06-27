@@ -30,10 +30,16 @@ class Permission(StrEnum):
     DEVICE_MANAGE = "device.manage"
 
 
-ROLE_PERMISSIONS: dict[str, set[Permission]] = {
+# 三档主用角色（对外暴露给 bot/控制台，对应命令的三类粒度）：
+#   member 成员     —— 只发任务（ask/send/continue）+ 查看 + 答问题；
+#   maintainer 维护者 —— 成员 + 会话/agent/队列/终端管理 + 审批投票（不含项目管理与治理）；
+#   admin 管理员    —— 全部（含项目管理、改角色/策略、设备、危险审批）。
+# 另保留 operator/approver/dangerous_approver 作为内置细分角色（审批流与历史兼容用）。
+DEFAULT_ROLE_PERMISSIONS: dict[str, set[Permission]] = {
     "member": {
         Permission.PROJECT_VIEW,
         Permission.SESSION_VIEW,
+        Permission.SESSION_SEND,
     },
     "operator": {
         Permission.PROJECT_VIEW,
@@ -62,10 +68,14 @@ ROLE_PERMISSIONS: dict[str, set[Permission]] = {
         Permission.APPROVAL_VOTE,
         Permission.TERMINAL_CONTROL,
         Permission.AUDIT_VIEW,
-        Permission.GROUP_ROLE_MANAGE,
-        Permission.POLICY_MANAGE,
+        # 治理权（改角色/策略/设备/危险审批）归 admin，是 admin 区别于 maintainer 的核心。
     },
     "admin": set(Permission),
+}
+
+# 运行期生效的角色→权限表：默认种子，可被控制台编辑/新增的覆盖层替换（见 set_role_overrides）。
+ROLE_PERMISSIONS: dict[str, set[Permission]] = {
+    role: set(perms) for role, perms in DEFAULT_ROLE_PERMISSIONS.items()
 }
 
 

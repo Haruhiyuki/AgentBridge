@@ -6080,7 +6080,7 @@ def test_group_role_api_grants_command_permissions(tmp_path):
         "platform": "onebot.v11",
         "chat_space_id": "group-roles-api",
     }
-    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["admin"]}
     member = {"id": "usr_member", "roles": ["member"]}
     context = client.post("/api/v1/chat-contexts", json=chat).json()
 
@@ -6149,7 +6149,7 @@ def test_group_role_api_grants_command_permissions(tmp_path):
     denied_turn = client.post(
         "/api/v1/commands/execute",
         json={
-            "raw_text": "/agent ask after revoke",
+            "raw_text": "/agent session new After Revoke",
             "actor": member,
             "chat_context_id": context["id"],
             "idempotency_key": "role-api-denied-turn",
@@ -6211,7 +6211,7 @@ def test_managed_device_identity_requires_group_role_manage_scope_for_role_apis(
 def test_managed_device_identity_group_role_read_scope_allows_role_reads():
     client = TestClient(create_app())
     admin = {"id": "security-admin", "roles": ["admin"]}
-    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["admin"]}
     context = client.post(
         "/api/v1/chat-contexts",
         json={
@@ -6270,7 +6270,7 @@ def test_managed_device_identity_group_role_read_scope_allows_role_reads():
 def test_managed_device_identity_group_role_manage_scope_allows_role_writes():
     client = TestClient(create_app())
     admin = {"id": "security-admin", "roles": ["admin"]}
-    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["admin"]}
     context = client.post(
         "/api/v1/chat-contexts",
         json={
@@ -7020,7 +7020,7 @@ def test_approval_policy_overrides_apply_by_project_and_chat_context(tmp_path):
         "platform": "onebot.v11",
         "chat_space_id": "group-policy-api",
     }
-    actor = {"id": "usr_1", "roles": ["maintainer"]}
+    actor = {"id": "usr_1", "roles": ["admin"]}
 
     project_response = client.post(
         "/api/v1/commands/execute",

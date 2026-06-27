@@ -50,7 +50,7 @@ def _create_session(
 
 def test_access_policy_deny_rule_overrides_role_permission(tmp_path):
     control = ControlPlane()
-    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    maintainer = Actor(id="usr_maintainer", roles={"admin"})
     operator = Actor(id="usr_operator", roles={"operator"})
     session = _create_session(control, tmp_path, maintainer)
 
@@ -77,7 +77,7 @@ def test_access_policy_deny_rule_overrides_role_permission(tmp_path):
 
 def test_access_policy_resource_rule_denies_only_matching_session(tmp_path):
     control = ControlPlane()
-    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    maintainer = Actor(id="usr_maintainer", roles={"admin"})
     operator = Actor(id="usr_operator", roles={"operator"})
     blocked_session = _create_session(
         control,
@@ -124,7 +124,7 @@ def test_access_policy_resource_rule_denies_only_matching_session(tmp_path):
 
 def test_access_policy_terminal_rule_grants_specific_session_control(tmp_path):
     control = ControlPlane()
-    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    maintainer = Actor(id="usr_maintainer", roles={"admin"})
     operator = Actor(id="usr_operator", roles={"operator"})
     allowed_session = _create_session(
         control,
@@ -181,7 +181,7 @@ def test_access_policy_terminal_rule_grants_specific_session_control(tmp_path):
 
 def test_access_policy_simulation_matches_resource_attributes(tmp_path):
     control = ControlPlane()
-    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    maintainer = Actor(id="usr_maintainer", roles={"admin"})
     operator = Actor(id="usr_operator", roles={"operator"})
     session = _create_session(control, tmp_path, maintainer)
 
@@ -223,7 +223,7 @@ def test_access_policy_simulation_matches_resource_attributes(tmp_path):
 def test_access_policy_api_terminal_route_uses_terminal_resource(tmp_path):
     control = ControlPlane()
     client = TestClient(create_app(control))
-    maintainer = Actor(id="usr_maintainer", roles={"maintainer"})
+    maintainer = Actor(id="usr_maintainer", roles={"admin"})
     session = _create_session(control, tmp_path, maintainer)
     rule = control.set_access_policy_rule(
         actor=maintainer,
@@ -231,14 +231,14 @@ def test_access_policy_api_terminal_route_uses_terminal_resource(tmp_path):
         action=Permission.TERMINAL_CONTROL.value,
         resource_type="terminal",
         resource_id=session.id,
-        roles=["maintainer"],
+        roles=["admin"],
         trace_id="policy-api-terminal-deny",
     )
 
     response = client.post(
         f"/api/v1/sessions/{session.id}/terminal/start",
         json={
-            "actor": {"id": maintainer.id, "roles": ["maintainer"]},
+            "actor": {"id": maintainer.id, "roles": ["admin"]},
             "command": "sh",
             "trace_id": "policy-api-terminal-start",
         },
@@ -250,7 +250,7 @@ def test_access_policy_api_terminal_route_uses_terminal_resource(tmp_path):
 
 def test_access_policy_api_manages_and_simulates_rules():
     client = TestClient(create_app())
-    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["admin"]}
     operator = {"id": "usr_operator", "roles": ["operator"]}
 
     create_response = client.post(
@@ -308,7 +308,7 @@ def test_access_policy_api_manages_and_simulates_rules():
 def test_managed_device_identity_requires_policy_scopes_for_policy_apis():
     client = TestClient(create_app())
     admin = {"id": "security-admin", "roles": ["admin"]}
-    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["admin"]}
     operator = {"id": "usr_operator", "roles": ["operator"]}
 
     create_response = client.post(
@@ -353,7 +353,7 @@ def test_managed_device_identity_requires_policy_scopes_for_policy_apis():
 def test_managed_device_identity_policy_read_scope_allows_policy_reads():
     client = TestClient(create_app())
     admin = {"id": "security-admin", "roles": ["admin"]}
-    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["admin"]}
     operator = {"id": "usr_operator", "roles": ["operator"]}
     project_response = client.post(
         "/api/v1/projects",
@@ -425,7 +425,7 @@ def test_managed_device_identity_policy_read_scope_allows_policy_reads():
 def test_managed_device_identity_policy_manage_scope_allows_policy_writes():
     client = TestClient(create_app())
     admin = {"id": "security-admin", "roles": ["admin"]}
-    maintainer = {"id": "usr_maintainer", "roles": ["maintainer"]}
+    maintainer = {"id": "usr_maintainer", "roles": ["admin"]}
     operator = {"id": "usr_operator", "roles": ["operator"]}
 
     create_identity_response = client.post(
