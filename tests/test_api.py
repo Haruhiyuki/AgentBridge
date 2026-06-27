@@ -9317,21 +9317,40 @@ def test_provision_project_create_dir_false_does_not_mkdir(tmp_path):
     assert not workdir.exists()
 
 
-def test_filesystem_directories_browse_is_bounded(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENTBRIDGE_PROJECT_BASE_DIR", str(tmp_path))
-    (tmp_path / "alpha").mkdir()
-    (tmp_path / "beta").mkdir()
-    (tmp_path / ".hidden").mkdir()
+def test_filesystem_directories_browse_can_leave_base_and_take_typed_path(tmp_path, monkeypatch):
+    base = tmp_path / "home"
+    base.mkdir()
+    (base / "alpha").mkdir()
+    (base / "beta").mkdir()
+    (base / ".hidden").mkdir()
+    monkeypatch.setenv("AGENTBRIDGE_PROJECT_BASE_DIR", str(base))
     client = TestClient(create_app())
+
     d = client.get("/api/v1/filesystem/directories").json()
-    assert d["root"] == str(tmp_path.resolve())
-    assert d["parent"] is None  # 浏览根不可上越。
+    assert d["path"] == str(base.resolve())
+    assert d["home"] == str(base.resolve())
+    # 默认起点不再是硬边界：可一路 ↑ 退出去（parent 不再被钉成 None）。
+    assert d["parent"] == str(base.resolve().parent)
     names = [x["name"] for x in d["directories"]]
     assert "alpha" in names and "beta" in names
-    assert ".hidden" not in names  # 隐藏目录过滤。
-    # 越界保护：传根外路径回落到根。
-    d2 = client.get("/api/v1/filesystem/directories", params={"path": "/etc"}).json()
-    assert d2["path"] == str(tmp_path.resolve())
+    assert ".hidden" not in names  # 隐藏目录仍过滤。
+
+    # 直接输入 base 之外的绝对路径可用（不再回落到根）。
+    outside = client.get(
+        "/api/v1/filesystem/directories", params={"path": str(tmp_path)}
+    ).json()
+    assert outside["path"] == str(tmp_path.resolve())
+
+    # 不存在的路径回退到最近存在的祖先。
+    fallback = client.get(
+        "/api/v1/filesystem/directories", params={"path": str(base / "alpha" / "ghost")}
+    ).json()
+    assert fallback["path"] == str((base / "alpha").resolve())
+
+    # 文件系统根 `/` 的 parent 为 None（到顶为止）。
+    at_root = client.get("/api/v1/filesystem/directories", params={"path": "/"}).json()
+    assert at_root["parent"] is None
+    assert at_root["at_filesystem_root"] is True
 
 
 def _start_terminal(client, session_id, actor):

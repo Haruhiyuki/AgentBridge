@@ -118,7 +118,7 @@ from agentbridge.renderer import (
     document_from_event,
     render_action_descriptors,
 )
-from agentbridge.storage import InMemoryRepository, is_within
+from agentbridge.storage import InMemoryRepository
 from agentbridge.terminal_agent import (
     DEFAULT_PTY_OUTPUT_LIMIT_CHARS,
     FakeTerminalBackend,
@@ -1842,10 +1842,12 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     def list_filesystem_directories(
         path: str | None = None, control: ControlPlane = Depends(get_control)
     ):
-        """受限目录浏览：列出某目录下的子目录，供控制台新建项目时可视化选父目录。
+        """目录浏览：列出某目录下的子目录，供控制台选/建项目工作目录。
 
-        浏览被限制在 ``project_base_dir()`` 根之内（默认 ``~``，可经
-        ``AGENTBRIDGE_PROJECT_BASE_DIR`` 配置），越界一律回落到根，隐藏点目录。
+        默认从 ``project_base_dir()``（``AGENTBRIDGE_PROJECT_BASE_DIR``，默认 ``~``）起步，
+        但不再限制在其内——可一路 ↑ 退到文件系统根 ``/``，也可直接输入任意绝对路径，便于把
+        ``~`` 之外的现有文件夹（如 ``/Volumes/...``）设为项目。控制台已是 admin 令牌门禁，
+        本地优先工具下放开浏览范围；隐藏点目录保持整洁。
         """
         actor = Actor(id="api", roles={"admin"})
         control.require_collection_permission(
@@ -1854,14 +1856,15 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             resource_type="filesystem",
             attributes={"operation": "browse_directories"},
         )
-        root = project_base_dir()
+        home = project_base_dir()
         target = (
             Path(path).expanduser().resolve(strict=False)
             if path and path.strip()
-            else root
+            else home
         )
-        if not is_within(target, root):
-            target = root
+        # 输入了不存在的路径 → 回退到最近存在的祖先，避免空白卡死（仍可在此新建子目录）。
+        while not target.is_dir() and target != target.parent:
+            target = target.parent
         directories: list[dict[str, str]] = []
         if target.is_dir():
             try:
@@ -1870,15 +1873,14 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
                         directories.append({"name": child.name, "path": str(child)})
             except OSError:
                 pass
-        parent = (
-            str(target.parent)
-            if target != root and is_within(target.parent, root)
-            else None
-        )
+        # 到文件系统根为止（``/`` 的 parent 仍是 ``/``）。
+        parent = str(target.parent) if target != target.parent else None
         return {
-            "root": str(root),
+            "root": str(home),
+            "home": str(home),
             "path": str(target),
             "parent": parent,
+            "at_filesystem_root": target == target.parent,
             "directories": directories,
         }
 

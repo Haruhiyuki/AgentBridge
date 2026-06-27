@@ -331,18 +331,22 @@ const OperationsView = {
       return p.length > 64 ? p.slice(0, 64) + "…" : p || "(空)";
     }
 
-    // —— 新建项目：目录浏览 + provision ——
+    // —— 创建项目：目录浏览 + provision。两种模式：open=打开现有文件夹、new=在父目录下新建文件夹 ——
     const create = reactive({
       open: false,
+      mode: "open",
       name: "",
       agent: "claude",
-      createDir: true,
+      pathInput: "",
       submitting: false,
-      browser: { root: "", path: "", parent: null, dirs: [], loading: false },
+      browser: { root: "", home: "", path: "", parent: null, dirs: [], loading: false },
     });
     async function toggleCreate() {
       create.open = !create.open;
       if (create.open && !create.browser.path) await browseDir(null);
+    }
+    function basename(p) {
+      return (p || "").replace(/\/+$/, "").split("/").pop() || "";
     }
     async function browseDir(path) {
       create.browser.loading = true;
@@ -351,38 +355,63 @@ const OperationsView = {
           params: path ? { path } : undefined,
         });
         create.browser.root = data.root;
+        create.browser.home = data.home || data.root;
         create.browser.path = data.path;
         create.browser.parent = data.parent;
         create.browser.dirs = data.directories || [];
+        create.pathInput = data.path;
       } catch (e) {
         toast(e.message, true);
       } finally {
         create.browser.loading = false;
       }
     }
+    // 打开现有：直接用当前目录；新建：在当前目录下按项目名建子目录。
     const createTargetDir = computed(() => {
-      const base = create.browser.path || "~";
-      const folder = (create.name || "").trim() || "项目名";
-      return base.replace(/\/$/, "") + "/" + folder;
+      const base = (create.browser.path || "~").replace(/\/$/, "");
+      if (create.mode === "new") {
+        const folder = (create.name || "").trim() || "新文件夹名";
+        return base + "/" + folder;
+      }
+      return base;
+    });
+    const effectiveProjectName = computed(() => {
+      const typed = (create.name || "").trim();
+      if (typed) return typed;
+      return create.mode === "open" ? basename(create.browser.path) : "";
+    });
+    const canSubmitCreate = computed(() => {
+      if (create.mode === "new") return !!create.name.trim();
+      return !!create.browser.path && !!effectiveProjectName.value;
     });
     async function submitCreate() {
-      if (!create.name.trim()) {
-        toast("请填写项目名", true);
+      const isNew = create.mode === "new";
+      const name = effectiveProjectName.value;
+      if (!name) {
+        toast(isNew ? "请填写新文件夹名/项目名" : "请填写项目名（或进入一个具名文件夹）", true);
         return;
       }
+      if (!create.browser.path) {
+        toast("请先选择目录", true);
+        return;
+      }
+      const base = create.browser.path.replace(/\/+$/, "");
+      const body = {
+        actor: ADMIN_ACTOR,
+        name,
+        default_agent: create.agent,
+        create_dir: isNew,
+      };
+      // 新建：交给后端在 base 下按净化后的项目名建子目录；打开现有：直接用当前目录。
+      if (isNew) body.base_dir = base;
+      else body.working_dir = base;
       create.submitting = true;
       try {
-        const res = await api("/projects/provision", {
-          method: "POST",
-          body: {
-            actor: ADMIN_ACTOR,
-            name: create.name.trim(),
-            working_dir: createTargetDir.value,
-            default_agent: create.agent,
-            create_dir: create.createDir,
-          },
-        });
-        toast("已创建项目，工作目录 " + (res.working_dir || ""));
+        const res = await api("/projects/provision", { method: "POST", body });
+        toast(
+          (isNew ? "已新建并创建项目，工作目录 " : "已用现有目录创建项目 ") +
+            (res.working_dir || base)
+        );
         create.open = false;
         create.name = "";
         await loadProjects();
@@ -427,6 +456,8 @@ const OperationsView = {
       toggleCreate,
       browseDir,
       createTargetDir,
+      effectiveProjectName,
+      canSubmitCreate,
       submitCreate,
       AGENT_LABELS,
       STATUS_LABELS,
@@ -451,33 +482,53 @@ const OperationsView = {
       </h2>
 
       <div v-if="create.open" class="create-box">
-        <div class="filter-row" style="margin-bottom:10px">
-          <input type="text" v-model="create.name" placeholder="项目名（必填，将作为文件夹名）" style="flex:2 1 220px" />
-          <select v-model="create.agent" style="flex:0 0 140px;margin:0">
-            <option value="claude">默认 Claude</option>
-            <option value="codex">默认 Codex</option>
-          </select>
-          <label class="muted" style="font-size:12px;text-transform:none;font-weight:400;flex:0 0 auto">
-            <input type="checkbox" v-model="create.createDir" style="width:auto;margin:0 4px 0 0" />目录不存在则创建
-          </label>
+        <!-- 模式切换：明显区分「打开现有文件夹」与「新建文件夹」 -->
+        <div class="mode-tabs">
+          <button :class="{active: create.mode==='open'}" @click="create.mode='open'">📂 打开现有文件夹</button>
+          <button :class="{active: create.mode==='new'}" @click="create.mode='new'">✨ 新建文件夹</button>
         </div>
+        <p class="mode-hint muted">
+          <template v-if="create.mode==='open'">进入一个<b>已存在</b>的文件夹，把它<b>直接</b>设为项目工作目录（不新建子目录）。</template>
+          <template v-else>浏览到一个<b>父目录</b>，在其下<b>新建</b>一个以项目名命名的文件夹作为工作目录。</template>
+        </p>
+
         <div class="dir-browser">
           <div class="dir-bar">
-            <button :disabled="!create.browser.parent" @click="browseDir(create.browser.parent)" title="上级">↑ 上级</button>
-            <code class="dir-path">{{ create.browser.path || '…' }}</code>
+            <button :disabled="!create.browser.parent" @click="browseDir(create.browser.parent)" title="上一级目录">↑ 上级</button>
+            <button @click="browseDir(create.browser.home || null)" title="回到默认目录">🏠</button>
+            <input class="path-input" type="text" v-model="create.pathInput"
+                   @keyup.enter="browseDir(create.pathInput)"
+                   placeholder="输入路径后回车，如 /Volumes/data/haruhifanclub" />
+            <button @click="browseDir(create.pathInput)" title="跳转到输入的路径">跳转</button>
             <span v-if="create.browser.loading" class="spin"></span>
-            <span class="muted" style="font-size:11px;margin-left:auto">浏览根 {{ create.browser.root }}</span>
           </div>
           <div class="dir-list">
             <div v-for="d in create.browser.dirs" :key="d.path" class="dir-item" @click="browseDir(d.path)">📁 {{ d.name }}</div>
             <div v-if="!create.browser.dirs.length && !create.browser.loading" class="muted" style="padding:8px 10px;font-size:12px">该目录下没有子目录。</div>
           </div>
         </div>
+
+        <div class="filter-row" style="margin-top:10px">
+          <input type="text" v-model="create.name"
+                 :placeholder="create.mode==='new' ? '新文件夹名 / 项目名（必填）' : '项目名（默认用当前文件夹名，可改）'"
+                 style="flex:2 1 220px" />
+          <select v-model="create.agent" style="flex:0 0 140px;margin:0">
+            <option value="claude">默认 Claude</option>
+            <option value="codex">默认 Codex</option>
+          </select>
+        </div>
+
         <div class="create-foot">
-          <span class="muted" style="font-size:12px">将创建工作目录：<code>{{ createTargetDir }}</code></span>
+          <span class="muted" style="font-size:12px">
+            <template v-if="create.mode==='new'">将<b style="color:#7ee0a6">新建</b>工作目录：</template>
+            <template v-else>将<b style="color:#6ea8fe">使用现有</b>目录：</template>
+            <code>{{ createTargetDir }}</code>
+            <template v-if="effectiveProjectName"> · 项目名 <code>{{ effectiveProjectName }}</code></template>
+          </span>
           <span class="spacer" style="flex:1"></span>
-          <button class="primary" @click="submitCreate" :disabled="create.submitting || !create.name.trim()">
-            <span v-if="create.submitting" class="spin"></span><span v-else>创建项目</span>
+          <button class="primary" @click="submitCreate" :disabled="create.submitting || !canSubmitCreate">
+            <span v-if="create.submitting" class="spin"></span>
+            <span v-else>{{ create.mode==='new' ? '新建并创建项目' : '用此目录创建项目' }}</span>
           </button>
         </div>
       </div>

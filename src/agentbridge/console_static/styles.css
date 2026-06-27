@@ -481,6 +481,39 @@ tr.selected td {
   margin-bottom: 14px;
   background: #0f1218;
 }
+.mode-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.mode-tabs button {
+  flex: 1 1 0;
+  padding: 9px 12px;
+  font-size: 13px;
+  border: 1px solid #20242e;
+  border-radius: 8px;
+  background: #0b0d12;
+  color: #9aa3b2;
+  cursor: pointer;
+}
+.mode-tabs button.active {
+  border-color: #6ea8fe;
+  background: rgba(110, 168, 254, 0.14);
+  color: #e8edf6;
+  font-weight: 600;
+}
+.mode-hint {
+  font-size: 12px;
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+.dir-bar .path-input {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: 12px;
+  padding: 5px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 .dir-browser {
   border: 1px solid #20242e;
   border-radius: 8px;
