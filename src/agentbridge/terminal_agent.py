@@ -12,8 +12,10 @@ import shutil
 import signal as process_signal
 import struct
 import subprocess
+import sys
 import termios
 import time
+import zlib
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -48,6 +50,44 @@ from agentbridge.domain import (
 
 def _env_truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def open_desktop_terminal(
+    attach_command: str,
+    *,
+    preset: str = "auto",
+    command_template: str | None = None,
+) -> None:
+    """打开一个可见的桌面终端窗口并在其中执行 attach 命令，让用户看到并接管会话。
+
+    优先使用自定义模板（``{attach}`` 占位）；否则按 preset 选择：macOS 用 osascript 开
+    Terminal.app，其它平台用常见的 ``<terminal> -e``。窗口里执行 attach（如
+    ``tmux attach -t <name>``）即可看到 agent 并接管。"""
+    if command_template:
+        full = command_template.replace("{attach}", attach_command)
+        subprocess.Popen(["/bin/sh", "-c", full])  # noqa: S603
+        return
+    resolved = preset
+    if resolved in {"", "auto"}:
+        resolved = "macos-terminal" if sys.platform == "darwin" else "xterm"
+    if resolved == "macos-terminal":
+        script = (
+            'tell application "Terminal"\n'
+            "    activate\n"
+            f'    do script "{attach_command}"\n'
+            "end tell"
+        )
+        subprocess.Popen(["osascript", "-e", script])  # noqa: S603,S607
+    elif resolved == "iterm":
+        script = (
+            'tell application "iTerm"\n'
+            "    create window with default profile\n"
+            f'    tell current session of current window to write text "{attach_command}"\n'
+            "end tell"
+        )
+        subprocess.Popen(["osascript", "-e", script])  # noqa: S603,S607
+    else:
+        subprocess.Popen([resolved, "-e", attach_command])  # noqa: S603
 
 
 class TerminalInputKind(StrEnum):
@@ -1352,8 +1392,26 @@ class TmuxTerminalBackend:
         )
 
     def status(self, *, session_id: str) -> TerminalStatus:
-        running = self._has_session(self._tmux_name(session_id))
-        return TerminalStatus(started=running, running=running)
+        name = self._tmux_name(session_id)
+        if not self._has_session(name):
+            return TerminalStatus(started=False, running=False)
+        # tmux 没有累积输出游标；用可见内容的校验和近似：内容变化（TUI 工作/动画）则游标变化，
+        # 内容稳定（回到提示符空闲）则游标不变，从而让空闲完成启发式可用。
+        snapshot = self.snapshot(session_id=session_id)
+        cursor = zlib.crc32(snapshot.encode("utf-8", "replace"))
+        return TerminalStatus(
+            started=True,
+            running=True,
+            output_cursor=cursor,
+            output_retained_chars=len(snapshot),
+        )
+
+    def attach_command(self, *, session_id: str) -> str:
+        """返回一条可在桌面终端里执行、用于 attach 到该会话 tmux 的命令（供可见窗口接管）。
+        用 tmux 的绝对路径，避免新开终端窗口的 PATH 里找不到 tmux。"""
+        name = self._tmux_name(session_id)
+        executable = shutil.which(self.executable) or self.executable
+        return f"{shlex.quote(executable)} attach -t {shlex.quote(name)}"
 
     def _has_session(self, name: str) -> bool:
         result = subprocess.run(
@@ -1708,6 +1766,10 @@ class TerminalAgentService:
         idle_min_active_seconds: float | None = None,
         submit_warmup_seconds: float | None = None,
         claude_hook_deploy: ClaudeHookDeploymentConfig | None = None,
+        auto_open_terminal: bool | None = None,
+        terminal_open_preset: str | None = None,
+        terminal_open_command: str | None = None,
+        terminal_opener: Callable[[str], None] | None = None,
     ) -> None:
         self.control = control
         self.backend = backend or FakeTerminalBackend()
@@ -1752,6 +1814,25 @@ class TerminalAgentService:
             else float(os.environ.get("AGENTBRIDGE_TERMINAL_SUBMIT_WARMUP_SECONDS", "0") or 0)
         )
         self._terminal_started_monotonic: dict[str, float] = {}
+        # 会话启动后自动打开一个可见的桌面终端窗口 attach 到该会话，满足"电脑上看得见 + 可接管"。
+        self.auto_open_terminal = (
+            auto_open_terminal
+            if auto_open_terminal is not None
+            else _env_truthy(os.environ.get("AGENTBRIDGE_TERMINAL_AUTO_OPEN"))
+        )
+        self.terminal_open_preset = (
+            terminal_open_preset
+            if terminal_open_preset is not None
+            else os.environ.get("AGENTBRIDGE_TERMINAL_OPEN_PRESET", "auto")
+        )
+        self.terminal_open_command = (
+            terminal_open_command
+            if terminal_open_command is not None
+            else os.environ.get("AGENTBRIDGE_TERMINAL_OPEN_COMMAND")
+        )
+        self._terminal_opener = terminal_opener
+        self._opened_visible_terminals: set[str] = set()
+        self._terminal_open_last_error: str | None = None
         self.lifecycle_policy = lifecycle_policy or TerminalLifecyclePolicy()
         self.agent_launch_config = agent_launch_config or AgentLaunchConfig.from_env()
         self.event_outbox = (
@@ -1828,7 +1909,33 @@ class TerminalAgentService:
             session_id=session_id,
             trace_id=f"{trace_id}:offline-protection",
         )
+        self._maybe_open_visible_terminal(session_id)
         return generation
+
+    def _maybe_open_visible_terminal(self, session_id: str) -> None:
+        """会话启动后打开可见桌面终端 attach（仅当后端支持 attach，如 tmux）。每会话只开一次。"""
+        if not self.auto_open_terminal or session_id in self._opened_visible_terminals:
+            return
+        attach_command = getattr(self.backend, "attach_command", None)
+        if attach_command is None:
+            self._terminal_open_last_error = "backend_attach_unsupported"
+            return
+        command = attach_command(session_id=session_id)
+        if not command:
+            return
+        try:
+            if self._terminal_opener is not None:
+                self._terminal_opener(command)
+            else:
+                open_desktop_terminal(
+                    command,
+                    preset=self.terminal_open_preset,
+                    command_template=self.terminal_open_command,
+                )
+            self._opened_visible_terminals.add(session_id)
+            self._terminal_open_last_error = None
+        except Exception as exc:  # 打开窗口失败不应阻断会话启动。
+            self._terminal_open_last_error = str(exc)
 
     def resolve_start_command(
         self,

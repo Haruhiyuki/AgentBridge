@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import shutil
+
+import pytest
+
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
     Actor,
@@ -131,6 +135,56 @@ def test_terminal_exit_fails_active_turn(tmp_path):
     assert control.repository.get_turn(turn.id).status == TurnStatus.FAILED
     assert control.repository.get_session(session.id).status == SessionStatus.IDLE
     assert control.repository.get_session(session.id).active_turn_id is None
+
+
+def test_auto_open_visible_terminal_once(tmp_path):
+    # 会话启动后自动打开一个可见桌面终端 attach；每会话只开一次。
+    opened: list[str] = []
+    control = ControlPlane()
+    backend = FakeTerminalBackend()
+    backend.attach_command = lambda *, session_id: f"tmux attach -t {session_id}"
+    terminal = TerminalAgentService(
+        control,
+        backend=backend,
+        auto_open_terminal=True,
+        terminal_opener=opened.append,
+    )
+    actor = Actor(id="u", roles={"maintainer"})
+    project = control.create_project(
+        actor=actor, name="P", default_agent=AgentType.CLAUDE, trace_id="p"
+    )
+    ws = control.add_workspace(
+        actor=actor,
+        project_id=project.id,
+        machine_id="local",
+        path=str(tmp_path),
+        allowed_root=str(tmp_path),
+        trace_id="w",
+    )
+    session = control.create_session(
+        actor=actor,
+        project_id=project.id,
+        workspace_id=ws.id,
+        name="S",
+        agent_type=AgentType.CLAUDE,
+        visibility=Visibility.GROUP,
+        trace_id="s",
+    )
+    terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start")
+    assert opened == [f"tmux attach -t {session.id}"]
+    # 同一会话再次启动不重复开窗。
+    terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start2")
+    assert len(opened) == 1
+
+
+@pytest.mark.skipif(shutil.which("tmux") is None, reason="tmux 未安装")
+def test_tmux_backend_attach_command_and_cursor():
+    from agentbridge.terminal_agent import TmuxTerminalBackend
+
+    backend = TmuxTerminalBackend()
+    cmd = backend.attach_command(session_id="ses_abc")
+    assert "attach" in cmd
+    assert "agentbridge_ses_abc" in cmd
 
 
 def test_advance_yields_to_human_takeover(tmp_path):
