@@ -39,6 +39,9 @@ class ClaudeHookDeploymentConfig:
     api_token_file: str | None = None
     hook_command: str = "agentbridge-adapter-client"
     settings_relative_path: str = DEFAULT_SETTINGS_RELATIVE_PATH
+    # 交互式提问（AskUserQuestion/审批等）阻塞等待人类作答的上限。默认 300s 对"群里读完三个
+    # 问题再 /ab answer"太短，常超时被判 declined。放宽到 ~30 分钟，给真人足够作答时间。
+    wait_timeout_seconds: float = 1800.0
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> ClaudeHookDeploymentConfig:
@@ -56,6 +59,9 @@ class ClaudeHookDeploymentConfig:
             ),
             settings_relative_path=source.get(
                 "AGENTBRIDGE_CLAUDE_HOOK_SETTINGS_PATH", DEFAULT_SETTINGS_RELATIVE_PATH
+            ),
+            wait_timeout_seconds=float(
+                source.get("AGENTBRIDGE_CLAUDE_HOOK_WAIT_TIMEOUT_SECONDS") or 1800
             ),
         )
 
@@ -93,6 +99,7 @@ def deploy_claude_hooks(
         session_id=session_id,
         api_token=inline_token,
         api_token_file=token_file,
+        wait_timeout_seconds=config.wait_timeout_seconds,
         include_secret_values=inline_token is not None,
     )
     merged = merge_claude_hook_settings(existing, fragment)

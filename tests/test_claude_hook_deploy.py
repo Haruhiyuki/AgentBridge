@@ -91,6 +91,32 @@ def test_config_from_env_defaults_disabled():
     assert enabled.api_url == "http://x"
 
 
+def test_interactive_wait_timeout_is_generous_and_configurable(tmp_path):
+    """交互式提问阻塞等待人类作答的窗口：默认放宽到 ~30 分钟，并随环境变量可调，写进部署的 hook。"""
+    assert ClaudeHookDeploymentConfig.from_env({}).wait_timeout_seconds == 1800.0
+    assert (
+        ClaudeHookDeploymentConfig.from_env(
+            {"AGENTBRIDGE_CLAUDE_HOOK_WAIT_TIMEOUT_SECONDS": "900"}
+        ).wait_timeout_seconds
+        == 900.0
+    )
+
+    config = ClaudeHookDeploymentConfig(
+        enabled=True, api_url="http://h:8000", api_token_file="/t", wait_timeout_seconds=900
+    )
+    path = deploy_claude_hooks(session_id="s1", workspace_path=tmp_path, config=config)
+    settings = json.loads(path.read_text(encoding="utf-8"))
+    handlers = find_agentbridge_handlers(settings)
+    assert handlers, "应写入 AgentBridge 的 claude-hook handler"
+    # 所有 handler 都把 --wait-timeout-seconds 传成 900。
+    for handler in handlers:
+        args = handler["args"]
+        assert "900" in args[args.index("--wait-timeout-seconds") + 1]
+    # 阻塞类事件（提问/审批）的 Claude 侧 hook 超时必须 >= 等待上限，否则会在 hook 返回前杀掉它。
+    blocking = [h for h in handlers if h["timeout"] >= 900]
+    assert blocking, "提问/审批等阻塞 hook 的 timeout 应随等待上限放大到 >= 900"
+
+
 def _make_session(control: ControlPlane, tmp_path, agent_type: AgentType):
     actor = Actor(id="usr_1", roles={"maintainer"})
     project = control.create_project(

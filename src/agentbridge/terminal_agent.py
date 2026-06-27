@@ -44,10 +44,12 @@ from agentbridge.domain import (
     AgentBridgeError,
     AgentType,
     ErrorCode,
+    InteractionStatus,
     LeaseOwnerType,
     SemanticEventSource,
     SessionStatus,
     TurnStatus,
+    utc_now,
 )
 
 
@@ -1852,6 +1854,8 @@ class TerminalAgentService:
         idle_completion_agent_types: set[AgentType] | None = None,
         idle_complete_seconds: float | None = None,
         idle_min_active_seconds: float | None = None,
+        stuck_turn_reconcile: bool | None = None,
+        stuck_turn_reconcile_seconds: float | None = None,
         submit_warmup_seconds: float | None = None,
         claude_hook_deploy: ClaudeHookDeploymentConfig | None = None,
         auto_open_terminal: bool | None = None,
@@ -1894,6 +1898,30 @@ class TerminalAgentService:
             else float(os.environ.get("AGENTBRIDGE_CODEX_IDLE_MIN_ACTIVE_SECONDS", "2") or 2)
         )
         self._turn_idle_watch: dict[str, dict[str, object]] = {}
+        # 僵尸自愈：Claude 走 Stop hook 收尾，但若 agent 在交互式提问（AskUserQuestion 等）
+        # 上把 hook 的 emit_and_wait 等超时后判 declined、回到空闲提示符，而 Stop hook 没能把
+        # turn.completed 发回服务端，则 active_turn 会永远挂着、堵死后续排队任务（终端仍活着，
+        # 旧的"终端已死"自愈兜不住）。这里对"挂着 active_turn、且存在一条早已超过 hook 等待
+        # 上限的 pending 交互"的 Claude 会话补发收尾：取消过期交互 + 落 turn.completed。
+        # 阈值必须 > hook 等待上限，否则会误杀人类正在作答、hook 仍在阻塞的合法提问。
+        self.stuck_turn_reconcile = (
+            stuck_turn_reconcile
+            if stuck_turn_reconcile is not None
+            else os.environ.get("AGENTBRIDGE_TERMINAL_STUCK_TURN_RECONCILE", "1") != "0"
+        )
+        # 必须与 ClaudeHookDeploymentConfig.wait_timeout_seconds 的默认值对齐（同一环境变量、
+        # 同一默认 1800s），否则阈值会落在 hook 仍在合法阻塞等待人类作答的窗口内、误杀提问。
+        hook_wait_estimate = float(
+            os.environ.get("AGENTBRIDGE_CLAUDE_HOOK_WAIT_TIMEOUT_SECONDS") or 1800
+        )
+        self.stuck_turn_reconcile_seconds = (
+            stuck_turn_reconcile_seconds
+            if stuck_turn_reconcile_seconds is not None
+            else float(
+                os.environ.get("AGENTBRIDGE_STUCK_TURN_RECONCILE_SECONDS")
+                or hook_wait_estimate + 120.0
+            )
+        )
         # 终端刚启动时原生 TUI 还在初始化，过早写入会丢键/不被当作回车；推进器在终端
         # 启动后先等待这段预热时间再提交任务（默认 0，生产经环境变量设为数秒）。
         self.submit_warmup_seconds = (
@@ -2565,6 +2593,95 @@ class TerminalAgentService:
         self._turn_idle_watch.pop(session_id, None)
         return {"session_id": session_id, "turn_id": turn_id, "idle_seconds": idle_for}
 
+    def check_stuck_interaction_turns(
+        self,
+        *,
+        now: object | None = None,
+        trace_id: str = "turn-stuck",
+    ) -> list[dict[str, object]]:
+        """对"挂着 active_turn 且交互早已超时"的 Claude 会话补发收尾，解开僵尸卡死。
+
+        见 ``__init__`` 中 ``stuck_turn_reconcile`` 的说明：当 Claude 的交互式提问 hook
+        等超时被判 declined、回到空闲提示符，但 Stop hook 没把 turn.completed 发回时，
+        active_turn 永远挂着、堵死队列。本方法兜底：取消过期 pending 交互 + 落 turn.completed。"""
+        if not self.stuck_turn_reconcile:
+            return []
+        current = utc_now() if now is None else now
+        reconciled: list[dict[str, object]] = []
+        for session in self.control.repository.list_sessions():
+            try:
+                outcome = self._check_session_stuck_interaction(
+                    session_id=session.id, now=current, trace_id=trace_id
+                )
+            except AgentBridgeError:
+                outcome = None
+            if outcome is not None:
+                reconciled.append(outcome)
+        return reconciled
+
+    def _check_session_stuck_interaction(
+        self,
+        *,
+        session_id: str,
+        now: object,
+        trace_id: str,
+    ) -> dict[str, object] | None:
+        session = self.control.repository.get_session(session_id)
+        # 仅处理依赖 Stop hook 收尾的 Claude；Codex/通用终端有空闲启发式，不在此列。
+        if session.agent_type != AgentType.CLAUDE:
+            return None
+        turn_id = session.active_turn_id
+        if turn_id is None:
+            return None
+        turn = self.control.repository.get_turn(turn_id)
+        if turn.status != TurnStatus.RUNNING:
+            return None
+        pendings = [
+            interaction
+            for interaction in self.control.repository.list_interactions(
+                session_id=session_id, status=InteractionStatus.PENDING
+            )
+            if interaction.turn_id in (None, turn_id)
+        ]
+        if not pendings:
+            return None
+        oldest = min(pendings, key=lambda interaction: interaction.created_at)
+        age = (now - oldest.created_at).total_seconds()
+        if age < self.stuck_turn_reconcile_seconds:
+            return None
+        # 阈值已超过 hook 等待上限 → 该提问的 emit_and_wait 必然早已超时返回、agent 回到空闲：
+        # 取消这些再也无人接管的 pending 交互，并补发 turn.completed 让队列前进。
+        runner_actor = Actor(id="system:turn-runner", roles={"maintainer"})
+        cancelled: list[str] = []
+        for interaction in pendings:
+            with suppress(AgentBridgeError):
+                self.control.cancel_interaction(
+                    actor=runner_actor,
+                    interaction_id=interaction.id,
+                    trace_id=f"{trace_id}:cancel-stale",
+                    reason="adapter_wait_timeout_reconcile",
+                )
+                cancelled.append(interaction.id)
+        self.control.ingest_session_event(
+            session_id=session_id,
+            event_type="turn.completed",
+            source=SemanticEventSource.TERMINAL_AGENT,
+            trace_id=f"{trace_id}:reconcile",
+            turn_id=turn_id,
+            idempotency_key=f"turn-stuck-reconcile:{turn_id}",
+            payload={
+                "completion": "stuck_interaction_reconcile",
+                "interaction_age_seconds": round(age, 3),
+                "cancelled_interactions": cancelled,
+            },
+        )
+        return {
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "interaction_age_seconds": age,
+            "cancelled_interactions": cancelled,
+        }
+
     def _extract_terminal_answer(self, session_id: str, agent_type: AgentType) -> str:
         """从原生 TUI 抽取最后一段回答（目前支持 Codex）。失败返回空串。"""
         if agent_type != AgentType.CODEX:
@@ -2858,6 +2975,11 @@ class TerminalAgentService:
                 self.check_idle_turn_completions(trace_id=f"{trace_id}:idle")
             except Exception as exc:
                 errors.append(f"check_idle_turn_completions: {exc}")
+        if self.stuck_turn_reconcile:
+            try:
+                self.check_stuck_interaction_turns(trace_id=f"{trace_id}:stuck")
+            except Exception as exc:
+                errors.append(f"check_stuck_interaction_turns: {exc}")
         if self.auto_advance_queues:
             try:
                 self.advance_pending_queues(trace_id=f"{trace_id}:advance")

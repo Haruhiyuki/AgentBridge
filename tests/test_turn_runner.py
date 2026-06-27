@@ -4,15 +4,20 @@ import shutil
 
 import pytest
 
+from datetime import timedelta
+
 from agentbridge.control_plane import ControlPlane
 from agentbridge.domain import (
     Actor,
     AgentType,
+    InteractionStatus,
+    InteractionType,
     LeaseOwnerType,
     SemanticEventSource,
     SessionStatus,
     TurnStatus,
     Visibility,
+    utc_now,
 )
 from agentbridge.terminal_agent import (
     FakeTerminalBackend,
@@ -426,3 +431,83 @@ def test_idle_session_lease_does_not_block_sibling_in_shared_workspace(tmp_path)
     res = terminal.advance_queue(session_id=session_b.id)
     assert res["action"] == "submitted"
     assert res["turn_id"] == tb.id
+
+
+def test_stuck_interaction_turn_is_reconciled(tmp_path):
+    """Claude 提问 hook 超时被判 declined、Stop hook 没回传时，挂着的 active_turn 应被兜底收尾。
+
+    复现真实卡死：active_turn 长挂、伴随一条早已超过 hook 等待上限的 pending 提问交互，
+    终端仍活着（旧的"终端已死"自愈兜不住）。check_stuck_interaction_turns 应取消过期交互
+    并补发 turn.completed，让会话回 IDLE、队列得以前进。"""
+    control, terminal, actor, session = bootstrap(tmp_path, stuck_turn_reconcile_seconds=420)
+    terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start")
+    turn = control.enqueue_turn(
+        actor=actor, session_id=session.id, prompt="用交互式窗口问我三个问题", trace_id="t1"
+    )
+    terminal.advance_queue(session_id=session.id)
+    assert control.repository.get_turn(turn.id).status == TurnStatus.RUNNING
+
+    interaction = control.create_interaction(
+        actor=actor,
+        session_id=session.id,
+        interaction_type=InteractionType.QUESTION,
+        prompt="要不要补充内容？",
+        options=["逐小时预报", "不用补充"],
+        trace_id="ask",
+    )
+    # 未到阈值（终端仍活着、hook 可能仍在合法阻塞等待人类作答）→ 不动。
+    fresh = terminal.check_stuck_interaction_turns(now=interaction.created_at + timedelta(seconds=120))
+    assert fresh == []
+    assert control.repository.get_turn(turn.id).status == TurnStatus.RUNNING
+
+    # 超过 hook 等待上限 → hook 必然早已超时返回、agent 回到空闲：兜底收尾。
+    reconciled = terminal.check_stuck_interaction_turns(
+        now=interaction.created_at + timedelta(seconds=600)
+    )
+    assert len(reconciled) == 1
+    assert reconciled[0]["turn_id"] == turn.id
+    assert interaction.id in reconciled[0]["cancelled_interactions"]
+    assert control.repository.get_turn(turn.id).status == TurnStatus.COMPLETED
+    assert control.repository.get_session(session.id).status == SessionStatus.IDLE
+    assert control.repository.get_session(session.id).active_turn_id is None
+    assert (
+        control.repository.get_interaction(interaction.id).status
+        == InteractionStatus.CANCELLED
+    )
+
+
+def test_stuck_reconcile_skips_codex_and_disabled(tmp_path):
+    """兜底仅针对依赖 Stop hook 的 Claude；Codex 走空闲启发式，且开关关闭时完全不动。"""
+    # 关闭开关：即便有超期交互也不收尾。
+    control, terminal, actor, session = bootstrap(tmp_path, stuck_turn_reconcile=False)
+    terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start")
+    turn = control.enqueue_turn(actor=actor, session_id=session.id, prompt="任务", trace_id="t1")
+    terminal.advance_queue(session_id=session.id)
+    interaction = control.create_interaction(
+        actor=actor,
+        session_id=session.id,
+        interaction_type=InteractionType.QUESTION,
+        prompt="问题",
+        trace_id="ask",
+    )
+    assert terminal.check_stuck_interaction_turns(now=utc_now() + timedelta(hours=1)) == []
+    assert control.repository.get_turn(turn.id).status == TurnStatus.RUNNING
+
+    # Codex 会话：开关开着也不归本兜底处理（交由空闲启发式）。
+    control_c, terminal_c, actor_c, session_c = bootstrap(
+        tmp_path, agent_type=AgentType.CODEX, stuck_turn_reconcile_seconds=420
+    )
+    terminal_c.start_session(session_id=session_c.id, command="fake-cli", trace_id="start")
+    turn_c = control_c.enqueue_turn(
+        actor=actor_c, session_id=session_c.id, prompt="任务", trace_id="t1"
+    )
+    terminal_c.advance_queue(session_id=session_c.id)
+    control_c.create_interaction(
+        actor=actor_c,
+        session_id=session_c.id,
+        interaction_type=InteractionType.QUESTION,
+        prompt="问题",
+        trace_id="ask",
+    )
+    assert terminal_c.check_stuck_interaction_turns(now=utc_now() + timedelta(hours=1)) == []
+    assert control_c.repository.get_turn(turn_c.id).status == TurnStatus.RUNNING
