@@ -1535,6 +1535,56 @@ def sanitize_folder_name(name: str) -> str:
     return cleaned or "project"
 
 
+def announce_console() -> None:
+    """启动时打印控制台 URL（可带解锁 token），并可选自动打开浏览器（类 Gradio inbrowser=True）。
+
+    面向「成熟的对外服务形态」：能力内建、默认安全。开关：
+    - ``AGENTBRIDGE_CONSOLE_BANNER``：打印启动横幅，默认开。
+    - ``AGENTBRIDGE_OPEN_BROWSER``：自动打开浏览器，默认关（本地启动脚本会显式开启）；
+      服务器/无界面/测试环境保持关闭，避免误开浏览器。
+    - ``AGENTBRIDGE_CONSOLE_URL_WITH_TOKEN``：URL 附带解锁 token，默认开；硬化部署可关，
+      避免 token 进入日志。
+    - ``AGENTBRIDGE_PUBLIC_BASE_URL``：对外基地址，默认 ``http://127.0.0.1:8000``。
+    """
+    if not env_bool("AGENTBRIDGE_CONSOLE_BANNER", default=True):
+        return
+    base = (
+        os.environ.get("AGENTBRIDGE_PUBLIC_BASE_URL", "") or "http://127.0.0.1:8000"
+    ).strip().rstrip("/")
+    console_url = base + "/console"
+    open_url = console_url
+    if env_bool("AGENTBRIDGE_CONSOLE_URL_WITH_TOKEN", default=True):
+        tokens = admin_expected_tokens()
+        if tokens:
+            from urllib.parse import quote
+
+            open_url = f"{console_url}?{ADMIN_AUTH_QUERY_PARAM}={quote(tokens[0], safe='')}"
+    line = "─" * 64
+    print(
+        f"\n{line}\n"
+        "  ✦ AgentBridge 控制台已就绪\n"
+        f"  ▸ 打开（含登录）：{open_url}\n"
+        f"  ▸ 控制台首页：    {console_url}\n"
+        f"{line}\n",
+        flush=True,
+    )
+    if env_bool("AGENTBRIDGE_OPEN_BROWSER", default=False):
+
+        def _open() -> None:
+            import time
+            import webbrowser
+
+            time.sleep(1.2)  # 等 uvicorn 真正开始监听再打开浏览器。
+            try:
+                webbrowser.open(open_url)
+            except Exception:
+                pass
+
+        import threading
+
+        threading.Thread(target=_open, daemon=True, name="ab-open-browser").start()
+
+
 def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
     control = control_plane or ControlPlane(
         repository=create_repository_from_env(),
@@ -1577,6 +1627,7 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             bot_retry_worker.start()
         if certificate_scan_worker.enabled:
             certificate_scan_worker.start()
+        announce_console()
         try:
             yield
         finally:
