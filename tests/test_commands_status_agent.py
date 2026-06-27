@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from agentbridge.commands import CommandService
 from agentbridge.control_plane import ControlPlane
-from agentbridge.domain import Actor, AgentType, LeaseOwnerType
+from agentbridge.domain import Actor, AgentType, LeaseOwnerType, SessionStatus
 
 
 def make_context(control: ControlPlane):
@@ -206,6 +206,59 @@ def test_status_shows_agent_lock_line(tmp_path):
     status = run(commands, "/ab status", actor, context.id, "st")
     assert "Agent：" in status.message
     assert "已锁定 Claude" in status.message
+
+
+def test_new_creates_fresh_bound_session_with_locked_agent(tmp_path):
+    control, commands, context, actor = bootstrap(tmp_path)
+    control.repository.set_preferred_agent(context.id, AgentType.CODEX)
+    res = run(commands, "/ab new", actor, context.id, "new")
+    assert res.canonical_command == "session.create"
+    session = control.repository.get_session(res.data["session_id"])
+    assert session.agent_type.value == "codex"  # 用锁定的 agent
+    assert control.repository.get_chat_context(context.id).active_session_id == session.id
+
+
+def test_clear_enqueues_agent_clear_command(tmp_path):
+    control, commands, context, actor = bootstrap(tmp_path)
+    run(commands, "/ab claude", actor, context.id, "c")
+    cleared = run(commands, "/ab clear", actor, context.id, "clear")
+    assert cleared.canonical_command == "session.clear"
+    turn = control.repository.get_turn(cleared.data["turn_id"])
+    assert turn.prompt == "/clear"
+
+
+def test_sessions_hides_unusable_and_prune_closes_them(tmp_path):
+    control, commands, context, actor = bootstrap(tmp_path)
+    run(commands, "/ab claude", actor, context.id, "c1")  # active claude session
+    # 再建一个会话并置为 recovering（离线保护）。
+    dead = run(commands, "/ab new --agent codex", actor, context.id, "n1")
+    dead_id = dead.data["session_id"]
+    run(commands, "/ab claude", actor, context.id, "c2")  # 切回 claude，dead 不再是当前
+    control.set_terminal_agent_offline_protection(
+        actor=actor, offline=True, session_id=dead_id, trace_id="off"
+    )
+    assert control.repository.get_session(dead_id).status == SessionStatus.RECOVERING
+
+    listed = run(commands, "/ab sessions", actor, context.id, "ls")
+    assert dead.data["session_id"] not in [s["id"] for s in listed.data["sessions"]]
+    assert listed.data["hidden_count"] >= 1
+    assert "已隐藏" in listed.message
+
+    pruned = run(commands, "/ab session prune", actor, context.id, "prune")
+    assert pruned.canonical_command == "session.prune"
+    assert control.repository.get_session(dead_id).status == SessionStatus.CLOSED
+
+
+def test_sessions_all_shows_everything(tmp_path):
+    control, commands, context, actor = bootstrap(tmp_path)
+    run(commands, "/ab claude", actor, context.id, "c1")
+    dead = run(commands, "/ab new --agent codex", actor, context.id, "n1")
+    run(commands, "/ab claude", actor, context.id, "c2")
+    control.set_terminal_agent_offline_protection(actor=actor, offline=True,
+        session_id=dead.data["session_id"], trace_id="off"
+    )
+    listed = run(commands, "/ab sessions --all", actor, context.id, "all")
+    assert dead.data["session_id"] in [s["id"] for s in listed.data["sessions"]]
 
 
 def test_help_is_grouped_and_comprehensive(tmp_path):

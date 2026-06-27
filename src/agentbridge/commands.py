@@ -54,6 +54,8 @@ COMMAND_ALIASES = {
     "智能体": "agent",
     "锁定": "lock",
     "解锁": "unlock",
+    "清理": "prune",
+    "清空": "clear",
     "接管": "takeover",
     "释放": "release",
     "角色": "role",
@@ -79,6 +81,8 @@ KNOWN_ROOTS = {
     "projects",
     "session",
     "sessions",
+    "new",
+    "clear",
     "use",
     "ask",
     "send",
@@ -158,6 +162,12 @@ AGENT_TYPE_LABELS = {
     "codex": "Codex",
     "generic_tui": "通用终端",
 }
+# 各 agent 在原生 TUI 里清理会话上下文的命令（作为一条 Turn 提交进终端）。
+_AGENT_CLEAR_COMMANDS = {
+    "claude": "/clear",
+    "codex": "/clear",
+    "generic_tui": "clear",
+}
 INACTIVE_SESSION_STATUSES = {"closed", "archived"}
 # 切换 agent 时不复用这些"坏掉/不可用"状态的会话，宁可新建一个干净的，
 # 避免复用到终端已丢失（recovering）或异常（error）而无法推进的旧会话。
@@ -168,6 +178,12 @@ NON_REUSABLE_SESSION_STATUSES = {
     "recovering",
     "error",
 }
+# 列表默认只显示"可用"会话；不可用（已关闭/归档/恢复中/异常）的默认隐藏，--all 才显示。
+NON_USABLE_SESSION_STATUSES = NON_REUSABLE_SESSION_STATUSES
+
+
+def usable_sessions(sessions: list[AgentSession]) -> list[AgentSession]:
+    return [s for s in sessions if s.status.value not in NON_USABLE_SESSION_STATUSES]
 
 
 def command_arguments_schema(
@@ -419,17 +435,41 @@ COMMAND_SPECS: tuple[dict[str, object], ...] = (
     command_spec(
         "session.list",
         aliases=["session", "sessions", "session list", "会话 列表"],
-        summary="List sessions for the active or specified project.",
-        usage="/agent session list [--project <project>]",
-        argument_schema=command_arguments_schema({"project": OPTIONAL_STRING_SCHEMA}),
+        summary="List usable sessions for the active or specified project.",
+        usage="/agent session list [--project <project>] [--all]",
+        argument_schema=command_arguments_schema(
+            {"project": OPTIONAL_STRING_SCHEMA, "all": BOOLEAN_SCHEMA}
+        ),
         required_permission="session.view",
         target_mode="project",
     ),
     command_spec(
+        "session.clear",
+        aliases=["clear", "session clear", "session reset", "清空", "会话 清空"],
+        summary="Clear the current agent's conversation context in the bound session.",
+        usage="/agent clear   ·   /agent session clear [session]",
+        argument_schema=command_arguments_schema({"session": OPTIONAL_STRING_SCHEMA}),
+        required_permission="session.send",
+        target_mode="session",
+        risk=RiskLevel.MEDIUM.value,
+        private_result_allowed=True,
+    ),
+    command_spec(
+        "session.prune",
+        aliases=["session prune", "session cleanup", "会话 清理"],
+        summary="Close all unusable (recovering/error) sessions in the project.",
+        usage="/agent session prune",
+        argument_schema=command_arguments_schema({"project": OPTIONAL_STRING_SCHEMA}),
+        required_permission="session.manage",
+        target_mode="project",
+        risk=RiskLevel.MEDIUM.value,
+        requires_confirmation=False,
+    ),
+    command_spec(
         "session.create",
-        aliases=["session new", "session create", "会话 新建"],
-        summary="Create a new Agent session in the active project.",
-        usage="/agent session new <name> [--agent claude|codex|generic_tui]",
+        aliases=["session new", "session create", "new", "会话 新建"],
+        summary="Create a new Agent session (fresh context) and bind to it.",
+        usage="/agent new [name]   ·   /agent session new <name> [--agent claude|codex]",
         argument_schema=command_arguments_schema(
             {
                 "name": STRING_SCHEMA,
@@ -995,7 +1035,20 @@ class CommandService:
             return "project.list", {"all": False}
         if root == "sessions":
             positional, options = parse_options(tokens)
-            return "session.list", {"project": options.get("project") or options.get("p")}
+            return "session.list", {
+                "project": options.get("project") or options.get("p"),
+                "all": bool(options.get("all")),
+            }
+        if root == "new":
+            positional, options = parse_options(tokens)
+            return "session.create", {
+                "name": " ".join(positional).strip() or None,
+                "project": options.get("project") or options.get("p"),
+                "agent": options.get("agent"),
+                "visibility": options.get("visibility") or "group",
+            }
+        if root == "clear":
+            return "session.clear", {}
         if root == "project":
             return self._parse_project(tokens)
         if root == "session":
@@ -1107,10 +1160,13 @@ class CommandService:
         action = self._canonical_token(tokens[0])
         positional, options = parse_options(tokens[1:])
         if action == "list":
-            return "session.list", {"project": options.get("project") or options.get("p")}
+            return "session.list", {
+                "project": options.get("project") or options.get("p"),
+                "all": bool(options.get("all")),
+            }
         if action == "new":
             return "session.create", {
-                "name": " ".join(positional).strip() or "AgentBridge Session",
+                "name": " ".join(positional).strip() or None,
                 "project": options.get("project") or options.get("p"),
                 "workspace_id": options.get("workspace-id"),
                 "agent": options.get("agent"),
@@ -1127,10 +1183,14 @@ class CommandService:
             return "session.info", {"session": positional[0] if positional else None}
         if action == "close":
             return "session.close", {"session": positional[0] if positional else None}
+        if action in {"clear", "reset"}:
+            return "session.clear", {"session": positional[0] if positional else None}
+        if action in {"prune", "cleanup"}:
+            return "session.prune", {"project": options.get("project") or options.get("p")}
         raise AgentBridgeError(
             ErrorCode.COMMAND_UNKNOWN,
             f"未知 session 子命令：{action}",
-            next_step="可用子命令：list、new、use、info、close。",
+            next_step="可用子命令：list、new、use、info、close、clear、prune。",
         )
 
     def _parse_agent(self, root: str, tokens: list[str]) -> tuple[str, dict[str, object]]:
@@ -1576,20 +1636,34 @@ class CommandService:
             return self._execute_project_select(invocation)
         if command == "session.create":
             return self._execute_session_create(invocation)
+        if command == "session.clear":
+            return self._execute_session_clear(invocation)
+        if command == "session.prune":
+            return self._execute_session_prune(invocation)
         if command == "session.list":
             project_id = self._optional_project_id(invocation)
-            sessions = self.control.list_sessions_for_context(
+            all_sessions = self.control.list_sessions_for_context(
                 invocation.actor,
                 project_id=project_id,
                 chat_context_id=invocation.chat_context_id,
             )
+            show_all = bool(args.get("all"))
+            sessions = all_sessions if show_all else usable_sessions(all_sessions)
+            hidden = len(all_sessions) - len(sessions)
             context = self.control.repository.get_chat_context(invocation.chat_context_id)
+            message = format_session_list_message(sessions, context.active_session_id)
+            if not show_all and hidden:
+                message += (
+                    f"\n（另有 {hidden} 个已关闭/恢复中会话已隐藏；"
+                    "/ab sessions --all 看全部，/ab session prune 清理）"
+                )
             return self._result(
                 invocation,
                 "Sessions",
-                format_session_list_message(sessions, context.active_session_id),
+                message,
                 {
                     "active_session_id": context.active_session_id,
+                    "hidden_count": hidden,
                     "sessions": [session.model_dump(mode="json") for session in sessions],
                 },
             )
@@ -2577,13 +2651,22 @@ class CommandService:
         args = invocation.args
         project_id = self._required_project_id(invocation)
         project = self.control.repository.get_project(project_id)
-        agent = AgentType(args["agent"]) if args.get("agent") else project.default_agent
+        context = self.control.repository.get_chat_context(invocation.chat_context_id)
+        # 不指定 agent 时用锁定的 agent，否则项目默认。
+        agent = (
+            AgentType(str(args["agent"]))
+            if args.get("agent")
+            else (context.preferred_agent or project.default_agent)
+        )
         visibility = Visibility(str(args.get("visibility") or "group"))
+        name = str(args.get("name") or "").strip() or AGENT_TYPE_LABELS.get(
+            agent.value, agent.value
+        )
         session = self.control.create_session(
             actor=invocation.actor,
             project_id=project_id,
             workspace_id=str(args["workspace_id"]) if args.get("workspace_id") else None,
-            name=str(args.get("name") or "AgentBridge Session"),
+            name=name,
             agent_type=agent,
             visibility=visibility,
             trace_id=invocation.trace_id,
@@ -2595,15 +2678,75 @@ class CommandService:
             session.id,
             expected_version=context.pointer_version,
         )
+        agent_label = AGENT_TYPE_LABELS.get(agent.value, agent.value)
         return self._result(
             invocation,
             "Session Created",
-            f"已创建 [{session.short_code}] {session.name}。",
+            f"已新建并绑定 {agent_label} 会话 [{session.short_code}]（全新上下文）。",
             {
                 "project_id": session.project_id,
                 "session_id": session.id,
                 "session": session.model_dump(mode="json"),
             },
+        )
+
+    def _execute_session_clear(self, invocation: CommandInvocation) -> CommandResult:
+        session = self._resolve_session_arg(invocation)
+        clear_command = _AGENT_CLEAR_COMMANDS.get(session.agent_type.value, "/clear")
+        turn = self.control.enqueue_turn(
+            actor=invocation.actor,
+            session_id=session.id,
+            prompt=clear_command,
+            trace_id=invocation.trace_id,
+            chat_context_id=invocation.chat_context_id,
+        )
+        return self._result(
+            invocation,
+            "Context Cleared",
+            (
+                f"已向 [{session.short_code}] 发送清理上下文命令（{clear_command}）。"
+                "若想要完全干净的新会话，也可以用 /ab new。"
+            ),
+            {
+                "project_id": session.project_id,
+                "session_id": session.id,
+                "turn_id": turn.id,
+                "clear_command": clear_command,
+            },
+        )
+
+    def _execute_session_prune(self, invocation: CommandInvocation) -> CommandResult:
+        project_id = self._required_project_id(invocation)
+        sessions = self.control.repository.list_sessions(project_id)
+        context = self.control.repository.get_chat_context(invocation.chat_context_id)
+        prunable = [
+            s
+            for s in sessions
+            if s.status.value in {"recovering", "error", "closing"}
+            and s.id != context.active_session_id
+        ]
+        closed: list[str] = []
+        for session in prunable:
+            try:
+                self.control.close_session(
+                    actor=invocation.actor,
+                    session_id=session.id,
+                    trace_id=invocation.trace_id,
+                    chat_context_id=invocation.chat_context_id,
+                )
+                closed.append(session.short_code)
+            except AgentBridgeError:
+                continue
+        message = (
+            f"已清理 {len(closed)} 个不可用会话：{', '.join(closed)}。"
+            if closed
+            else "没有需要清理的不可用会话。"
+        )
+        return self._result(
+            invocation,
+            "Sessions Pruned",
+            message,
+            {"project_id": project_id, "closed": closed},
         )
 
     def _execute_project_bind(
@@ -2683,10 +2826,13 @@ class CommandService:
     def _execute_session_select(self, invocation: CommandInvocation) -> CommandResult:
         args = invocation.args
         project_id = self._optional_project_id(invocation)
-        sessions = self.control.list_sessions_for_context(
-            invocation.actor,
-            project_id=project_id,
-            chat_context_id=invocation.chat_context_id,
+        # 与 /agent session list 默认显示一致（只数可用会话），保证编号对得上。
+        sessions = usable_sessions(
+            self.control.list_sessions_for_context(
+                invocation.actor,
+                project_id=project_id,
+                chat_context_id=invocation.chat_context_id,
+            )
         )
         index = int(args["index"])
         session = select_numbered_item(
