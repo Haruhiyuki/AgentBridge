@@ -124,31 +124,45 @@ const OperationsView = {
     );
 
     async function newSession(agent) {
+      const label = AGENT_LABELS[agent] || agent;
       try {
-        await api("/sessions", {
+        const res = await api("/sessions", {
           method: "POST",
           body: {
             actor: ADMIN_ACTOR,
             project_id: selected.value.id,
-            name: AGENT_LABELS[agent] || agent,
+            name: label,
             agent_type: agent,
             visibility: "group",
           },
         });
-        toast("已新建 " + (AGENT_LABELS[agent] || agent) + " 会话");
+        const sid = res && (res.id || (res.session && res.session.id));
         await loadSessions();
+        // 新建会话后立即启动终端并打开可见窗口（否则只是个空壳会话）。
+        if (sid) {
+          try {
+            await api("/sessions/" + sid + "/terminal/open", {
+              method: "POST",
+              body: ADMIN_ACTOR,
+            });
+            toast("已新建 " + label + " 会话并打开终端");
+          } catch (e) {
+            toast("会话已建，但打开终端失败：" + e.message, true);
+          }
+        } else {
+          toast("已新建 " + label + " 会话");
+        }
       } catch (e) {
         toast(e.message, true);
       }
     }
     async function closeSession(s) {
       try {
-        await api("/sessions/" + s.id + "/close", {
-          method: "POST",
-          body: { actor: ADMIN_ACTOR },
-        });
-        toast("已关闭 [" + s.short_code + "]");
+        // /close 直接收 ActorPayload（actor 字段在顶层，不能包成 {actor:...}）。
+        await api("/sessions/" + s.id + "/close", { method: "POST", body: ADMIN_ACTOR });
+        toast("已关闭 [" + s.short_code + "]（终端已停）");
         await loadSessions();
+        if (detail.session && detail.session.id === s.id) await loadDetail();
       } catch (e) {
         toast(e.message, true);
       }
@@ -160,10 +174,7 @@ const OperationsView = {
       let n = 0;
       for (const s of dead) {
         try {
-          await api("/sessions/" + s.id + "/close", {
-            method: "POST",
-            body: { actor: ADMIN_ACTOR },
-          });
+          await api("/sessions/" + s.id + "/close", { method: "POST", body: ADMIN_ACTOR });
           n++;
         } catch (e) {
           /* skip */
@@ -273,15 +284,40 @@ const OperationsView = {
         toast(e.message, true);
       }
     }
+    async function openTerminal() {
+      try {
+        const r = await api("/sessions/" + detail.session.id + "/terminal/open", {
+          method: "POST",
+          body: ADMIN_ACTOR,
+        });
+        toast(r.action === "reattached" ? "已重新打开终端窗口（续上次）" : "已启动 agent 并打开终端");
+        setTimeout(loadDetail, 800);
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
     async function restartTerminal() {
-      if (!confirm("重启该会话的终端？将沿用上次启动命令。")) return;
+      if (!confirm("重启该会话的终端？将杀掉当前 agent 并带 resume 重新拉起（续上次对话）。")) return;
       try {
         await api("/sessions/" + detail.session.id + "/terminal/restart", {
           method: "POST",
-          body: { actor: ADMIN_ACTOR },
+          body: { actor: ADMIN_ACTOR, resume: true },
         });
-        toast("已请求重启终端");
-        setTimeout(loadDetail, 800);
+        toast("已重启终端（resume 续上次对话）");
+        setTimeout(loadDetail, 1000);
+      } catch (e) {
+        toast(e.message, true);
+      }
+    }
+    async function stopTerminal() {
+      if (!confirm("停止该会话的终端（杀掉 agent 进程，但不关闭会话）？")) return;
+      try {
+        await api("/sessions/" + detail.session.id + "/terminal/stop", {
+          method: "POST",
+          body: ADMIN_ACTOR,
+        });
+        toast("已停止终端");
+        await loadDetail();
       } catch (e) {
         toast(e.message, true);
       }
@@ -382,7 +418,9 @@ const OperationsView = {
       clearQueue,
       moveUp,
       releaseLease,
+      openTerminal,
       restartTerminal,
+      stopTerminal,
       leaseLabel,
       turnPreview,
       create,
@@ -551,8 +589,11 @@ const OperationsView = {
         </template>
       </h3>
       <div class="btn-row" style="margin-bottom:10px">
+        <button class="primary" @click="openTerminal">打开终端窗口</button>
+        <button @click="restartTerminal">重启（resume）</button>
+        <button class="danger" @click="stopTerminal" :disabled="detail.term && !detail.term.running">停止终端</button>
+        <span class="spacer" style="flex:1"></span>
         <button @click="loadDetail">刷新快照</button>
-        <button class="danger" @click="restartTerminal">重启终端</button>
       </div>
       <pre class="term-snap" v-if="detail.snapshot">{{ detail.snapshot }}</pre>
       <div v-else class="empty" style="padding:14px">暂无终端输出快照。</div>
