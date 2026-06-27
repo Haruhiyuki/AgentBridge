@@ -108,8 +108,22 @@ def _render_table(header: list[str], rows: list[list[str]]) -> list[str]:
     return out
 
 
+def _is_table_row(line: str) -> bool:
+    """是否像一行 markdown 表格数据：去空白后以 | 收尾、且能切出 ≥2 个单元格、不是分隔行。"""
+    stripped = line.strip()
+    if not (stripped.startswith("|") and stripped.endswith("|")):
+        return False
+    if _is_table_separator(line):
+        return False
+    return len(_split_table_row(line)) >= 2
+
+
 def _convert_tables(text: str) -> list[str]:
-    """识别 markdown 表格块（表头行 + 分隔行 + 数据行）并替换成记录式列表，其余行原样保留。"""
+    """识别 markdown 表格块（表头行 + 分隔行 + 数据行）并替换成记录式列表，其余行原样保留。
+
+    流式 delta 常把一个表格拆散，导致部分数据行落单（前面没有表头+分隔行）。为避免这些
+    落单行以原始 ``|...|`` 形态刷屏到 QQ，任何「像表格行」的落单行也降级成 ``单元格 / 单元格``。
+    """
     lines = text.split("\n")
     out: list[str] = []
     i, n = 0, len(lines)
@@ -124,6 +138,12 @@ def _convert_tables(text: str) -> list[str]:
                 j += 1
             out.extend(_render_table(header, rows))
             i = j
+            continue
+        if _is_table_row(line):
+            # 落单的表格行：去掉竖线、单元格用 ` / ` 连接，避免原始 |...| 刷屏。
+            cells = [cell for cell in _split_table_row(line) if cell]
+            out.append(" / ".join(cells) if cells else line)
+            i += 1
             continue
         out.append(line)
         i += 1

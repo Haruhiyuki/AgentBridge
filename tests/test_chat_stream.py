@@ -271,3 +271,35 @@ def test_progress_only_turn_has_no_redundant_done_marker():
     # 进度叙述照常投递，但没有多余的「✅ 本轮已完成。」。
     assert kinds(messages) == ["progress"]
     assert all("本轮已完成" not in m["text"] for m in messages)
+
+
+def test_orphaned_table_row_degraded_not_left_raw():
+    """流式 delta 把表格拆散导致数据行落单（前无表头+分隔行）时，不应以原始 |...| 刷屏，
+    而应降级成 `单元格 / 单元格`。复现自用户实测的「| 寓意 | ... |」残留行。"""
+    events = [
+        ev(1, "turn.started", turn_id="t"),
+        ev(
+            2,
+            "assistant.delta",
+            turn_id="t",
+            payload={"text": "正面对比：\n| 寓意 | 厚重正统 ⭐⭐⭐⭐ | 有格局有现代感 ⭐⭐⭐⭐ |"},
+        ),
+        ev(3, "turn.completed", turn_id="t"),
+    ]
+    text = chat_messages_from_events(events)[0][0]["text"]
+    assert "|" not in text  # 没有残留竖线。
+    assert "寓意 / 厚重正统 ⭐⭐⭐⭐ / 有格局有现代感 ⭐⭐⭐⭐" in text
+
+
+def test_full_table_block_still_renders_as_records():
+    """完整表格块（表头+分隔行+数据行）仍渲染成记录式列表，回归保护。"""
+    md = "| 维度 | 刘孝龙 | 张添驭 |\n|---|---|---|\n| 音律 | 偏沉 | 清亮 |"
+    events = [
+        ev(1, "turn.started", turn_id="t"),
+        ev(2, "assistant.delta", turn_id="t", payload={"text": md}),
+        ev(3, "turn.completed", turn_id="t"),
+    ]
+    text = chat_messages_from_events(events)[0][0]["text"]
+    assert "|" not in text
+    assert "维度 / 刘孝龙 / 张添驭" in text
+    assert "音律" in text and "偏沉" in text and "清亮" in text
