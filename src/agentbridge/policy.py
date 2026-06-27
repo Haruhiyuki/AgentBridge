@@ -132,18 +132,32 @@ class PolicyEngine:
     def __init__(
         self,
         rule_provider: Callable[[], list[AccessPolicyRule]] | None = None,
+        role_provider: Callable[[], dict[str, set[Permission]]] | None = None,
     ) -> None:
         self._rule_provider = rule_provider
+        self._role_provider = role_provider
 
     def set_rule_provider(
         self, rule_provider: Callable[[], list[AccessPolicyRule]] | None
     ) -> None:
         self._rule_provider = rule_provider
 
+    def set_role_provider(
+        self, role_provider: Callable[[], dict[str, set[Permission]]] | None
+    ) -> None:
+        self._role_provider = role_provider
+
+    def role_permissions(self) -> dict[str, set[Permission]]:
+        """运行期生效的「角色→权限」表：有 provider（可编辑覆盖层）则用它，否则用内置默认。"""
+        if self._role_provider is not None:
+            return self._role_provider()
+        return ROLE_PERMISSIONS
+
     def permissions_for(self, actor: Actor) -> set[Permission]:
+        table = self.role_permissions()
         permissions: set[Permission] = set()
         for role in actor.roles:
-            permissions.update(ROLE_PERMISSIONS.get(role, set()))
+            permissions.update(table.get(role, set()))
         return permissions
 
     def allows(

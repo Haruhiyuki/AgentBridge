@@ -9402,3 +9402,61 @@ def test_terminal_restart_resume_flag_relaunches_with_continue(tmp_path):
     assert body["action"] == "restarted"
     assert body["command"].endswith("--continue")
     assert client.get(f"/api/v1/sessions/{sid}/terminal/status").json()["running"] is True
+
+
+def test_role_definition_editing_affects_enforcement(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTBRIDGE_ROLE_OVERRIDES_FILE", str(tmp_path / "roles.json"))
+    client = TestClient(create_app())
+    admin = {"id": "a", "roles": ["admin"]}
+    member = {"id": "m", "roles": ["member"]}
+
+    def can_vote(target):
+        r = client.post(
+            "/api/v1/access-policy/simulate",
+            json={"actor": admin, "target_actor": target, "action": "approval.vote"},
+        )
+        return r.json()["decision"]["allowed"]
+
+    # 默认：member 无 approval.vote。
+    assert can_vote(member) is False
+    # 改写 member：加上 approval.vote → 立刻生效。
+    r = client.put(
+        "/api/v1/roles/member",
+        json={
+            "actor": admin,
+            "permissions": ["project.view", "session.view", "session.send", "approval.vote"],
+        },
+    )
+    assert r.status_code == 200, r.text
+    assert can_vote(member) is True
+    # 非管理员不能改角色定义。
+    assert (
+        client.put(
+            "/api/v1/roles/member",
+            json={"actor": member, "permissions": ["project.manage"]},
+        ).status_code
+        == 403
+    )
+    # 未知权限被拒。
+    assert (
+        client.put(
+            "/api/v1/roles/member", json={"actor": admin, "permissions": ["nope.perm"]}
+        ).status_code
+        == 400
+    )
+    # 新建自定义角色。
+    assert (
+        client.put(
+            "/api/v1/roles/审批员",
+            json={"actor": admin, "permissions": ["session.view", "approval.vote"]},
+        ).status_code
+        == 200
+    )
+    names = {r["name"] for r in client.get("/api/v1/roles").json()["roles"]}
+    assert "审批员" in names
+    # 删除内置角色的覆盖 → 重置回默认（member 又没有 approval.vote）。
+    client.post("/api/v1/roles/member/delete", json=admin)
+    assert can_vote(member) is False
+    # GET /permissions 列出全部权限带标签。
+    perms = client.get("/api/v1/permissions").json()["permissions"]
+    assert any(p["value"] == "approval.vote" and p["label"] for p in perms)

@@ -166,6 +166,31 @@ class CreateProjectRequest(BaseModel):
     trace_id: str = "api"
 
 
+PERMISSION_LABELS: dict[str, str] = {
+    "project.view": "查看项目",
+    "project.manage": "管理项目（创建/配额/绑定）",
+    "session.view": "查看会话",
+    "session.create": "新建会话",
+    "session.send": "发任务（ask/send/continue）",
+    "session.manage": "管理会话（队列/关闭/切agent）",
+    "approval.vote": "审批投票",
+    "approval.dangerous": "高危审批",
+    "terminal.control": "终端控制（开/停/重启）",
+    "audit.view": "查看审计",
+    "group.role.manage": "管理角色与权限",
+    "policy.manage": "管理访问/审批策略",
+    "device.manage": "管理设备身份",
+}
+
+
+class SetRolePermissionsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actor: ActorPayload = Field(default_factory=ActorPayload)
+    permissions: list[str] = Field(default_factory=list)
+    trace_id: str = "api"
+
+
 class ProvisionProjectRequest(BaseModel):
     """一步开通项目：建项目 + 在工作目录建工作区（按需 mkdir）。
 
@@ -2141,6 +2166,47 @@ def create_app(control_plane: ControlPlane | None = None) -> FastAPI:
             resource_id=payload.resource_id,
             attributes=payload.attributes,
             chat_context_id=payload.chat_context_id,
+        )
+
+    @app.get("/api/v1/roles")
+    def list_role_definitions(control: ControlPlane = Depends(get_control)):
+        """列出「角色→权限」定义（内置三档 + 自定义/被改写的）。"""
+        actor = Actor(id="api", roles={"admin"})
+        return {"roles": control.list_role_definitions(actor)}
+
+    @app.get("/api/v1/permissions")
+    def list_permissions():
+        """列出全部可分配权限及中文标签，供 bot/控制台编辑角色时挑选。"""
+        return {
+            "permissions": [
+                {"value": perm.value, "label": PERMISSION_LABELS.get(perm.value, perm.value)}
+                for perm in Permission
+            ]
+        }
+
+    @app.put("/api/v1/roles/{name}")
+    def set_role_permissions(
+        name: str,
+        payload: SetRolePermissionsRequest,
+        control: ControlPlane = Depends(get_control),
+    ):
+        """改写某角色的权限集（内置角色可改、不存在则新建自定义角色）。"""
+        return control.set_role_permissions(
+            actor=payload.actor.to_actor(),
+            name=name,
+            permissions=payload.permissions,
+            trace_id=payload.trace_id,
+        )
+
+    @app.post("/api/v1/roles/{name}/delete")
+    def delete_role_definition(
+        name: str,
+        payload: ActorPayload,
+        control: ControlPlane = Depends(get_control),
+    ):
+        """删除自定义角色；内置角色则重置回默认权限。"""
+        return control.delete_role_definition(
+            actor=payload.to_actor(), name=name, trace_id="api"
         )
 
     @app.get("/api/v1/device-identities")

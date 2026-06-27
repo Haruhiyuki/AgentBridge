@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 from datetime import datetime
+from pathlib import Path
 
 from agentbridge.device_auth import (
     DEFAULT_DEVICE_KEY_ITERATIONS,
@@ -54,7 +57,13 @@ from agentbridge.domain import (
     WriterLease,
     utc_now,
 )
-from agentbridge.policy import ROLE_PERMISSIONS, ApprovalPolicy, Permission, PolicyEngine
+from agentbridge.policy import (
+    DEFAULT_ROLE_PERMISSIONS,
+    ROLE_PERMISSIONS,
+    ApprovalPolicy,
+    Permission,
+    PolicyEngine,
+)
 from agentbridge.storage import InMemoryRepository
 
 
@@ -68,7 +77,152 @@ class ControlPlane:
         self.repository = repository or InMemoryRepository()
         self.policy = policy or PolicyEngine()
         self.policy.set_rule_provider(self.repository.list_access_policy_rules)
+        # 可编辑的「角色→权限」覆盖层：默认空（用内置三档），可经 bot/控制台改写或新建角色。
+        # 设置 AGENTBRIDGE_ROLE_OVERRIDES_FILE 时持久化到该 JSON 文件，跨重启保留。
+        raw_path = os.environ.get("AGENTBRIDGE_ROLE_OVERRIDES_FILE", "").strip()
+        self._role_overrides_path: Path | None = (
+            Path(raw_path).expanduser() if raw_path else None
+        )
+        self._role_overrides: dict[str, set[Permission]] = self._load_role_overrides()
+        self.policy.set_role_provider(self.effective_role_permissions)
         self.approval_policy = approval_policy or ApprovalPolicy.default()
+
+    def _load_role_overrides(self) -> dict[str, set[Permission]]:
+        if self._role_overrides_path is None or not self._role_overrides_path.exists():
+            return {}
+        try:
+            raw = json.loads(self._role_overrides_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        result: dict[str, set[Permission]] = {}
+        for role, values in (raw or {}).items():
+            perms: set[Permission] = set()
+            for value in values or []:
+                try:
+                    perms.add(Permission(value))
+                except ValueError:
+                    continue
+            result[str(role)] = perms
+        return result
+
+    def _save_role_overrides(self) -> None:
+        if self._role_overrides_path is None:
+            return
+        self._role_overrides_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            role: sorted(perm.value for perm in perms)
+            for role, perms in self._role_overrides.items()
+        }
+        self._role_overrides_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    def effective_role_permissions(self) -> dict[str, set[Permission]]:
+        """运行期生效的角色→权限表：内置默认三档，被覆盖层（编辑/自定义）替换。"""
+        table = {role: set(perms) for role, perms in DEFAULT_ROLE_PERMISSIONS.items()}
+        table.update({role: set(perms) for role, perms in self._role_overrides.items()})
+        return table
+
+    def list_role_definitions(self, actor: Actor) -> list[dict[str, object]]:
+        self.require_collection_permission(
+            actor,
+            Permission.GROUP_ROLE_MANAGE,
+            resource_type="role_definition",
+            attributes={"operation": "list_role_definitions"},
+        )
+        table = self.effective_role_permissions()
+        builtin = set(DEFAULT_ROLE_PERMISSIONS)
+        return [
+            {
+                "name": role,
+                "permissions": sorted(perm.value for perm in perms),
+                "builtin": role in builtin,
+                "overridden": role in self._role_overrides,
+            }
+            for role, perms in sorted(table.items())
+        ]
+
+    def set_role_permissions(
+        self,
+        *,
+        actor: Actor,
+        name: str,
+        permissions: list[str],
+        trace_id: str,
+    ) -> dict[str, object]:
+        self.require_collection_permission(
+            actor,
+            Permission.GROUP_ROLE_MANAGE,
+            resource_type="role_definition",
+            resource_id=name,
+            attributes={"operation": "set_role_permissions"},
+        )
+        role_name = name.strip()
+        if not role_name:
+            raise AgentBridgeError(
+                ErrorCode.COMMAND_ARGUMENT_INVALID,
+                "角色名不能为空。",
+                next_step="请提供角色名，如 member / maintainer / 自定义名。",
+            )
+        perms: set[Permission] = set()
+        for value in permissions:
+            try:
+                perms.add(Permission(value.strip()))
+            except ValueError as exc:
+                raise AgentBridgeError(
+                    ErrorCode.COMMAND_ARGUMENT_INVALID,
+                    f"未知权限：{value}",
+                    next_step="可用权限见 GET /api/v1/permissions（或 /ab perms）。",
+                    details={"permission": value},
+                ) from exc
+        self._role_overrides[role_name] = perms
+        self._save_role_overrides()
+        self.audit(
+            action="role.definition_updated",
+            actor=actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            details={"role": role_name, "permissions": sorted(p.value for p in perms)},
+        )
+        return {
+            "name": role_name,
+            "permissions": sorted(perm.value for perm in perms),
+            "builtin": role_name in DEFAULT_ROLE_PERMISSIONS,
+            "overridden": True,
+        }
+
+    def delete_role_definition(
+        self, *, actor: Actor, name: str, trace_id: str
+    ) -> dict[str, object]:
+        self.require_collection_permission(
+            actor,
+            Permission.GROUP_ROLE_MANAGE,
+            resource_type="role_definition",
+            resource_id=name,
+            attributes={"operation": "delete_role_definition"},
+        )
+        role_name = name.strip()
+        if role_name not in self._role_overrides:
+            if role_name in DEFAULT_ROLE_PERMISSIONS:
+                # 内置角色未被覆盖，本就是默认值，无需删除。
+                return {"name": role_name, "reset_to_default": True, "removed": False}
+            raise AgentBridgeError(
+                ErrorCode.NOT_FOUND,
+                f"角色不存在：{role_name}",
+                next_step="用 /ab role list 查看现有角色。",
+                status_code=404,
+            )
+        del self._role_overrides[role_name]
+        self._save_role_overrides()
+        reset = role_name in DEFAULT_ROLE_PERMISSIONS
+        self.audit(
+            action="role.definition_deleted",
+            actor=actor,
+            outcome=AuditOutcome.ALLOWED,
+            trace_id=trace_id,
+            details={"role": role_name, "reset_to_default": reset},
+        )
+        return {"name": role_name, "reset_to_default": reset, "removed": not reset}
 
     def health(self) -> dict[str, object]:
         return {
