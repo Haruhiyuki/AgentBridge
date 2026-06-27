@@ -45,6 +45,41 @@ Persistent execution wiring (this iteration, all unit-tested):
 End-to-end live verification (group → streaming → human takeover → resume) still requires local `claude` /
 `codex` CLIs and the server launched with the opt-in flags above plus the lifecycle monitor enabled.
 
+### Delivery troubleshooting log (2026-06-27): queued replies showed 503 / never arrived
+
+A live trial surfaced three independent defects in the bot→gateway delivery chain. Recorded here so
+future delivery regressions can be diagnosed the same way (logs + the new `active` flag + bot stream logs).
+
+1. **`503` on every queued message, and the first answer never came back.** Root cause was *transport*,
+   not the queue: the QQ bot process inherits `HTTP_PROXY/HTTPS_PROXY=127.0.0.1:10808` (meant for the
+   *agents'* outbound model API) and its `httpx` clients used the default `trust_env=True` with no
+   `NO_PROXY`, so localhost gateway calls (`127.0.0.1:8000`) were routed *through* the forward proxy.
+   Under the concurrent command-POST + background `chat-events` polling load the proxy intermittently
+   returned a non-JSON `503`. Fix (bot repo): `request_agentbridge` — the single chokepoint for all
+   gateway calls — now creates its client with `trust_env=False`. Server-side never returns `503` for
+   queue/chat/onebot paths (only audit-signing / device-cert do), which is the tell that a `503` there
+   is proxy-originated.
+2. **Multi-turn queue: only the first queued turn's answer was delivered.** The bot decided "round over"
+   from message `kind` (`answer`/`error`), so the first turn's answer ended the stream and abandoned the
+   rest of the queue. Fix: `GET /sessions/{id}/chat-events` now returns an authoritative `active` flag
+   (`active_turn_id` set, or queued turns remain) plus `active_turn_id` / `queued_turns` / `queue_paused`;
+   the bot streams until `active` is `False` instead of guessing from message kind.
+3. **"Sleep N then answer" (background command): the real answer never reached chat.** When Claude runs a
+   `sleep` as a *background* command it prints "已开始休眠…", yields, and the Stop hook fires
+   `turn.completed` *early*; the actual summary is written N seconds later as `assistant.delta` events with
+   **no `turn_id` and no following `turn.completed`**. The old projection only emitted answers at
+   completion, so this "orphan tail" was never gathered nor held → lost; and repeated Stops re-merged the
+   growing tail into duplicate answers. Fixes (`chat_stream.py`): emit orphan-tail deltas (post-completion
+   final-zone deltas of an already-finished turn) as standalone answers exactly once; make each
+   `turn.completed` only coalesce deltas since the previous completion (`answered_upto`), killing the
+   growing duplicates; and only show "✅ 本轮已完成。" for turns that produced no deltas at all. The bot
+   also keeps polling for `AGENTBRIDGE_BOT_STREAM_IDLE_GRACE_SECONDS` (default 45s) after `active` goes
+   `False` so a late background answer is still picked up. Regression tests live in `tests/test_chat_stream.py`
+   (`test_orphan_tail_*`, `test_progress_only_turn_has_no_redundant_done_marker`).
+
+All three were verified end-to-end against live Claude: two queued "summarize in N words, sleep 20s first"
+tasks now deliver both summaries, in order, exactly once, with no `503` and no duplicate/`✅`-noise.
+
 Implemented in this slice:
 
 - Python/FastAPI project skeleton.
