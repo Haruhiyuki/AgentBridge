@@ -1657,31 +1657,14 @@ def test_cli_format_response_prints_native_stdout_json(capsys):
     }
 
 
-def test_claude_hook_bridge_waits_for_permission_and_outputs_hook_json():
+def test_claude_hook_observes_interaction_without_blocking_native_ui():
+    """交互类事件（PermissionRequest / AskUserQuestion / 计划）只观察、不拦截：单次 emit、返回
+    空 stdout，让 Claude 显示原生交互 UI——绝不阻塞或替答（否则会压住本地真人的原生选择器）。"""
     calls = []
 
     def transport(method, url, headers, payload, timeout_seconds):
         calls.append((method, url, payload))
-        if method == "POST":
-            return {
-                "id": "evt_permission",
-                "seq": 3,
-                "interaction_id": "int_permission",
-                "payload": {"adapter_item_id": "toolu_1"},
-            }
-        return {
-            "responses": [
-                {
-                    "seq": 4,
-                    "request_event_id": "evt_permission",
-                    "interaction_id": "int_permission",
-                    "adapter_event_type": "PermissionRequest",
-                    "ready": True,
-                    "decision": "approved",
-                    "approve": True,
-                }
-            ]
-        }
+        return {"id": "evt_permission", "seq": 3, "interaction_id": "int_permission"}
 
     control_client = AgentAdapterControlClient(
         AgentAdapterClientConfig(base_url="http://bridge.local", session_id="ses_1"),
@@ -1697,17 +1680,14 @@ def test_claude_hook_bridge_waits_for_permission_and_outputs_hook_json():
             "tool_input": {"command": "pytest"},
             "tool_use_id": "toolu_1",
         },
-        poll_interval_seconds=0.01,
     )
 
     assert result["adapter_event_type"] == "PermissionRequest"
     assert result["idempotency_key"] == "claude-hook:PermissionRequest:toolu_1"
-    assert result["stdout_json"] == {
-        "hookSpecificOutput": {
-            "hookEventName": "PermissionRequest",
-            "decision": {"behavior": "allow"},
-        }
-    }
+    # 关键：不替答 → Claude 显示原生交互 UI。
+    assert result["stdout_json"] is None
+    # 只发一次 emit（POST），不再轮询等待响应/阻塞。
+    assert len(calls) == 1
     assert calls[0] == (
         "POST",
         "http://bridge.local/api/v1/sessions/ses_1/agent-adapter/events",

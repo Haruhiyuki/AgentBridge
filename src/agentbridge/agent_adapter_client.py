@@ -545,27 +545,12 @@ def handle_claude_hook_payload(
     adapter_event_type = claude_adapter_event_type_from_hook_payload(hook_payload)
     client = ClaudeHookAdapterClient(control_client, schema_version=schema_version)
     idempotency_key = claude_hook_idempotency_key(adapter_event_type, hook_payload)
-    if adapter_event_type in CLAUDE_INTERACTION_HOOK_EVENTS:
-        result = client.emit_and_wait(
-            adapter_event_type,
-            hook_payload,
-            trace_id=trace_id,
-            idempotency_key=idempotency_key,
-            timeout_seconds=wait_timeout_seconds,
-            poll_interval_seconds=poll_interval_seconds,
-        )
-        native_response = format_adapter_response_for_agent(
-            AgentType.CLAUDE,
-            result["response"],
-        )
-        return {
-            "adapter_event_type": adapter_event_type,
-            "idempotency_key": idempotency_key,
-            "event": result["event"],
-            "response": result["response"],
-            "native_response": native_response,
-            "stdout_json": native_response["stdout_json"],
-        }
+    # 一律「只观察、不拦截」：快速 emit 后返回空 stdout，让 Claude 显示原生交互 UI，绝不挡住
+    # 本地真人。交互类事件（AskUserQuestion / 审批 / 计划）由此在服务端建出交互、渲染到群，
+    # 并供 bot 经终端按键作答（见 Terminal Agent 的选择器驱动）。
+    # 历史上交互类事件曾 emit_and_wait 阻塞 + 用 updatedInput 替答——那会压住原生选择器、害得
+    # 人在同工作区直接用 Claude 时选择器弹不出来，已废弃。``wait_timeout_seconds`` /
+    # ``poll_interval_seconds`` 保留于签名仅为兼容调用方，不再使用。
     event = client.emit(
         adapter_event_type,
         hook_payload,
@@ -2909,13 +2894,10 @@ def main(argv: list[str] | None = None) -> int:
                     poll_interval_seconds=args.poll_interval_seconds,
                 )
             except (AgentAdapterClientError, AgentBridgeError, OSError, ValueError) as exc:
-                adapter_event_type = claude_adapter_event_type_from_hook_payload(hook_payload)
-                if adapter_event_type in CLAUDE_INTERACTION_HOOK_EVENTS:
-                    payload = claude_hook_failure_stdout_json(hook_payload, str(exc))
-                    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-                    return 0
                 if args.strict:
                     raise
+                # 失败也绝不挡人：不输出任何决定 → Claude 显示原生交互 UI（fail open）。
+                # 含交互类事件——即便服务端不可达/会话已失效，本地真人仍能用原生选择器。
                 print(f"agent adapter client failed open: {exc}", file=sys.stderr)
                 return 0
             if args.json:
