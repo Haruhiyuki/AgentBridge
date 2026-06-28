@@ -545,6 +545,19 @@ def handle_claude_hook_payload(
     adapter_event_type = claude_adapter_event_type_from_hook_payload(hook_payload)
     client = ClaudeHookAdapterClient(control_client, schema_version=schema_version)
     idempotency_key = claude_hook_idempotency_key(adapter_event_type, hook_payload)
+    # AskUserQuestion 的 PermissionRequest 是重复：该工具已由 PreToolUse 建成一条「提问」交互，
+    # 不要再为它的权限请求建一条「审批」交互（否则群里同一组问题既出提问又出审批）。直接跳过、
+    # 返回空 stdout（让原生流程继续）。
+    tool_name = string_value(hook_payload.get("tool_name")) or string_value(
+        hook_payload.get("toolName")
+    )
+    if adapter_event_type == "PermissionRequest" and tool_name == "AskUserQuestion":
+        return {
+            "adapter_event_type": adapter_event_type,
+            "idempotency_key": idempotency_key,
+            "event": None,
+            "stdout_json": None,
+        }
     # 一律「只观察、不拦截」：快速 emit 后返回空 stdout，让 Claude 显示原生交互 UI，绝不挡住
     # 本地真人。交互类事件（AskUserQuestion / 审批 / 计划）由此在服务端建出交互、渲染到群，
     # 并供 bot 经终端按键作答（见 Terminal Agent 的选择器驱动）。

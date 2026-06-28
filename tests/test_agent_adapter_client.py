@@ -1708,6 +1708,32 @@ def test_claude_hook_observes_interaction_without_blocking_native_ui():
     )
 
 
+def test_claude_hook_skips_permission_request_for_askuserquestion():
+    """AskUserQuestion 的 PermissionRequest 是重复（已由 PreToolUse 建成提问），不再 emit 出审批。"""
+    calls = []
+
+    def transport(method, url, headers, payload, timeout_seconds):
+        calls.append((method, url, payload))
+        return {"id": "evt", "seq": 1}
+
+    control_client = AgentAdapterControlClient(
+        AgentAdapterClientConfig(base_url="http://bridge.local", session_id="ses_1"),
+        transport=transport,
+    )
+    result = handle_claude_hook_payload(
+        control_client=control_client,
+        hook_payload={
+            "session_id": "c1",
+            "hook_event_name": "PermissionRequest",
+            "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [{"question": "q", "options": [{"label": "A"}]}]},
+        },
+    )
+    assert result["stdout_json"] is None
+    assert result["event"] is None
+    assert calls == []  # 完全不 emit → 不会再建一条审批交互
+
+
 def test_claude_hook_bridge_reports_non_interaction_hook_without_stdout():
     calls = []
 
