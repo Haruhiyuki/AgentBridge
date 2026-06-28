@@ -749,8 +749,8 @@ def claude_ask_user_question(
     """从 Claude ``AskUserQuestion`` 工具的 ``tool_input.questions`` 提取问题文本与选项。
 
     AskUserQuestion 的真实内容嵌在 ``tool_input.questions[*].{question,header,options[*].label}``，
-    顶层没有 prompt/options 字段，故通用提取拿不到（曾只显示占位符 "AskUserQuestion requires approval"）。
-    返回 ``(prompt, options)``：单问题时 prompt 为问题文本、options 为选项标签（可被「/ab answer 编号」用）；
+    顶层没有 prompt/options 字段，故通用提取拿不到（曾只显示占位符 "requires approval"）。
+    返回 ``(prompt, options)``：单问题时 prompt 为问题文本、options 为选项标签（可被 /ab answer 用）；
     多问题时把所有问题+选项铺成一段富文本作 prompt、options 留空（让用户自由作答）。
     """
     tool_input = payload.get("tool_input")

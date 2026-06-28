@@ -536,6 +536,84 @@ def test_stuck_idle_turn_reconciled_without_pending_interaction(tmp_path):
     assert control.repository.get_session(session.id).status == SessionStatus.IDLE
 
 
+def test_bot_answers_native_question_selector_via_keystrokes(tmp_path):
+    """已被 /ab answer 答过的原生 AskUserQuestion，被转成按键写进终端的原生选择器。
+
+    与本地真人共用同一个原生选择器（hook 不拦截）；仅在 bot 持写租约时敲（人接管则让位）。"""
+    control, terminal, actor, session = bootstrap(tmp_path)
+    terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start")
+    control.enqueue_turn(actor=actor, session_id=session.id, prompt="问我", trace_id="t1")
+    terminal.advance_queue(session_id=session.id)  # bot 持写租约 + turn running
+    lease = control.repository.current_lease(session.id)
+    assert lease is not None and lease.owner_type == LeaseOwnerType.BOT
+
+    # 一道单选 + 一道多选；question.requested 事件带结构化 questions 供算按键。
+    questions = [
+        {"question": "环境?", "options": [{"label": "dev"}, {"label": "prod"}]},
+        {"question": "加什么?", "multiSelect": True,
+         "options": [{"label": "A"}, {"label": "B"}, {"label": "C"}]},
+    ]
+    interaction = control.create_interaction(
+        actor=actor, session_id=session.id,
+        interaction_type=InteractionType.QUESTION, prompt="(多题)", trace_id="q",
+    )
+    control.emit_event(
+        event_type="question.requested", source=SemanticEventSource.AGENT_ADAPTER,
+        trace_id="q", project_id=session.project_id, session_id=session.id,
+        interaction_id=interaction.id,
+        payload={"raw_event": {"tool_input": {"questions": questions}}},
+    )
+    control.answer_interaction(
+        actor=actor, interaction_id=interaction.id, answer="1B 2AC", trace_id="ans"
+    )
+
+    out = terminal.type_answered_question_selections()
+    assert len(out) == 1 and out[0]["interaction_id"] == interaction.id
+    # q1 单选选 B(idx1) → Down,Enter；q2 多选 A,C → Space,Down(A) Down(B) Space(C) Down(Next) Enter；
+    # 末尾再补一个 Enter 总提交。
+    assert out[0]["keys"] == [
+        "Down", "Enter",
+        "Space", "Down", "Down", "Space", "Down", "Enter",
+        "Enter",
+    ]
+    # 按键确实写进了终端后端（Down=\x1b[B 已落入缓冲）。
+    assert "\x1b[B" in terminal.backend.snapshot(session_id=session.id)
+    # 再次调用不重复敲（已标记）。
+    assert terminal.type_answered_question_selections() == []
+
+
+def test_bot_answer_keystrokes_skip_when_human_holds_lease(tmp_path):
+    """人接管（持 human 写租约）时，bot 不敲——让人亲自在原生选择器作答。"""
+    control, terminal, actor, session = bootstrap(tmp_path)
+    terminal.start_session(session_id=session.id, command="fake-cli", trace_id="start")
+    control.enqueue_turn(actor=actor, session_id=session.id, prompt="问我", trace_id="t1")
+    terminal.advance_queue(session_id=session.id)
+    # 真人接管：抢占写租约。
+    human = Actor(id="haruhi", roles={"maintainer"})
+    control.acquire_lease(
+        actor=human, session_id=session.id,
+        owner_type=LeaseOwnerType.HUMAN, owner_id="haruhi", trace_id="takeover",
+        ttl_seconds=600,
+    )
+    interaction = control.create_interaction(
+        actor=actor, session_id=session.id,
+        interaction_type=InteractionType.QUESTION, prompt="环境?", trace_id="q",
+    )
+    control.emit_event(
+        event_type="question.requested", source=SemanticEventSource.AGENT_ADAPTER,
+        trace_id="q", project_id=session.project_id, session_id=session.id,
+        interaction_id=interaction.id,
+        payload={"raw_event": {"tool_input": {
+            "questions": [{"question": "环境?", "options": [{"label": "dev"}, {"label": "prod"}]}]
+        }}},
+    )
+    control.answer_interaction(
+        actor=actor, interaction_id=interaction.id, answer="B", trace_id="ans"
+    )
+    # 人持租约 → bot 让位、不敲。
+    assert terminal.type_answered_question_selections() == []
+
+
 def test_stuck_reconcile_skips_codex_and_disabled(tmp_path):
     """兜底仅针对依赖 Stop hook 的 Claude；Codex 走空闲启发式，且开关关闭时完全不动。"""
     # 关闭开关：即便有超期交互也不收尾。

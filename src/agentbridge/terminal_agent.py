@@ -31,6 +31,8 @@ from agentbridge.agent_adapter_events import (
     AGENT_ADAPTER_HANDSHAKE_PROTOCOL,
     adapter_provider_version_verification,
     adapter_schema_version_supported,
+    askuserquestion_keystrokes,
+    parse_askuserquestion_selection,
     supported_adapter_schema_versions_for,
 )
 from agentbridge.claude_hook_deploy import (
@@ -45,6 +47,7 @@ from agentbridge.domain import (
     AgentType,
     ErrorCode,
     InteractionStatus,
+    InteractionType,
     LeaseOwnerType,
     SemanticEventSource,
     SessionStatus,
@@ -1934,6 +1937,13 @@ class TerminalAgentService:
             else float(os.environ.get("AGENTBRIDGE_STUCK_TURN_IDLE_SECONDS", "90") or 90)
         )
         self._turn_stuck_watch: dict[str, dict[str, object]] = {}
+        # bot 替远程用户作答原生 AskUserQuestion 选择器：把 /ab answer 答案算成按键写进终端，
+        # 与本地真人共用同一个原生选择器（hook 已不拦截，见 agent_adapter_client）。仅在 bot 持
+        # 写租约时敲——人接管（持 human 租约）则让位，让人亲自选，谁先确认谁生效。
+        self.answer_question_via_keys = (
+            os.environ.get("AGENTBRIDGE_ANSWER_QUESTION_VIA_KEYS", "1") != "0"
+        )
+        self._typed_question_interactions: set[str] = set()
         # 终端刚启动时原生 TUI 还在初始化，过早写入会丢键/不被当作回车；推进器在终端
         # 启动后先等待这段预热时间再提交任务（默认 0，生产经环境变量设为数秒）。
         self.submit_warmup_seconds = (
@@ -2161,7 +2171,7 @@ class TerminalAgentService:
     def open_or_resume_terminal(
         self, *, session_id: str, trace_id: str
     ) -> dict[str, object]:
-        """控制台「打开终端」：tmux 仍在则重新 attach 开窗（= resume）；已停则带 resume 命令拉起 agent 再开窗。"""
+        """控制台「打开终端」：tmux 仍在则重新 attach 开窗（=resume）；已停则带 resume 命令拉起再开窗。"""
         status = self.status(session_id=session_id, trace_id=trace_id)
         if status.started and status.running:
             opened = self.open_terminal_window(session_id, force=True)
@@ -2757,6 +2767,94 @@ class TerminalAgentService:
         )
         return {"session_id": session_id, "turn_id": turn_id, "reason": reason, **extra}
 
+    def type_answered_question_selections(
+        self, *, trace_id: str = "answer-keys"
+    ) -> list[dict[str, object]]:
+        """把已被 /ab answer 答过的原生 AskUserQuestion 提问，按答案"敲"进终端的原生选择器。
+
+        与本地真人共用同一个原生选择器（hook 不再拦截）：远程用户的答案在此转成按键序列写入，
+        本地真人也可同时直接选；谁先确认谁生效。仅在 bot 持写租约时敲（人接管则让位）。"""
+        if not self.answer_question_via_keys:
+            return []
+        typed: list[dict[str, object]] = []
+        for session in self.control.repository.list_sessions():
+            try:
+                typed.extend(
+                    self._type_session_answered_questions(
+                        session_id=session.id, trace_id=trace_id
+                    )
+                )
+            except AgentBridgeError:
+                continue
+        return typed
+
+    def _type_session_answered_questions(
+        self, *, session_id: str, trace_id: str
+    ) -> list[dict[str, object]]:
+        session = self.control.repository.get_session(session_id)
+        if session.agent_type != AgentType.CLAUDE:  # AskUserQuestion 是 Claude 的工具
+            return []
+        status = self.backend.status(session_id=session_id)
+        if not status.started or not status.running:
+            return []
+        # 必须由 bot 持写租约才敲；人接管（持 human 租约）→ 让位，由人亲自在原生选择器作答。
+        lease = self.control.repository.current_lease(session_id)
+        if (
+            lease is None
+            or lease.owner_type != LeaseOwnerType.BOT
+            or lease.owner_id != "terminal-agent"
+        ):
+            return []
+        out: list[dict[str, object]] = []
+        for interaction in self.control.repository.list_interactions(
+            session_id=session_id, status=InteractionStatus.RESOLVED
+        ):
+            if interaction.type != InteractionType.QUESTION:
+                continue
+            if interaction.id in self._typed_question_interactions:
+                continue
+            if not (interaction.answer or "").strip():
+                continue
+            questions = self._questions_for_interaction(session_id, interaction.id)
+            # 标记已处理（即便无结构/失败）：避免每拍反复尝试。按键写入本身按 request_id 幂等。
+            self._typed_question_interactions.add(interaction.id)
+            if not questions:
+                continue
+            selection = parse_askuserquestion_selection(interaction.answer or "", questions)
+            keys = askuserquestion_keystrokes(questions, selection)
+            for index, key in enumerate(keys):
+                with suppress(AgentBridgeError):
+                    self.submit_input(
+                        session_id=session_id,
+                        epoch=lease.epoch,
+                        owner_type=lease.owner_type,
+                        owner_id=lease.owner_id,
+                        kind=TerminalInputKind.KEY,
+                        data=key,
+                        trace_id=f"{trace_id}:{interaction.id}",
+                        request_id=f"qkey:{interaction.id}:{index}",
+                    )
+            out.append(
+                {"session_id": session_id, "interaction_id": interaction.id, "keys": keys}
+            )
+        return out
+
+    def _questions_for_interaction(
+        self, session_id: str, interaction_id: str
+    ) -> list[object]:
+        """从该交互对应的 question.requested 事件里取出结构化 questions（含选项/multiSelect）。"""
+        for event in self.control.repository.list_events(
+            session_id=session_id, limit=1_000_000
+        ):
+            if event.type != "question.requested" or event.interaction_id != interaction_id:
+                continue
+            raw = (event.payload or {}).get("raw_event")
+            tool_input = raw.get("tool_input") if isinstance(raw, dict) else None
+            questions = tool_input.get("questions") if isinstance(tool_input, dict) else None
+            if isinstance(questions, list):
+                return questions
+        return []
+
     def _extract_terminal_answer(self, session_id: str, agent_type: AgentType) -> str:
         """从原生 TUI 抽取最后一段回答（目前支持 Codex）。失败返回空串。"""
         if agent_type != AgentType.CODEX:
@@ -3055,6 +3153,11 @@ class TerminalAgentService:
                 self.check_stuck_interaction_turns(trace_id=f"{trace_id}:stuck")
             except Exception as exc:
                 errors.append(f"check_stuck_interaction_turns: {exc}")
+        if self.answer_question_via_keys:
+            try:
+                self.type_answered_question_selections(trace_id=f"{trace_id}:answer-keys")
+            except Exception as exc:
+                errors.append(f"type_answered_question_selections: {exc}")
         if self.auto_advance_queues:
             try:
                 self.advance_pending_queues(trace_id=f"{trace_id}:advance")
