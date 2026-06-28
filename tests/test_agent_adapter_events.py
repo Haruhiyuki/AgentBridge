@@ -321,3 +321,46 @@ def test_claude_ask_user_question_extracts_prompt_and_options():
 
     # 非 AskUserQuestion（无 questions）→ 不干预。
     assert claude_ask_user_question({"tool_input": {}}) == (None, [])
+
+
+def test_parse_askuserquestion_selection_to_indices():
+    from agentbridge.agent_adapter_events import parse_askuserquestion_selection
+
+    questions = [
+        {"question": "q1", "options": [{"label": "A"}, {"label": "B"}, {"label": "C"}]},
+        {"question": "q2", "options": [{"label": "A"}, {"label": "B"}]},
+        {"question": "q3", "options": [{"label": "A"}, {"label": "B"}, {"label": "C"}]},
+    ]
+    assert parse_askuserquestion_selection("1A 2B 3C", questions) == {0: [0], 1: [1], 2: [2]}
+    # 同题多选用字母连写（数字会与题号歧义，故选项部分推荐用字母）。
+    assert parse_askuserquestion_selection("1AC 2B", questions) == {0: [0, 2], 1: [1]}
+    # 单题可裸写（字母或数字皆可，因无题号歧义）。
+    assert parse_askuserquestion_selection("B", [questions[1]]) == {0: [1]}
+
+
+def test_askuserquestion_keystrokes_single_and_multi_select():
+    from agentbridge.agent_adapter_events import askuserquestion_keystrokes
+
+    # 三道单选，分别选第 1/2/3 项：Down×idx + Enter（自动跳题），末尾再总提交 Enter。
+    singles = [
+        {"options": [{"label": "A"}, {"label": "B"}, {"label": "C"}]},
+        {"options": [{"label": "A"}, {"label": "B"}]},
+        {"options": [{"label": "A"}, {"label": "B"}, {"label": "C"}]},
+    ]
+    assert askuserquestion_keystrokes(singles, {0: [0], 1: [1], 2: [2]}) == [
+        "Enter",                  # q1: idx0 → 直接 Enter
+        "Down", "Enter",          # q2: idx1
+        "Down", "Down", "Enter",  # q3: idx2
+        "Enter",                  # 总提交
+    ]
+
+    # 一道多选（4 项），勾第 1、3 项：逐项 [Space?]+Down，过完再 Down 到 Next + Enter，末尾总提交。
+    multi = [{"multiSelect": True, "options": [{"label": "A"}, {"label": "B"}, {"label": "C"}, {"label": "D"}]}]
+    assert askuserquestion_keystrokes(multi, {0: [0, 2]}) == [
+        "Space", "Down",  # A 勾选 + 移下
+        "Down",            # B 跳过
+        "Space", "Down",  # C 勾选 + 移下
+        # D 不勾、是末项不再 Down
+        "Down", "Enter",  # 移到 Next 提交本题
+        "Enter",           # 总提交
+    ]

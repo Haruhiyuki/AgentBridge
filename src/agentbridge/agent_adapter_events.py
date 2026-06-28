@@ -805,6 +805,91 @@ def claude_ask_user_question(
     return ("\n".join(lines) or None), []
 
 
+def _askuserquestion_option_count(question: object) -> int:
+    if not isinstance(question, dict):
+        return 0
+    return sum(
+        1
+        for opt in (question.get("options") or [])
+        if (str(opt.get("label") or "").strip() if isinstance(opt, dict) else str(opt).strip())
+    )
+
+
+def parse_askuserquestion_selection(
+    answer: str, questions: list[object]
+) -> dict[int, list[int]]:
+    """把用户的作答串解析成 ``{题号(0基): [选项下标(0基)…]}``。
+
+    支持 ``1A 2B 3C``（题号+选项字母）、``1AC``（同题多选连写）、单题裸 ``A``/``AC``/数字。
+    字母 A→0、B→1…；数字 1→0、2→1…。越界/重复忽略。供「驱动原生选择器」按下标算按键用。
+    """
+    valid = [q for q in questions if isinstance(q, dict)]
+    counts = [_askuserquestion_option_count(q) for q in valid]
+    selection: dict[int, list[int]] = {}
+
+    def resolve(selector: str, option_count: int) -> list[int]:
+        indices: list[int] = []
+        for char in selector:
+            index: int | None = None
+            if char.isalpha():
+                index = ord(char.upper()) - ord("A")
+            elif char.isdigit():
+                index = int(char) - 1
+            if index is not None and 0 <= index < option_count and index not in indices:
+                indices.append(index)
+        return indices
+
+    for token in answer.replace(",", " ").replace("，", " ").split():
+        match = re.match(r"^(\d+)([A-Za-z0-9]+)$", token)
+        if match:
+            qnum = int(match.group(1))
+            if 1 <= qnum <= len(valid):
+                indices = resolve(match.group(2), counts[qnum - 1])
+                if indices:
+                    bucket = selection.setdefault(qnum - 1, [])
+                    bucket.extend(i for i in indices if i not in bucket)
+                continue
+        if len(valid) == 1:
+            indices = resolve(token, counts[0])
+            if indices:
+                bucket = selection.setdefault(0, [])
+                bucket.extend(i for i in indices if i not in bucket)
+    return selection
+
+
+def askuserquestion_keystrokes(
+    questions: list[object], selection: dict[int, list[int]]
+) -> list[str]:
+    """把每题选中的选项下标，算成驱动原生 AskUserQuestion 选择器的按键名序列。
+
+    协议（实测）：选择器出现时光标在每题第一项。
+    - 单选题：``Down × idx`` 移到目标项后 ``Enter``——Enter 选中并自动跳到下一题；
+    - 多选题：自上而下逐项，选中的按 ``Space`` 勾选、每项之后 ``Down``；过完所有项再 ``Down``
+      到「Next」按 ``Enter`` 提交本题；
+    - 全部题目答完后再补一个 ``Enter`` 作总提交。
+    返回 ``Up/Down/Enter/Space`` 键名列表（与 PTY_KEY_SEQUENCES 对应），按 KEY 输入逐个写入终端。
+    """
+    valid = [q for q in questions if isinstance(q, dict)]
+    keys: list[str] = []
+    for qi, question in enumerate(valid):
+        count = _askuserquestion_option_count(question)
+        chosen = [i for i in selection.get(qi, []) if 0 <= i < count]
+        if question.get("multiSelect"):
+            for i in range(count):
+                if i in chosen:
+                    keys.append("Space")
+                if i < count - 1:
+                    keys.append("Down")
+            keys.append("Down")  # 移到「Next」提交按钮
+            keys.append("Enter")  # 提交本题（多选不自动跳，需显式提交）
+        else:
+            target = chosen[0] if chosen else 0
+            keys.extend(["Down"] * target)
+            keys.append("Enter")  # 选中并自动跳下一题
+    keys.append("Enter")  # 全部答完后的总提交
+    return keys
+
+
 def adapter_risk_level(payload: dict[str, object]) -> str:
     value = None
     for key in ADAPTER_RISK_FIELDS:
