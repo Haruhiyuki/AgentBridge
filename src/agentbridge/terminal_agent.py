@@ -2171,7 +2171,7 @@ class TerminalAgentService:
     def open_or_resume_terminal(
         self, *, session_id: str, trace_id: str
     ) -> dict[str, object]:
-        """控制台「打开终端」：tmux 仍在则重新 attach 开窗（=resume）；已停则带 resume 命令拉起再开窗。"""
+        """控制台「打开终端」：tmux 仍在则重新 attach 开窗；已停则带 resume 拉起再开窗。"""
         status = self.status(session_id=session_id, trace_id=trace_id)
         if status.started and status.running:
             opened = self.open_terminal_window(session_id, force=True)
